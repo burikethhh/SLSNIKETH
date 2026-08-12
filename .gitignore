@@ -15,9 +15,18 @@ static/backups/
 static/photos/
 static/clips/
 
-# Compiled caches
+# Compiled caches (general)
 __pycache__/
 *.pyc
+
+# Essential compiled app modules — no .py source exists; required to run
+!main.pyc
+!config.pyc
+!paths.pyc
+!template_helpers.pyc
+!database/*.pyc
+!routers/*.pyc
+!services/*.pyc
 
 # Electron
 electron/node_modules/
