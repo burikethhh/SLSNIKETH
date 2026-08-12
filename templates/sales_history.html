@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Sales History{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Sales History</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ sales|length }} transaction{{ 's' if sales|length != 1 }}</p>
+    </div>
+    {% if request.session.get('role') != 'admin' %}
+    <a href="/sales/walkin" class="btn btn-success">+ Walk-in</a>
+    {% endif %}
+</div>
+
+<!-- Filters -->
+{% if request.query_params.get('deleted') == '1' %}
+<div class="alert-green mb-4 text-sm">Sale deleted successfully.</div>
+{% elif request.query_params.get('error') == 'not_found' %}
+<div class="alert-red mb-4 text-sm">Sale not found.</div>
+{% endif %}
+
+<div class="card mb-4">
+    <form method="get" action="/sales/history" class="grid grid-cols-2 md:grid-cols-5 gap-3 items-end">
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Date From</label>
+            <input type="date" name="date_from" value="{{ filters.date_from }}" class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Date To</label>
+            <input type="date" name="date_to" value="{{ filters.date_to }}" class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Member Name</label>
+            <input type="text" name="member_name" value="{{ filters.member_name }}" placeholder="Search member..." class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Payment Method</label>
+            <select name="payment_method" class="w-full">
+                <option value="">All</option>
+                <option value="Cash" {% if filters.payment_method == 'Cash' %}selected{% endif %}>Cash</option>
+                <option value="GCash" {% if filters.payment_method == 'GCash' %}selected{% endif %}>GCash</option>
+                <option value="Bank" {% if filters.payment_method == 'Bank' %}selected{% endif %}>Bank Transfer</option>
+                <option value="Registration" {% if filters.payment_method == 'Registration' %}selected{% endif %}>Registration</option>
+            </select>
+        </div>
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary flex-1">Filter</button>
+            <a href="/sales/history" class="btn btn-outline">Clear</a>
+        </div>
+    </form>
+</div>
+
+<!-- Totals -->
+<div class="card mb-4 flex items-center justify-between">
+    <span class="text-sm text-gray-400">Filtered Total</span>
+    <span class="text-lg font-bold text-green-400">₱{{ "{:,.2f}".format(total_amount) }}</span>
+</div>
+{% if paid_amount != total_amount %}
+<div class="card mb-4 flex items-center justify-between">
+    <span class="text-sm text-gray-400">Paid Subtotal</span>
+    <span class="text-lg font-bold text-blue-400">₱{{ "{:,.2f}".format(paid_amount) }}</span>
+</div>
+{% endif %}
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Receipt</th>
+                <th>Member</th>
+                <th>Plan</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Cashier</th>
+                <th>Status</th>
+                {% if request.session.get('role') == 'admin' %}
+                <th>Actions</th>
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in sales %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ s.created_at | to_local if s.created_at else '' }}</td>
+                <td class="font-mono text-xs text-gray-500">{{ s.receipt_no or '' }}</td>
+                <td>
+                    {% if s.member %}
+                    <a href="/members/{{ s.member.id }}" class="text-purple-400 hover:text-purple-300">{{ s.member.name }}</a>
+                    {% elif s.member_name %}
+                    <span class="text-gray-400">{{ s.member_name }}</span>
+                    {% else %}
+                    <span class="text-gray-500">Walk-in</span>
+                    {% endif %}
+                </td>
+                <td class="text-xs">
+                    {% if s.plan %}
+                    {% if s.notes and 'Renewal' in s.notes %}
+                    <span class="text-yellow-400">Renewal:</span> {{ s.plan.name }}
+                    {% else %}
+                    {{ s.plan.name }}
+                    {% endif %}
+                    {% elif s.member_type == 'walkin' %}
+                    Day Pass
+                    {% elif s.notes and 'Coaching' in s.notes %}
+                    <span class="text-blue-400">Coaching:</span> {{ s.notes.split('(')[0].replace('Coaching Enrollment: ', '').replace('Coaching Renewal: ', '').replace('Plan:', '').strip() }}
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+                <td class="text-green-400 font-medium">₱{{ "{:,.2f}".format(s.amount_paid) }}</td>
+                <td class="text-xs">{{ s.payment_method or '' }}</td>
+                <td class="text-xs text-gray-500">{{ s.cashier_name or '' }}</td>
+                <td>
+                    {% set ps = (s.payment_status.value if s.payment_status is mapping else s.payment_status) | upper %}
+                    {% if ps == 'PAID' %}
+                    <span class="badge badge-green">Paid</span>
+                    {% elif ps == 'PENDING' %}
+                    <span class="badge badge-yellow">Pending</span>
+                    {% else %}
+                    <span class="badge badge-yellow">{{ ps }}</span>
+                    {% endif %}
+                </td>
+                {% if request.session.get('role') == 'admin' %}
+                <td>
+                    <form method="POST" action="/sales/{{ s.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete this sale? Amount: P{{ s.amount_paid }}')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+            {% if not sales %}
+            <tr><td colspan="9" class="text-center text-gray-500 py-8">No sales recorded yet</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

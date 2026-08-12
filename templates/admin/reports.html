@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Reports — Admin{% endblock %}
+{% block head %}
+<script src="/static/vendor/js/chart.umd.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Sales Reports</h1>
+    <div class="flex gap-2">
+        <a href="/admin/reports/csv?start={{ start }}&end={{ end }}" class="btn btn-outline text-xs">Export CSV</a>
+        <a href="/admin/reports/pdf?start={{ start }}&end={{ end }}" class="btn btn-outline text-xs">Export PDF</a>
+    </div>
+</div>
+
+<!-- Date Filter -->
+<div class="card mb-6">
+    <form method="GET" class="flex items-end gap-4">
+        <div>
+            <label class="text-xs text-gray-500">Start</label>
+            <input type="date" name="start" value="{{ start }}" class="mt-1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">End</label>
+            <input type="date" name="end" value="{{ end }}" class="mt-1">
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+    </form>
+</div>
+
+<!-- Chart -->
+<div class="card mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-300">Daily Revenue</h2>
+        <div class="text-lg font-bold text-green-400">Total: ₱{{ "{:,.2f}".format(grand_total) }}</div>
+    </div>
+    <canvas id="reportChart" height="250"></canvas>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Chart.defaults.color = '#94a3b8';
+new Chart(document.getElementById('reportChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ labels | tojson }},
+        datasets: [{
+            label: 'Revenue (₱)',
+            data: {{ values | tojson }},
+            backgroundColor: 'rgba(34,197,94,0.5)',
+            borderColor: '#22c55e',
+            borderWidth: 1, borderRadius: 3,
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: { grid: { color: 'rgba(139,92,246,.08)' }, ticks: { maxRotation: 45, font: { size: 9 } } },
+            y: { grid: { color: 'rgba(139,92,246,.08)' }, beginAtZero: true }
+        }
+    }
+});
+</script>
+{% endblock %}

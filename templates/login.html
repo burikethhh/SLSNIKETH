@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ 'Admin' if login_type == 'admin' else 'Staff' }} Login — Solo Leveling Gym</title>
+    <link rel="icon" href="/static/logo.jpg" type="image/jpeg">
+    <link href="/static/vendor/css/tailwind.min.css" rel="stylesheet">
+    <link href="/static/vendor/css/fonts.css" rel="stylesheet">
+    <style>
+        html{background:#080b12;color-scheme:dark;}
+        body{background:#080b12;min-height:100vh;font-family:Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;}
+        h1,h2,.brand{font-family:Rajdhani,system-ui,sans-serif;}
+
+        /* Anime-style background effects */
+        body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 30% 20%,rgba(124,58,237,.08) 0%,transparent 50%),radial-gradient(ellipse at 70% 80%,rgba(139,92,246,.05) 0%,transparent 50%);animation:bgPulse 8s ease-in-out infinite;pointer-events:none;}
+        body::after{content:'';position:fixed;top:0;left:0;right:0;bottom:0;background:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%237c3aed' fill-opacity='0.02'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");pointer-events:none;opacity:.5;}
+
+        @keyframes bgPulse{0%,100%{transform:rotate(0deg)}50%{transform:rotate(1deg)}}
+        @keyframes fadeInUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes glowPulse{0%,100%{box-shadow:0 0 20px rgba(124,58,237,.15),0 0 60px rgba(124,58,237,.05)}50%{box-shadow:0 0 30px rgba(124,58,237,.25),0 0 80px rgba(124,58,237,.08)}}
+        @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+
+        .login-card{
+            animation:fadeInUp .6s ease-out,glowPulse 4s ease-in-out infinite;
+            background:linear-gradient(135deg,rgba(13,15,26,.97),rgba(20,22,38,.95));
+            border:1px solid rgba(139,92,246,.15);
+            border-radius:1rem;
+            padding:2.5rem;
+            width:24rem;
+            position:relative;
+            z-index:10;
+            backdrop-filter:blur(20px);
+        }
+        .login-card::before{content:'';position:absolute;top:-1px;left:20%;right:20%;height:2px;background:linear-gradient(90deg,transparent,rgba(139,92,246,.5),transparent);border-radius:1px;}
+
+        .login-input{
+            background:rgba(15,17,30,.8);
+            border:1px solid rgba(139,92,246,.15);
+            border-radius:.5rem;
+            padding:.6rem .9rem;
+            color:#e2e8f0;
+            font-size:.875rem;
+            width:100%;
+            transition:all .2s;
+        }
+        .login-input:focus{
+            outline:none;
+            border-color:#7c3aed;
+            box-shadow:0 0 0 2px rgba(124,58,237,.2),0 0 20px rgba(124,58,237,.08);
+        }
+        .login-btn{
+            width:100%;
+            padding:.65rem;
+            border-radius:.5rem;
+            font-size:.9rem;
+            font-weight:600;
+            color:#fff;
+            border:none;
+            cursor:pointer;
+            transition:all .3s;
+            font-family:Rajdhani,system-ui,sans-serif;
+            letter-spacing:.03em;
+            text-transform:uppercase;
+        }
+        .login-btn:hover{transform:translateY(-1px)}
+        .login-btn:active{transform:translateY(0)}
+        .btn-staff{background:linear-gradient(135deg,#7c3aed,#6d28d9);box-shadow:0 4px 20px rgba(124,58,237,.3)}
+        .btn-staff:hover{box-shadow:0 6px 30px rgba(124,58,237,.45);background:linear-gradient(135deg,#8b5cf6,#7c3aed)}
+        .btn-admin{background:linear-gradient(135deg,#f59e0b,#d97706);box-shadow:0 4px 20px rgba(245,158,11,.3)}
+        .btn-admin:hover{box-shadow:0 6px 30px rgba(245,158,11,.45);background:linear-gradient(135deg,#fbbf24,#f59e0b)}
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <!-- Logo & Brand -->
+        <div class="text-center mb-6">
+            <img src="/static/logo.jpg" alt="Solo Leveling" class="w-20 h-20 rounded-xl mx-auto mb-3" style="box-shadow:0 0 25px rgba(139,92,246,.3);">
+            <div class="brand text-2xl font-bold tracking-tight" style="color:#c4b5fd;">Solo Leveling</div>
+            <div class="text-xs font-medium" style="color:rgba(139,92,246,.45);letter-spacing:.08em;text-transform:uppercase;">Fitness & Gym Management</div>
+            {% if login_type == 'admin' %}
+            <div class="mt-3 inline-block px-4 py-1 rounded-full text-xs font-semibold" style="background:rgba(245,158,11,.1);color:#fbbf24;border:1px solid rgba(245,158,11,.2);">
+                Admin Portal
+            </div>
+            {% else %}
+            <div class="mt-3 inline-block px-4 py-1 rounded-full text-xs font-semibold" style="background:rgba(139,92,246,.1);color:#a78bfa;border:1px solid rgba(139,92,246,.2);">
+                Staff Portal
+            </div>
+            {% endif %}
+        </div>
+        {% if error %}
+        <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:.5rem;padding:.6rem .8rem;margin-bottom:1rem;color:#f87171;font-size:.8rem;">
+            {{ error }}
+        </div>
+        {% endif %}
+        <form method="POST" action="{{ '/admin/login' if login_type == 'admin' else '/login' }}" class="space-y-4">
+            <div>
+                <label class="block text-xs mb-1.5 font-medium" style="color:rgba(139,92,246,.5);">Username</label>
+                <input type="text" name="username" required autofocus class="login-input" placeholder="Enter username">
+            </div>
+            <div>
+                <label class="block text-xs mb-1.5 font-medium" style="color:rgba(139,92,246,.5);">Password</label>
+                <input type="password" name="password" required class="login-input" placeholder="Enter password">
+            </div>
+            <button type="submit" class="login-btn {{ 'btn-admin' if login_type == 'admin' else 'btn-staff' }}">
+                Sign In
+            </button>
+        </form>
+        <div class="text-center mt-5">
+            {% if login_type == 'admin' %}
+            <a href="/login" class="text-xs transition-colors" style="color:rgba(139,92,246,.4);" onmouseover="this.style.color='#a78bfa'" onmouseout="this.style.color='rgba(139,92,246,.4)'">Staff Login &rarr;</a>
+            {% else %}
+            <a href="/admin/login" class="text-xs transition-colors" style="color:rgba(139,92,246,.4);" onmouseover="this.style.color='#fbbf24'" onmouseout="this.style.color='rgba(139,92,246,.4)'">Admin Login &rarr;</a>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

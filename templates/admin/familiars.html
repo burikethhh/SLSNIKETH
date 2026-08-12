@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block title %}Familiars — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Familiars</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">People allowed free gym access by admin &middot; Entry/exit is still logged &middot; Face &amp; RFID recognition active</p>
+    </div>
+</div>
+
+{% if request.query_params.get('created') == '1' %}<div class="alert-green mb-4">Familiar added successfully.</div>
+{% elif request.query_params.get('updated') == '1' %}<div class="alert-green mb-4">Familiar updated.</div>
+{% elif request.query_params.get('deleted') == '1' %}<div class="alert-green mb-4">Familiar deleted.</div>
+{% elif request.query_params.get('error') == 'rfid_taken' %}<div class="alert-red mb-4">RFID UID already assigned.</div>
+{% elif request.query_params.get('error') == 'not_found' %}<div class="alert-red mb-4">Familiar not found.</div>
+{% endif %}
+
+<!-- Familiars List -->
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>ID</th><th>Photo</th><th>Name</th><th>RFID</th><th>Phone</th><th>Notes</th><th>Active</th><th>Added By</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for f in familiars %}
+            <tr class="{% if not f.is_active %}opacity-50{% endif %}">
+                <td>{{ f.id }}</td>
+                <td>
+                    {% if f.photo_path %}<img src="/{{ f.photo_path }}" class="w-8 h-8 rounded-full object-cover" onerror="this.style.display='none'" style="border:1px solid #7c3aed;">
+                    {% else %}<div class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-xs text-gray-400">{{ f.name[0]|upper if f.name else '?' }}</div>{% endif %}
+                </td>
+                <td class="font-medium text-gray-200">{{ f.name }}</td>
+                <td class="font-mono text-xs text-gray-400">{{ f.uid or '—' }}</td>
+                <td class="text-sm text-gray-400">{{ f.phone or '—' }}</td>
+                <td class="text-xs text-gray-500 max-w-[160px] truncate">{{ f.notes or '—' }}</td>
+                <td>{% if f.is_active %}<span class="badge badge-green">Active</span>{% else %}<span class="badge badge-red">Disabled</span>{% endif %}</td>
+                <td class="text-xs text-gray-400">{{ f.created_by_name or '—' }}</td>
+                <td class="space-x-2">
+                    <button onclick="showEditFam({{ f.id }}, '{{ f.name }}', '{{ f.phone or '' }}', '{{ f.notes or '' }}', '{{ f.uid or '' }}')"
+                            class="text-xs text-purple-400 hover:text-purple-300">Edit</button>
+                    <form method="POST" action="/admin/familiars/{{ f.id }}/toggle" class="inline">
+                        <button class="text-xs text-purple-400 hover:text-purple-300">{{ 'Disable' if f.is_active else 'Enable' }}</button>
+                    </form>
+                    <form method="POST" action="/admin/familiars/{{ f.id }}/delete" class="inline"
+                          onsubmit="return confirm('Delete {{ f.name }}? Removes all attendance records.');">
+                        <button class="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not familiars %}<tr><td colspan="9" class="text-center text-gray-500 py-6">No familiars yet.</td></tr>{% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Edit Familiar Modal (with 3-angle face capture) -->
+<div id="editFamModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card" style="width:640px;max-width:96vw;max-height:92vh;overflow-y:auto;">
+        <h3 class="text-sm font-semibold mb-3">Edit Familiar</h3>
+        <form id="editFamForm" method="POST" enctype="multipart/form-data" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-500">Name *</label>
+                    <input type="text" name="name" id="efName" required class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Phone</label>
+                    <input type="text" name="phone" id="efPhone" class="w-full mt-1" placeholder="Optional">
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Notes</label>
+                <input type="text" name="notes" id="efNotes" class="w-full mt-1" placeholder="e.g. Owner's brother">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">RFID UID</label>
+                <div class="flex gap-2 mt-1">
+                    <input type="text" name="rfid_uid" id="efRfid" class="flex-1" placeholder="Scan or type">
+                    <button type="button" onclick="listenEditFamRfid()" class="btn btn-outline text-xs" id="efRfidBtn">Scan</button>
+                </div>
+            </div>
+
+            <!-- 3-Angle Face Capture -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-xs text-gray-500">Face Capture — 3 Angles <span class="text-gray-600">(optional, improves recognition)</span></label>
+                    <span class="text-xs text-purple-400" id="efCapturedCount">0 / 3 angles</span>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="flex items-center gap-1 mb-1">
+                            <select id="efCamSelect" class="text-xs flex-1" onchange="switchEditFamCam()">
+                                <option value="cam1">Camera 1 (Face)</option>
+                                <option value="cam2">Camera 2 (Overhead)</option>
+                            </select>
+                            <button type="button" onclick="startEditFamCam()" class="btn btn-outline text-xs px-2" id="efCamBtn">Start</button>
+                        </div>
+                        <div class="relative rounded overflow-hidden mb-2" style="background:#000;min-height:110px;">
+                            <img id="efCamVideo" class="w-full" style="max-height:140px;object-fit:cover;display:none;">
+                            <div id="efCamFallback" class="flex items-center justify-center text-gray-500 text-xs py-8">Click "Start" to preview</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1">
+                            <button type="button" onclick="captureEfAngle('front')" id="efBtnFront" class="btn btn-outline text-xs py-1.5">📸 Front</button>
+                            <button type="button" onclick="captureEfAngle('left')"  id="efBtnLeft"  class="btn btn-outline text-xs py-1.5">↰ Left</button>
+                            <button type="button" onclick="captureEfAngle('right')" id="efBtnRight" class="btn btn-outline text-xs py-1.5">↱ Right</button>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="space-y-1 mb-2">
+                            <div id="efSlotFront" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="efThumbFront"><span class="text-xs text-gray-600">F</span></div>
+                                <span class="text-xs text-gray-500" id="efLabelFront">Front — waiting</span>
+                            </div>
+                            <div id="efSlotLeft" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="efThumbLeft"><span class="text-xs text-gray-600">L</span></div>
+                                <span class="text-xs text-gray-500" id="efLabelLeft">Left — waiting</span>
+                            </div>
+                            <div id="efSlotRight" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="efThumbRight"><span class="text-xs text-gray-600">R</span></div>
+                                <span class="text-xs text-gray-500" id="efLabelRight">Right — waiting</span>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-600 mb-1">Or upload files:</div>
+                        <input type="file" name="face_front_file" accept="image/*" class="w-full text-xs mb-0.5">
+                        <input type="file" name="face_left_file"  accept="image/*" class="w-full text-xs mb-0.5">
+                        <input type="file" name="face_right_file" accept="image/*" class="w-full text-xs">
+                    </div>
+                </div>
+                <input type="hidden" name="face_photo_b64" id="efFaceB64">
+                <input type="hidden" name="face_front_b64" id="efFaceFront">
+                <input type="hidden" name="face_left_b64"  id="efFaceLeft">
+                <input type="hidden" name="face_right_b64" id="efFaceRight">
+            </div>
+
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Save</button>
+                <button type="button" onclick="hideEditFam()" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Familiar -->
+<div class="card">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add Familiar</h3>
+    <form method="POST" action="/admin/familiars" enctype="multipart/form-data" class="space-y-4">
+        <div class="grid grid-cols-4 gap-3 items-end">
+            <div>
+                <label class="text-xs text-gray-500">Name *</label>
+                <input type="text" name="name" required class="w-full mt-1" placeholder="Full name">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Phone</label>
+                <input type="text" name="phone" class="w-full mt-1" placeholder="Optional">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Notes</label>
+                <input type="text" name="notes" class="w-full mt-1" placeholder="e.g. Owner's brother">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">RFID UID</label>
+                <div class="flex gap-1 mt-1">
+                    <input type="text" name="rfid_uid" id="addFamRfid" class="flex-1" placeholder="Scan RFID">
+                    <button type="button" onclick="listenAddFamRfid()" class="btn btn-outline text-xs" id="addFamRfidBtn">Scan</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3-Angle Face Capture -->
+        <div>
+            <div class="flex items-center justify-between mb-2">
+                <label class="text-xs text-gray-500 font-medium">Face Capture — 3 Angles</label>
+                <span class="text-xs text-purple-400" id="addFamCapturedCount">0 / 3 angles</span>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <select id="addFamCamSelect" class="text-xs flex-1" onchange="switchAddFamCam()">
+                            <option value="cam1">Camera 1 (Face)</option>
+                            <option value="cam2">Camera 2 (Overhead)</option>
+                        </select>
+                        <button type="button" onclick="startFamCam()" class="btn btn-outline text-xs" id="addFamCamBtn">Start</button>
+                    </div>
+                    <div class="relative rounded overflow-hidden mb-2" style="background:#000;min-height:130px;">
+                        <img id="addFamCamVideo" class="w-full" style="max-height:160px;object-fit:cover;display:none;">
+                        <div id="addFamCamFallback" class="flex items-center justify-center text-gray-500 text-xs py-10">Click "Start" to preview</div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-1">
+                        <button type="button" onclick="captureFamAngle('front')" id="addFamBtnFront" class="btn btn-outline text-xs py-2">📸 Front</button>
+                        <button type="button" onclick="captureFamAngle('left')"  id="addFamBtnLeft"  class="btn btn-outline text-xs py-2">↰ Left</button>
+                        <button type="button" onclick="captureFamAngle('right')" id="addFamBtnRight" class="btn btn-outline text-xs py-2">↱ Right</button>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-1.5">Position person, capture each angle. They can turn between shots.</p>
+                </div>
+                <div>
+                    <div class="space-y-1.5 mb-3">
+                        <div id="addFamSlotFront" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addFamThumbFront"><span class="text-xs text-gray-600">Front</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addFamLabelFront">Front — waiting</span>
+                        </div>
+                        <div id="addFamSlotLeft" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addFamThumbLeft"><span class="text-xs text-gray-600">Left</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addFamLabelLeft">Left — waiting</span>
+                        </div>
+                        <div id="addFamSlotRight" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addFamThumbRight"><span class="text-xs text-gray-600">Right</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addFamLabelRight">Right — waiting</span>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-600 mb-1">Or upload files:</div>
+                    <input type="file" name="face_front_file" accept="image/*" class="w-full text-xs mb-0.5">
+                    <input type="file" name="face_left_file"  accept="image/*" class="w-full text-xs mb-0.5">
+                    <input type="file" name="face_right_file" accept="image/*" class="w-full text-xs">
+                    <input type="hidden" name="face_photo_b64" id="addFamFaceB64">
+                    <input type="hidden" name="face_front_b64" id="addFamFaceFront">
+                    <input type="hidden" name="face_left_b64"  id="addFamFaceLeft">
+                    <input type="hidden" name="face_right_b64" id="addFamFaceRight">
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Add Familiar</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ══════════════════════════════════════════════════════════════════
+// ID-based camera engine (same as staff.html — null-safe)
+// ══════════════════════════════════════════════════════════════════
+function makeFamCamEngine(ids) {
+    let ws=null, poll=null, hb=null, cam=ids.cam||'cam1';
+    const hid = ids.holderId;
+    const $  = (id) => document.getElementById(id);
+    const $feed   = () => $(ids.feedId);
+    const $fb     = () => $(ids.fallbackId);
+    const $camBtn = () => $(ids.camBtnId);
+
+    async function acquire(){try{const r=await fetch(`/api/camera-context/acquire?context=admin_staff&holder=${hid}`);const d=await r.json();if(!d.acquired)console.warn('[cam] busy',d.holder);}catch(e){}}
+    async function release(){stopHb();stop();try{await fetch(`/api/camera-context/release?holder=${hid}`,{method:'POST'});}catch(e){}}
+    function startHb(){stopHb();hb=setInterval(async()=>{try{await fetch(`/api/camera-context/heartbeat?holder=${hid}`);}catch(e){}},10000);}
+    function stopHb(){if(hb){clearInterval(hb);hb=null;}}
+
+    async function start(){
+        const fb=$fb(),feed=$feed(),btn=$camBtn();
+        if(!fb||!feed) return;
+        if(ws||poll){stop();if(btn)btn.textContent='Start';await release();return;}
+        fb.textContent='Checking camera…';fb.style.color='#9ca3af';fb.style.display='';
+        if(btn)btn.textContent='Stop';
+        await acquire();
+        // Wait up to 12 s for a live frame (handles reconnect backoff)
+        let preflightOk=false;const deadline=Date.now()+12000;
+        while(!preflightOk&&Date.now()<deadline){
+            try{const r=await fetch(`/api/camera-snapshot?cam=${cam}&_t=${Date.now()}`);
+                if(r.ok&&r.status!==204){const b=await r.blob();if(b.size>200){const u=URL.createObjectURL(b);feed.src=u;feed.style.display='';fb.style.display='none';preflightOk=true;break;}}}catch(e){}
+            const waited=Math.round((Date.now()-(deadline-12000))/1000);
+            fb.textContent=`Camera starting… (${waited}s)`;
+            await new Promise(r=>setTimeout(r,1200));
+        }
+        if(!preflightOk){fb.textContent='Camera not ready — frames will appear once it reconnects';fb.style.color='#fbbf24';}
+        const proto=location.protocol==='https:'?'wss':'ws';
+        ws=new WebSocket(`${proto}://${location.host}/ws/camera${cam==='cam2'?'2':'1'}`);
+        ws.binaryType='arraybuffer';let alive=false;
+        ws.onmessage=(e)=>{alive=true;const b=new Blob([e.data],{type:'image/jpeg'});const u=URL.createObjectURL(b);const f=$feed(),fall=$fb(),btn=$camBtn();if(!f)return;const o=f.src;f.src=u;f.style.display='';if(fall)fall.style.display='none';if(btn)btn.textContent='Stop';if(o&&o.startsWith('blob:'))URL.revokeObjectURL(o);};
+        ws.onopen=()=>startHb();
+        ws.onerror=()=>{if(!alive){ws=null;_startPoll();}};
+        setTimeout(()=>{if(!alive&&ws){ws.close();ws=null;_startPoll();}},2000);
+    }
+    function _startPoll(){let busy=false;poll=setInterval(async()=>{if(busy)return;busy=true;try{const r=await fetch(`/api/camera-snapshot?cam=${cam}&_t=${Date.now()}`);if(r.ok&&r.status!==204){const b=await r.blob();if(b.size>200){const u=URL.createObjectURL(b);const f=$feed(),fall=$fb(),btn=$camBtn();if(!f){busy=false;return;}const o=f.src;f.src=u;f.style.display='';if(fall)fall.style.display='none';if(btn)btn.textContent='Stop';if(o&&o.startsWith('blob:'))URL.revokeObjectURL(o);}}}catch(e){}busy=false;},250);startHb();}
+    function stop(){if(ws){try{ws.close();}catch(e){}ws=null;}if(poll){clearInterval(poll);poll=null;}stopHb();}
+    async function snapshotHQ(){const resp=await fetch(`/api/camera-snapshot/hq?cam=${cam}`);if(!resp.ok||resp.status===204)throw new Error('No frame — start camera first');const b=await resp.blob();if(b.size<500)throw new Error('Frame too small');return new Promise((ok,fail)=>{const rd=new FileReader();rd.onload=()=>ok(rd.result);rd.onerror=fail;rd.readAsDataURL(b);});}
+    function setCam(c){cam=c;}
+    return{start,stop,snapshotHQ,setCam,release};
+}
+
+// ── Slot UI helpers ───────────────────────────────────────────────
+function setFamSlot(prefix, angle, dataUrl){
+    const A=angle.charAt(0).toUpperCase()+angle.slice(1);
+    const thumb=$(prefix+'Thumb'+A),label=$(prefix+'Label'+A),slot=$(prefix+'Slot'+A),btn=$(prefix+'Btn'+A);
+    if(thumb)thumb.innerHTML='<img src="'+dataUrl+'" class="w-full h-full object-cover">';
+    if(label)label.innerHTML=A+' <span class="badge badge-green ml-1">✓</span>';
+    if(slot){slot.style.borderColor='#22c55e';slot.style.borderStyle='solid';}
+    if(btn){btn.classList.remove('btn-outline');btn.classList.add('btn-success');btn.textContent='✓ '+A;}
+}
+function resetFamSlot(prefix, angle, lbl){
+    const A=angle.charAt(0).toUpperCase()+angle.slice(1);
+    const thumb=$(prefix+'Thumb'+A),label=$(prefix+'Label'+A),slot=$(prefix+'Slot'+A),btn=$(prefix+'Btn'+A);
+    if(thumb)thumb.innerHTML='<span class="text-xs text-gray-600">'+A[0]+'</span>';
+    if(label)label.textContent=A+' — waiting';
+    if(slot){slot.style.borderColor='';slot.style.borderStyle='dashed';}
+    if(btn){btn.classList.add('btn-outline');btn.classList.remove('btn-success');btn.textContent=lbl;}
+}
+function $(id){return document.getElementById(id);}
+
+// ── Edit Familiar engine ──────────────────────────────────────────
+let efSelectedCam='cam1';
+const efAngles={front:null,left:null,right:null};
+const efEngine=makeFamCamEngine({holderId:'fam_edit_'+Date.now(),feedId:'efCamVideo',fallbackId:'efCamFallback',camBtnId:'efCamBtn',cam:'cam1'});
+
+function showEditFam(id,name,phone,notes,rfid){
+    $('editFamForm').action='/admin/familiars/'+id+'/update';
+    $('efName').value=name;$('efPhone').value=phone;$('efNotes').value=notes;$('efRfid').value=rfid;
+    Object.keys(efAngles).forEach(a=>{efAngles[a]=null;});
+    [['front','📸 Front'],['left','↰ Left'],['right','↱ Right']].forEach(([a,lbl])=>{
+        $('efFace'+a[0].toUpperCase()+a.slice(1)).value='';
+        resetFamSlot('ef',a,lbl);
+    });
+    $('efFaceB64').value='';$('efCapturedCount').textContent='0 / 3 angles';
+    $('efCamFallback').textContent='Click "Start" to preview';
+    $('efCamVideo').style.display='none';$('efCamBtn').textContent='Start';
+    $('editFamModal').classList.remove('hidden');
+    efSelectedCam='cam1';$('efCamSelect').value='cam1';efEngine.setCam('cam1');
+}
+function hideEditFam(){$('editFamModal').classList.add('hidden');efEngine.release();}
+function startEditFamCam(){efEngine.start();}
+function switchEditFamCam(){efSelectedCam=$('efCamSelect').value;efEngine.setCam(efSelectedCam);efEngine.stop();efEngine.start();}
+async function captureEfAngle(angle){
+    const A=angle.charAt(0).toUpperCase()+angle.slice(1);
+    const btn=$('efBtn'+A);const orig=btn?btn.textContent:'';
+    if(btn){btn.disabled=true;btn.textContent='…';}
+    try{
+        const du=await efEngine.snapshotHQ();
+        efAngles[angle]=du;
+        $('efFace'+A).value=du;
+        if(angle==='front')$('efFaceB64').value=du;
+        setFamSlot('ef',angle,du);
+        const n=Object.values(efAngles).filter(Boolean).length;
+        $('efCapturedCount').textContent=n+' / 3 angles';
+    }catch(e){alert('Capture failed: '+e.message);if(btn)btn.textContent=orig;}
+    if(btn)btn.disabled=false;
+}
+
+// ── Add Familiar engine ───────────────────────────────────────────
+let addFamSelectedCam='cam1';
+const addFamAngles={front:null,left:null,right:null};
+const addFamEngine=makeFamCamEngine({holderId:'fam_add_'+Date.now(),feedId:'addFamCamVideo',fallbackId:'addFamCamFallback',camBtnId:'addFamCamBtn',cam:'cam1'});
+
+function startFamCam(){addFamEngine.start();}
+function switchAddFamCam(){addFamSelectedCam=$('addFamCamSelect').value;addFamEngine.setCam(addFamSelectedCam);addFamEngine.stop();addFamEngine.start();}
+async function captureFamAngle(angle){
+    const A=angle.charAt(0).toUpperCase()+angle.slice(1);
+    const btn=$('addFamBtn'+A);const orig=btn?btn.textContent:'';
+    if(btn){btn.disabled=true;btn.textContent='…';}
+    try{
+        const du=await addFamEngine.snapshotHQ();
+        addFamAngles[angle]=du;
+        $('addFamFace'+A).value=du;
+        if(angle==='front')$('addFamFaceB64').value=du;
+        setFamSlot('addFam',angle,du);
+        const n=Object.values(addFamAngles).filter(Boolean).length;
+        $('addFamCapturedCount').textContent=n+' / 3 angles';
+    }catch(e){alert('Capture failed: '+e.message);if(btn)btn.textContent=orig;}
+    if(btn)btn.disabled=false;
+}
+
+// ── RFID scanning ─────────────────────────────────────────────────
+let famRfidPoll=null;
+function listenAddFamRfid(){
+    const btn=$('addFamRfidBtn');
+    if(famRfidPoll){clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');return;}
+    btn.textContent='Scanning…';btn.classList.add('animate-pulse');
+    famRfidPoll=setInterval(async()=>{try{const r=await fetch('/api/rfid-latest');const d=await r.json();if(d.uid){$('addFamRfid').value=d.uid;clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');}}catch(e){}},500);
+    setTimeout(()=>{if(famRfidPoll){clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');}},15000);
+}
+function listenEditFamRfid(){
+    const btn=$('efRfidBtn');
+    if(famRfidPoll){clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');return;}
+    btn.textContent='Scanning…';btn.classList.add('animate-pulse');
+    famRfidPoll=setInterval(async()=>{try{const r=await fetch('/api/rfid-latest');const d=await r.json();if(d.uid){$('efRfid').value=d.uid;clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');}}catch(e){}},500);
+    setTimeout(()=>{if(famRfidPoll){clearInterval(famRfidPoll);famRfidPoll=null;btn.textContent='Scan';btn.classList.remove('animate-pulse');}},15000);
+}
+window.addEventListener('beforeunload',()=>{efEngine.release();addFamEngine.release();if(famRfidPoll)clearInterval(famRfidPoll);});
+</script>
+{% endblock %}

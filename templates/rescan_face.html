@@ -1,0 +1,587 @@
+{% extends "base.html" %}
+{% block title %}Rescan Face — {{ member.name }}{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <div class="flex items-center gap-3 mb-6">
+        <div class="flex items-center gap-2 text-sm">
+            <span class="text-gray-400">Rescan Face for</span>
+            <span class="font-semibold" style="color:#c4b5fd;">{{ member.name }}</span>
+            <span class="text-gray-600 ml-2">—</span>
+            <a href="/members/{{ member.id }}" class="text-xs text-purple-400 hover:text-purple-300">Back to Profile</a>
+        </div>
+    </div>
+
+    {% if error %}
+    <div class="alert-red mb-4 text-sm">{{ error }}</div>
+    {% endif %}
+
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-2">Face Capture — {{ member.name }}</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">Capture 3 angles: front, left, right.</p>
+
+        <!-- Camera Selection -->
+        <div class="mb-4 flex items-center gap-3">
+            <label class="text-xs text-gray-400">Camera:</label>
+            <select id="cameraSelect" class="text-xs flex-1 max-w-xs" onchange="switchCamera()">
+                <option value="cam1">Camera 1 (Face Recognition)</option>
+                <option value="cam2">Camera 2 (Overhead/Tailgate)</option>
+            </select>
+            <button type="button" onclick="detectBestCamera()" class="btn btn-outline text-xs" title="Auto-detect best camera">Auto</button>
+        </div>
+
+        <!-- Diagnostics bar -->
+        <div id="diagBar" class="mb-4 p-3 rounded text-xs font-mono" style="background:#111827;border:1px solid #374151;max-height:120px;overflow-y:auto;">
+            <span class="text-gray-500">Checking camera...</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-6">
+            <!-- Camera Preview -->
+            <div>
+                <div class="mb-2 flex items-center justify-between">
+                    <label class="text-xs text-gray-400" id="camLabel">Camera — Live Feed</label>
+                    <span id="camStatus" class="text-xs text-gray-500">Connecting...</span>
+                </div>
+                <div class="relative rounded overflow-hidden" id="camContainer" style="background:#000;min-height:200px;">
+                    <img id="camFeed" class="w-full" style="max-height:280px;object-fit:cover;display:none;">
+                    <canvas id="faceCanvas" class="absolute top-0 left-0 w-full h-full" style="pointer-events:none;"></canvas>
+                    <div id="camOverlay" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Connecting to Camera 1...</div>
+                    <div id="faceStatus" class="absolute top-2 left-2 px-2 py-1 rounded text-xs font-mono" style="background:rgba(0,0,0,.7);color:#6b7280;display:none;">
+                        <span id="faceStatusIcon">&#x25CB;</span> <span id="faceStatusText">No face</span>
+                    </div>
+                    <div id="faceConfBadge" class="absolute top-2 right-2 px-2 py-1 rounded text-xs font-bold" style="background:rgba(0,0,0,.7);display:none;">
+                        <span id="faceConfText">0%</span>
+                    </div>
+                </div>
+                <div class="grid grid-cols-3 gap-2 mt-2">
+                    <button type="button" onclick="captureAngle('front')" class="btn btn-outline text-xs" id="btnFront">
+                        <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Front
+                    </button>
+                    <button type="button" onclick="captureAngle('left')" class="btn btn-outline text-xs" id="btnLeft">
+                        <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Left
+                    </button>
+                    <button type="button" onclick="captureAngle('right')" class="btn btn-outline text-xs" id="btnRight">
+                        <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>Right
+                    </button>
+                </div>
+                <p class="text-xs text-gray-600 mt-2">Position the member, then click each angle button.</p>
+            </div>
+
+            <!-- Captured Photos Preview -->
+            <div>
+                <div class="text-xs text-gray-400 mb-2">Captured Photos (<span id="capturedCount">0</span>/3)</div>
+                <div class="space-y-2" id="photoList">
+                    <div class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700" id="slotFront">
+                        <div class="w-14 h-14 rounded bg-gray-800 flex items-center justify-center text-gray-600 text-xs" id="prevFront">Front</div>
+                        <span class="text-xs text-gray-500 flex-1" id="labelFront">Front — waiting</span>
+                    </div>
+                    <div class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700" id="slotLeft">
+                        <div class="w-14 h-14 rounded bg-gray-800 flex items-center justify-center text-gray-600 text-xs" id="prevLeft">Left</div>
+                        <span class="text-xs text-gray-500 flex-1" id="labelLeft">Left — waiting</span>
+                    </div>
+                    <div class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700" id="slotRight">
+                        <div class="w-14 h-14 rounded bg-gray-800 flex items-center justify-center text-gray-600 text-xs" id="prevRight">Right</div>
+                        <span class="text-xs text-gray-500 flex-1" id="labelRight">Right — waiting</span>
+                    </div>
+                </div>
+
+                <!-- Manual file upload fallback -->
+                <div class="mt-4 pt-3 border-t border-gray-800">
+                    <div class="text-xs text-gray-500 mb-2">Or upload files:</div>
+                    <div class="space-y-1">
+                        <input type="file" id="fileFront" accept="image/*" class="w-full text-xs" onchange="fileSelected('front', this)">
+                        <input type="file" id="fileLeft" accept="image/*" class="w-full text-xs" onchange="fileSelected('left', this)">
+                        <input type="file" id="fileRight" accept="image/*" class="w-full text-xs" onchange="fileSelected('right', this)">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Submit Form -->
+        <form method="POST" action="/members/{{ member.id }}/re-scan" enctype="multipart/form-data" id="rescanForm" class="mt-6 pt-4 border-t border-gray-800">
+            <input type="hidden" name="face_front_b64" id="b64Front" value="">
+            <input type="hidden" name="face_left_b64" id="b64Left" value="">
+            <input type="hidden" name="face_right_b64" id="b64Right" value="">
+            <div id="fileInputs"></div>
+            <div class="flex gap-3">
+                <button type="submit" class="btn btn-primary" id="submitBtn" disabled>Save Face</button>
+                <a href="/members/{{ member.id }}" class="btn btn-outline text-xs">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// ── Face Capture — polling backend snapshots ────────────────────
+const captured = { front: null, left: null, right: null };
+const angles = ['front', 'left', 'right'];
+const diagBar = document.getElementById('diagBar');
+const camFeed = document.getElementById('camFeed');
+const camOverlay = document.getElementById('camOverlay');
+const camStatus = document.getElementById('camStatus');
+const camLabel = document.getElementById('camLabel');
+const cameraSelect = document.getElementById('cameraSelect');
+let previewTimer = null;
+let frameCount = 0;
+let selectedCam = 'cam1';
+
+// ── Camera Context Management ────────────────────────────────────
+const cameraHolderId = 'rescan_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+let heartbeatTimer = null;
+
+async function acquireCameraContext() {
+    try {
+        const resp = await fetch(`/api/camera-context/acquire?context=member_reg&holder=${cameraHolderId}`);
+        const data = await resp.json();
+        if (data.acquired) {
+            diagLog('Camera context acquired', '#34d399');
+            startHeartbeat();
+        } else {
+            diagLog('Camera busy: ' + (data.holder || 'unknown'), '#fbbf24');
+        }
+    } catch(e) {
+        diagLog('Failed to acquire camera context', '#f87171');
+    }
+}
+
+async function releaseCameraContext() {
+    try {
+        await fetch(`/api/camera-context/release?holder=${cameraHolderId}`, {method: 'POST'});
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+    } catch(e) {}
+}
+
+function startHeartbeat() {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(async () => {
+        try {
+            await fetch(`/api/camera-context/heartbeat?holder=${cameraHolderId}`);
+        } catch(e) {}
+    }, 10000);
+}
+
+function diagLog(msg, color) {
+    const ts = new Date().toLocaleTimeString();
+    diagBar.innerHTML += `<div style="color:${color || '#9ca3af'}">[${ts}] ${msg}</div>`;
+    diagBar.scrollTop = diagBar.scrollHeight;
+    console.log('[face-rescan] ' + msg);
+}
+
+// ── Camera Switching ────────────────────────────────────────────
+function switchCamera() {
+    selectedCam = cameraSelect.value;
+    camLabel.textContent = (selectedCam === 'cam1' ? 'Camera 1' : 'Camera 2') + ' — Live Feed';
+    camOverlay.textContent = 'Connecting to ' + (selectedCam === 'cam1' ? 'Camera 1' : 'Camera 2') + '...';
+    stopPreview();
+    testSnapshot().then(ok => {
+        if (ok) startPreview();
+    });
+}
+
+async function detectBestCamera() {
+    diagLog('Auto-detecting best camera...', '#60a5fa');
+    selectedCam = 'cam1';
+    try {
+        const r1 = await fetch('/api/camera-snapshot?cam=cam1');
+        if (r1.ok) {
+            const b1 = await r1.blob();
+            if (b1.size > 10000) {
+                diagLog('Camera 1 available (' + Math.round(b1.size/1024) + 'KB)', '#34d399');
+                cameraSelect.value = 'cam1';
+                switchCamera();
+                return;
+            }
+        }
+    } catch(e) {}
+    selectedCam = 'cam2';
+    try {
+        const r2 = await fetch('/api/camera-snapshot?cam=cam2');
+        if (r2.ok) {
+            const b2 = await r2.blob();
+            if (b2.size > 10000) {
+                diagLog('Camera 2 available (' + Math.round(b2.size/1024) + 'KB)', '#34d399');
+                cameraSelect.value = 'cam2';
+                switchCamera();
+                return;
+            }
+        }
+    } catch(e) {}
+    diagLog('No cameras available — use file upload', '#f87171');
+}
+
+// ── Camera status check ─────────────────────────────────────────
+async function checkCameraStatus() {
+    diagBar.innerHTML = '';
+    diagLog('Checking backend camera status...', '#60a5fa');
+    try {
+        const resp = await fetch('/api/hardware-status');
+        if (!resp.ok) { diagLog('hardware-status returned ' + resp.status, '#f87171'); return null; }
+        const data = await resp.json();
+        const cam1Status = data.details?.camera1_status || 'unknown';
+        diagLog('cam1_status: ' + cam1Status, cam1Status === 'running' ? '#34d399' : '#f87171');
+        return data;
+    } catch(e) {
+        diagLog('Failed to reach backend: ' + e.message, '#f87171');
+        return null;
+    }
+}
+
+// ── Snapshot test ───────────────────────────────────────────────
+async function testSnapshot() {
+    diagLog('Testing snapshot (' + selectedCam + ')...', '#60a5fa');
+    try {
+        const resp = await fetch(`/api/camera-snapshot?cam=${selectedCam}`);
+        if (resp.status === 204) { diagLog('Camera 204 (no frame)', '#fbbf24'); return false; }
+        if (!resp.ok) { diagLog('Snapshot HTTP ' + resp.status, '#f87171'); return false; }
+        const blob = await resp.blob();
+        if (blob.size < 100) { diagLog('Frame too small', '#fbbf24'); return false; }
+        const url = URL.createObjectURL(blob);
+        camFeed.src = url;
+        camFeed.style.display = '';
+        camOverlay.style.display = 'none';
+        return true;
+    } catch(e) {
+        diagLog('Snapshot error: ' + e.message, '#f87171');
+        return false;
+    }
+}
+
+// ── Live preview via WebSocket ──────────────────────────────────
+let previewWs = null;
+
+function startPreview() {
+    const wsNum = selectedCam === 'cam2' ? '2' : '1';
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${proto}://${location.host}/ws/camera${wsNum}`;
+    diagLog('Starting WebSocket preview...', '#60a5fa');
+    camStatus.innerHTML = '<span class="text-green-400">● Live</span>';
+
+    previewWs = new WebSocket(wsUrl);
+    previewWs.binaryType = 'arraybuffer';
+
+    previewWs.onmessage = (evt) => {
+        const blob = new Blob([evt.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const old = camFeed.src;
+        camFeed.src = url;
+        camFeed.style.display = '';
+        camOverlay.style.display = 'none';
+        if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+        frameCount++;
+    };
+
+    previewWs.onerror = () => {
+        diagLog('WebSocket error — HTTP fallback', '#fbbf24');
+        startPreviewFallback();
+    };
+
+    previewWs.onclose = () => {
+        if (previewWs) diagLog('WebSocket closed', '#6b7280');
+    };
+}
+
+function startPreviewFallback() {
+    let busy = false;
+    previewTimer = setInterval(async () => {
+        if (busy) return;
+        busy = true;
+        try {
+            const resp = await fetch(`/api/camera-snapshot?cam=${selectedCam}&_t=` + Date.now());
+            if (resp.ok) {
+                const blob = await resp.blob();
+                if (blob.size > 100) {
+                    const url = URL.createObjectURL(blob);
+                    const old = camFeed.src;
+                    camFeed.src = url;
+                    camFeed.style.display = '';
+                    camOverlay.style.display = 'none';
+                    if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+                    frameCount++;
+                }
+            }
+        } catch(e) {}
+        busy = false;
+    }, 250);
+}
+
+function stopPreview() {
+    if (previewWs) { try { previewWs.close(); } catch(e){} previewWs = null; }
+    if (previewTimer) { clearInterval(previewTimer); previewTimer = null; }
+}
+
+// ── Face Detection Overlay ───────────────────────────────────────
+const faceCanvas = document.getElementById('faceCanvas');
+const faceCtx = faceCanvas.getContext('2d');
+const faceStatusEl = document.getElementById('faceStatus');
+const faceStatusIcon = document.getElementById('faceStatusIcon');
+const faceStatusText = document.getElementById('faceStatusText');
+const faceConfBadge = document.getElementById('faceConfBadge');
+const faceConfText = document.getElementById('faceConfText');
+let faceDetectTimer = null;
+let scanAngle = 0;
+
+function startFaceDetection() {
+    if (faceDetectTimer) return;
+    faceStatusEl.style.display = '';
+    faceDetectTimer = setInterval(pollFaceDetection, 200);
+}
+
+function stopFaceDetection() {
+    if (faceDetectTimer) { clearInterval(faceDetectTimer); faceDetectTimer = null; }
+    faceStatusEl.style.display = 'none';
+    faceConfBadge.style.display = 'none';
+    clearCanvas();
+}
+
+function clearCanvas() {
+    faceCanvas.width = faceCanvas.offsetWidth;
+    faceCanvas.height = faceCanvas.offsetHeight;
+    faceCtx.clearRect(0, 0, faceCanvas.width, faceCanvas.height);
+}
+
+async function pollFaceDetection() {
+    try {
+        const resp = await fetch(`/api/face-detect/registration?cam=${selectedCam}&_t=${Date.now()}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        drawFaceOverlay(data);
+    } catch(e) {}
+}
+
+function drawFaceOverlay(data) {
+    const img = camFeed;
+    if (!img || img.style.display === 'none') return;
+
+    const rect = img.getBoundingClientRect();
+    const container = document.getElementById('camContainer');
+    const cRect = container.getBoundingClientRect();
+    faceCanvas.width = rect.width;
+    faceCanvas.height = rect.height;
+    faceCanvas.style.left = (rect.left - cRect.left) + 'px';
+    faceCanvas.style.top = (rect.top - cRect.top) + 'px';
+    faceCanvas.style.width = rect.width + 'px';
+    faceCanvas.style.height = rect.height + 'px';
+
+    const ctx = faceCtx;
+    ctx.clearRect(0, 0, faceCanvas.width, faceCanvas.height);
+
+    const fw = data.frame_w || 1;
+    const fh = data.frame_h || 1;
+    const scaleX = faceCanvas.width / fw;
+    const scaleY = faceCanvas.height / fh;
+
+    if (!data.faces || data.faces.length === 0) {
+        faceStatusIcon.textContent = '\u25CB';
+        faceStatusText.textContent = 'Scanning...';
+        faceStatusEl.style.color = '#fbbf24';
+        faceConfBadge.style.display = 'none';
+        drawScanLine(ctx);
+        return;
+    }
+
+    const face = data.faces[0];
+    const conf = face.confidence || 0;
+
+    faceStatusIcon.textContent = '\u25CF';
+    faceStatusText.textContent = 'Face Detected';
+    faceStatusEl.style.color = conf > 0.8 ? '#34d399' : conf > 0.5 ? '#fbbf24' : '#f87171';
+
+    faceConfBadge.style.display = '';
+    faceConfText.textContent = Math.round(conf * 100) + '%';
+    faceConfBadge.style.color = conf > 0.8 ? '#34d399' : conf > 0.5 ? '#fbbf24' : '#f87171';
+
+    data.faces.forEach((f, idx) => {
+        const [bx, by, bw, bh] = f.box;
+        const x = bx * scaleX, y = by * scaleY, w = bw * scaleX, h = bh * scaleY;
+        const c = f.confidence || 0;
+        const color = c > 0.8 ? '#34d399' : c > 0.5 ? '#fbbf24' : '#f87171';
+        const isPrimary = idx === 0;
+
+        if (isPrimary) { ctx.shadowColor = color; ctx.shadowBlur = 12; }
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = isPrimary ? 2 : 1;
+        ctx.globalAlpha = isPrimary ? 1.0 : 0.5;
+
+        const cornerLen = Math.min(w, h) * 0.2;
+        ctx.beginPath(); ctx.moveTo(x, y + cornerLen); ctx.lineTo(x, y); ctx.lineTo(x + cornerLen, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + cornerLen); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, y + h - cornerLen); ctx.lineTo(x, y + h); ctx.lineTo(x + cornerLen, y + h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x + w - cornerLen, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - cornerLen); ctx.stroke();
+
+        ctx.setLineDash([4, 4]); ctx.lineWidth = 1; ctx.globalAlpha = isPrimary ? 0.4 : 0.2;
+        ctx.strokeRect(x, y, w, h);
+        ctx.setLineDash([]); ctx.globalAlpha = 1.0; ctx.shadowBlur = 0;
+
+        if (f.landmarks && f.landmarks.length === 5 && isPrimary) {
+            const lm = f.landmarks.map(p => [p[0] * scaleX, p[1] * scaleY]);
+            ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.globalAlpha = 0.6;
+            ctx.beginPath(); ctx.moveTo(lm[0][0], lm[0][1]); ctx.lineTo(lm[1][0], lm[1][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[0][0], lm[0][1]); ctx.lineTo(lm[2][0], lm[2][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[1][0], lm[1][1]); ctx.lineTo(lm[2][0], lm[2][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[2][0], lm[2][1]); ctx.lineTo(lm[3][0], lm[3][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[2][0], lm[2][1]); ctx.lineTo(lm[4][0], lm[4][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[3][0], lm[3][1]); ctx.lineTo(lm[4][0], lm[4][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[0][0], lm[0][1]); ctx.lineTo(lm[3][0], lm[3][1]); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(lm[1][0], lm[1][1]); ctx.lineTo(lm[4][0], lm[4][1]); ctx.stroke();
+            ctx.globalAlpha = 1.0;
+
+            lm.forEach((pt, li) => {
+                ctx.beginPath(); ctx.arc(pt[0], pt[1], 3, 0, Math.PI * 2);
+                ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = 8; ctx.fill(); ctx.shadowBlur = 0;
+            });
+
+            scanAngle += 0.15;
+            ctx.globalAlpha = 0.4; ctx.strokeStyle = color; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.arc(lm[2][0], lm[2][1], w * 0.35, scanAngle, scanAngle + Math.PI * 1.2); ctx.stroke();
+            ctx.beginPath(); ctx.arc(lm[2][0], lm[2][1], w * 0.35, scanAngle + Math.PI, scanAngle + Math.PI * 2.2); ctx.stroke();
+            ctx.globalAlpha = 1.0;
+        }
+    });
+}
+
+function drawScanLine(ctx) {
+    scanAngle += 0.03;
+    const cx = faceCanvas.width / 2, cy = faceCanvas.height / 2;
+    const r = Math.min(cx, cy) * 0.6;
+    ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 1; ctx.globalAlpha = 0.3;
+    ctx.beginPath(); ctx.arc(cx, cy, r, scanAngle, scanAngle + Math.PI * 0.6); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, r * 0.6, -scanAngle, -scanAngle + Math.PI * 0.8); ctx.stroke();
+    ctx.globalAlpha = 1.0;
+}
+
+// Hook into preview
+const _origStartPreview = startPreview;
+startPreview = function() { _origStartPreview(); startFaceDetection(); };
+const _origStopPreview = stopPreview;
+stopPreview = function() { _origStopPreview(); stopFaceDetection(); };
+
+window.addEventListener('beforeunload', () => { stopPreview(); releaseCameraContext(); });
+
+// ── Capture ─────────────────────────────────────────────────────
+async function captureAngle(angle) {
+    const btn = document.getElementById('btn' + angle.charAt(0).toUpperCase() + angle.slice(1));
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Capturing...';
+
+    try {
+        diagLog('Capturing ' + angle + ' from ' + selectedCam + '...', '#c084fc');
+        const resp = await fetch(`/api/camera-snapshot/hq?cam=${selectedCam}`);
+        if (resp.status === 204) throw new Error('Camera returned no frame (204)');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        if (blob.size < 500) throw new Error('Frame too small (' + blob.size + ' bytes)');
+        const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+
+        captured[angle] = dataUrl;
+        document.getElementById('b64' + angle.charAt(0).toUpperCase() + angle.slice(1)).value = dataUrl;
+        updateSlot(angle, dataUrl);
+        updateState();
+        diagLog(angle + ' captured OK (' + blob.size + ' bytes)', '#34d399');
+    } catch(e) {
+        diagLog('CAPTURE FAILED (' + angle + '): ' + e.message, '#f87171');
+        alert('Capture failed: ' + e.message);
+        btn.innerHTML = origHTML;
+        btn.disabled = false;
+    }
+}
+
+function fileSelected(angle, input) {
+    if (!input.files[0]) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        captured[angle] = e.target.result;
+        document.getElementById('b64' + angle.charAt(0).toUpperCase() + angle.slice(1)).value = e.target.result;
+        updateSlot(angle, e.target.result);
+        updateState();
+        diagLog(angle + ' uploaded from file', '#34d399');
+    };
+    reader.readAsDataURL(input.files[0]);
+}
+
+function updateSlot(angle, dataUrl) {
+    const label = angle.charAt(0).toUpperCase() + angle.slice(1);
+    const prev = document.getElementById('prev' + label);
+    const slot = document.getElementById('slot' + label);
+    const lbl = document.getElementById('label' + label);
+    prev.outerHTML = `<img src="${dataUrl}" class="w-14 h-14 rounded object-cover" id="prev${label}">`;
+    slot.style.borderColor = '#22c55e';
+    slot.style.borderStyle = 'solid';
+    lbl.innerHTML = label + ' <span class="badge badge-green ml-1">\u2713</span>';
+}
+
+function updateState() {
+    const count = angles.filter(a => captured[a]).length;
+    document.getElementById('capturedCount').textContent = count;
+    document.getElementById('submitBtn').disabled = count < 3;
+    angles.forEach(a => {
+        const btn = document.getElementById('btn' + a.charAt(0).toUpperCase() + a.slice(1));
+        if (captured[a]) {
+            btn.classList.remove('btn-outline');
+            btn.classList.add('btn-success');
+            btn.innerHTML = '\u2713 ' + a.charAt(0).toUpperCase() + a.slice(1);
+            btn.disabled = false;
+        }
+    });
+}
+
+// ── Init ────────────────────────────────────────────────────────
+async function init() {
+    await acquireCameraContext();
+    const hw = await checkCameraStatus();
+    const cam1Running = hw?.details?.camera1_status === 'running';
+
+    if (!cam1Running) {
+        diagLog('Camera 1 not running — waiting...', '#fbbf24');
+        camOverlay.textContent = 'Camera starting up, please wait…';
+        camOverlay.style.color = '#fbbf24';
+        camStatus.innerHTML = '<span class="text-yellow-400">● Starting…</span>';
+    }
+
+    let snapOk = false;
+    const startWait = Date.now();
+    while (!snapOk && (Date.now() - startWait) < 20000) {
+        snapOk = await testSnapshot();
+        if (!snapOk) {
+            const elapsed = Math.round((Date.now() - startWait) / 1000);
+            diagLog('Camera not ready (' + elapsed + 's) — retrying…', '#fbbf24');
+            camOverlay.textContent = 'Camera starting up… (' + elapsed + 's)';
+            camOverlay.style.color = '#fbbf24';
+            await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+
+    if (!snapOk) {
+        diagLog('cam1 unavailable — trying Camera 2…', '#60a5fa');
+        selectedCam = 'cam2';
+        cameraSelect.value = 'cam2';
+        camLabel.textContent = 'Camera 2 — Live Feed';
+        snapOk = await testSnapshot();
+    }
+
+    if (snapOk) {
+        startPreview();
+    } else {
+        diagLog('No camera feed — use file upload below.', '#f87171');
+        camOverlay.textContent = 'Camera unavailable — use file upload below';
+        camOverlay.style.color = '#f87171';
+        camStatus.innerHTML = '<span class="text-red-400">● No feed</span>';
+    }
+
+    diagLog('Ready. Capture 3 angles.', '#60a5fa');
+}
+
+init();
+
+// Release camera on form submit
+document.getElementById('rescanForm').addEventListener('submit', () => {
+    stopPreview();
+    releaseCameraContext();
+});
+</script>
+{% endblock %}

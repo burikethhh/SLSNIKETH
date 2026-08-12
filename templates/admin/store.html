@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Store Products — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Store Products</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Manage inventory &middot; Set prices &middot; Track stock</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="/admin/store-analytics" class="btn btn-outline text-xs">Store Analytics</a>
+        <a href="/admin/store-reports" class="btn btn-outline text-xs">Reports</a>
+    </div>
+</div>
+
+{% if request.query_params.get('created')=='1' %}<div class="alert-green mb-4">Product added.</div>
+{% elif request.query_params.get('updated')=='1' %}<div class="alert-green mb-4">Product updated.</div>
+{% elif request.query_params.get('deleted')=='1' %}<div class="alert-green mb-4">Product deleted.</div>
+{% elif request.query_params.get('restocked')=='1' %}<div class="alert-green mb-4">Stock updated.</div>
+{% elif request.query_params.get('error')=='dup' %}<div class="alert-red mb-4">A product with that name already exists.</div>
+{% elif request.query_params.get('error')=='in_use' %}<div class="alert-red mb-4">Cannot delete a product that has sales records.</div>
+{% elif request.query_params.get('error')=='negative_stock' %}<div class="alert-red mb-4">Cannot set stock below zero.</div>{% endif %}
+
+<!-- Low-stock alerts -->
+{% set low = products | selectattr('stock', 'le', 5) | selectattr('is_active', 'eq', 1) | list %}
+{% if low %}
+<div class="alert-yellow mb-4 text-sm">
+    <strong>Low Stock Alert:</strong>
+    {% for p in low %}
+    <span class="ml-2 font-mono">{{ p.name }} ({{ p.stock }} left)</span>{% if not loop.last %},{% endif %}
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Product Table -->
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th><th>Name</th><th>Category</th><th>Description</th>
+                <th>Price</th><th>Stock</th><th>Min Stock</th><th>Status</th><th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in products %}
+            <tr class="{% if not p.is_active %}opacity-50{% endif %}">
+                <td>{{ p.id }}</td>
+                <td class="font-medium text-gray-200">{{ p.name }}</td>
+                <td><span class="badge badge-blue">{{ p.category or 'General' }}</span></td>
+                <td class="text-xs text-gray-400 max-w-[160px] truncate">{{ p.description or '—' }}</td>
+                <td class="font-semibold text-green-400">₱{{ "{:,.2f}".format(p.price) }}</td>
+                <td>
+                    <span class="font-bold {% if p.stock <= p.low_stock_threshold and p.is_active %}text-red-400{% elif p.stock <= p.low_stock_threshold * 2 and p.is_active %}text-yellow-400{% else %}text-gray-200{% endif %}">
+                        {{ p.stock }}
+                    </span>
+                </td>
+                <td class="text-xs text-gray-500">{{ p.low_stock_threshold }}</td>
+                <td>
+                    {% if p.is_active %}<span class="badge badge-green">Active</span>
+                    {% else %}<span class="badge badge-red">Inactive</span>{% endif %}
+                </td>
+                <td class="space-x-2">
+                    <button onclick="showEditProduct({{ p.id }},'{{ p.name|replace("'","\\'")|replace('"','\\"') }}','{{ p.category or 'General' }}','{{ p.description or '' }}',{{ p.price }},{{ p.low_stock_threshold }})"
+                            class="text-xs text-purple-400 hover:text-purple-300">Edit</button>
+                    <button onclick="showRestock({{ p.id }},'{{ p.name|replace("'","\\'")|replace('"','\\"') }}',{{ p.stock }})"
+                            class="text-xs text-green-400 hover:text-green-300">Adjust Stock</button>
+                    <form method="POST" action="/admin/store/products/{{ p.id }}/toggle" class="inline">
+                        <button class="text-xs text-yellow-400 hover:text-yellow-300">{{ 'Disable' if p.is_active else 'Enable' }}</button>
+                    </form>
+                    <form method="POST" action="/admin/store/products/{{ p.id }}/delete" class="inline"
+                          onsubmit="return confirm('Delete product \'{{ p.name }}\'? This cannot be undone.');">
+                        <button class="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not products %}
+            <tr><td colspan="9" class="text-center text-gray-500 py-6">No products yet. Add your first product below.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Edit Product Modal -->
+<div id="editProductModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-sm font-semibold mb-3">Edit Product</h3>
+        <form id="editProductForm" method="POST" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+                <div class="col-span-2">
+                    <label class="text-xs text-gray-500">Product Name *</label>
+                    <input type="text" name="name" id="epName" required class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Category</label>
+                    <input type="text" name="category" id="epCategory" class="w-full mt-1" placeholder="e.g. Drinks, Snacks">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Price (₱) *</label>
+                    <input type="number" name="price" id="epPrice" required step="0.01" min="0" class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Low Stock Alert At</label>
+                    <input type="number" name="low_stock_threshold" id="epThreshold" min="0" class="w-full mt-1">
+                </div>
+                <div class="col-span-2">
+                    <label class="text-xs text-gray-500">Description</label>
+                    <input type="text" name="description" id="epDesc" class="w-full mt-1" placeholder="Optional">
+                </div>
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Save</button>
+                <button type="button" onclick="document.getElementById('editProductModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Restock Modal -->
+<div id="restockModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-80">
+        <h3 class="text-sm font-semibold mb-3">Adjust Stock — <span id="restockName"></span></h3>
+        <div class="text-xs text-gray-400 mb-3">Current stock: <span id="restockCurrent" class="font-bold text-gray-200"></span></div>
+        <form id="restockForm" method="POST" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-500">Quantity (positive = add, negative = remove)</label>
+                <input type="number" name="qty" id="restockQty" required step="1" value="1" class="w-full mt-1"
+                       oninput="updateRestockPreview()">
+            </div>
+            <div class="text-xs text-gray-400">New stock: <span id="restockNew" class="font-bold text-green-400"></span></div>
+            <div id="restockWarning" class="text-xs text-red-400 hidden">⚠ Cannot go below zero</div>
+            <div class="flex gap-2">
+                <button type="submit" id="restockBtn" class="btn btn-success flex-1">Add Stock</button>
+                <button type="button" onclick="document.getElementById('restockModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Product -->
+<div class="card">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add New Product</h3>
+    <form method="POST" action="/admin/store/products" class="grid grid-cols-6 gap-3 items-end">
+        <div class="col-span-2">
+            <label class="text-xs text-gray-500">Product Name *</label>
+            <input type="text" name="name" required class="w-full mt-1" placeholder="e.g. Mineral Water 500ml">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Category</label>
+            <input type="text" name="category" class="w-full mt-1" placeholder="Drinks">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Price (₱) *</label>
+            <input type="number" name="price" required step="0.01" min="0" class="w-full mt-1" placeholder="25.00">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Initial Stock</label>
+            <input type="number" name="stock" value="0" min="0" class="w-full mt-1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Low-Stock Alert At</label>
+            <input type="number" name="low_stock_threshold" value="5" min="0" class="w-full mt-1">
+        </div>
+        <div class="col-span-5">
+            <label class="text-xs text-gray-500">Description (optional)</label>
+            <input type="text" name="description" class="w-full mt-1" placeholder="Brief description">
+        </div>
+        <div>
+            <button type="submit" class="btn btn-primary w-full">+ Add Product</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showEditProduct(id, name, cat, desc, price, threshold) {
+    document.getElementById('editProductForm').action = '/admin/store/products/' + id + '/update';
+    document.getElementById('epName').value = name;
+    document.getElementById('epCategory').value = cat;
+    document.getElementById('epDesc').value = desc;
+    document.getElementById('epPrice').value = price;
+    document.getElementById('epThreshold').value = threshold;
+    document.getElementById('editProductModal').classList.remove('hidden');
+}
+function showRestock(id, name, stock) {
+    document.getElementById('restockForm').action = '/admin/store/products/' + id + '/restock';
+    document.getElementById('restockName').textContent = name;
+    document.getElementById('restockCurrent').textContent = stock;
+    document.getElementById('restockQty').value = 1;
+    updateRestockPreview();
+    document.getElementById('restockModal').classList.remove('hidden');
+}
+
+function updateRestockPreview() {
+    const current = parseInt(document.getElementById('restockCurrent').textContent) || 0;
+    const qty = parseInt(document.getElementById('restockQty').value) || 0;
+    const newVal = current + qty;
+    const newEl = document.getElementById('restockNew');
+    const btn = document.getElementById('restockBtn');
+    const warning = document.getElementById('restockWarning');
+
+    newEl.textContent = newVal;
+
+    if (newVal < 0) {
+        warning.classList.remove('hidden');
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'not-allowed';
+    } else {
+        warning.classList.add('hidden');
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.cursor = '';
+    }
+
+    if (qty > 0) {
+        btn.textContent = 'Add ' + qty;
+        btn.style.background = '';
+        btn.style.color = '';
+        newEl.className = 'font-bold text-green-400';
+    } else if (qty < 0) {
+        btn.textContent = 'Remove ' + Math.abs(qty);
+        btn.style.background = 'linear-gradient(135deg,#ef4444,#dc2626)';
+        btn.style.color = '#fff';
+        newEl.className = newVal < 0 ? 'font-bold text-red-400' : 'font-bold text-yellow-400';
+    } else {
+        btn.textContent = 'No Change';
+        btn.style.background = '';
+        btn.style.color = '';
+        newEl.className = 'font-bold text-gray-400';
+    }
+}
+</script>
+{% endblock %}

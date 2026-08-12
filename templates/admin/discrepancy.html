@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Discrepancy Report — Admin{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Discrepancy Report</h1>
+    <p class="text-sm" style="color:rgba(139,92,246,.4);">Compare total entries vs total payments to identify unpaid access</p>
+</div>
+
+<!-- Date Selector -->
+<div class="card mb-6">
+    <form method="GET" class="flex items-end gap-4">
+        <div>
+            <label class="text-xs text-gray-500">Date</label>
+            <input type="date" name="day" value="{{ target_date }}" class="mt-1">
+        </div>
+        <button type="submit" class="btn btn-primary">Check</button>
+    </form>
+</div>
+
+<!-- Summary Cards -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="card text-center">
+        <div class="text-xs text-gray-500 uppercase">RFID/Face Entries</div>
+        <div class="text-3xl font-bold text-purple-400 mt-1">{{ total_unlocks }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs text-gray-500 uppercase">Manual Overrides</div>
+        <div class="text-3xl font-bold text-yellow-400 mt-1">{{ manual_unlocks }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs text-gray-500 uppercase">Total Payments</div>
+        <div class="text-3xl font-bold text-green-400 mt-1">{{ total_payments }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs text-gray-500 uppercase">Discrepancy</div>
+        <div class="text-3xl font-bold {% if discrepancy > 0 %}text-red-400{% elif discrepancy == 0 %}text-green-400{% else %}text-gray-400{% endif %} mt-1">
+            {{ discrepancy }}
+        </div>
+    </div>
+</div>
+
+{% if discrepancy > 0 %}
+<div class="alert-yellow mb-4">
+    <span class="font-medium">Warning:</span> {{ discrepancy }} entries without corresponding payments detected.
+</div>
+{% elif discrepancy == 0 %}
+<div class="alert-green mb-4">
+    All entries have corresponding payments. No discrepancies found.
+</div>
+{% endif %}
+
+<!-- Unpaid Overrides -->
+{% if unpaid_overrides %}
+<div class="card">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Unpaid Manual Overrides</h3>
+    <table>
+        <thead>
+            <tr><th>Time</th><th>Staff</th><th>Reason</th><th>Note</th><th>Photo</th></tr>
+        </thead>
+        <tbody>
+            {% for ov in unpaid_overrides %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ ov.timestamp | to_local_time if ov.timestamp else '' }}</td>
+                <td>Staff #{{ ov.staff_id }}</td>
+                <td><span class="badge badge-yellow">{{ ov.reason_code }}</span></td>
+                <td class="text-sm text-gray-400">{{ ov.note or '' }}</td>
+                <td>
+                    {% if ov.photo_path %}
+                    <img src="{{ photo_url(ov.photo_path) }}"
+                         class="w-10 h-10 rounded object-cover" onerror="this.style.display='none'">
+                    {% else %}
+                    —
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

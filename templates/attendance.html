@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Attendance Log{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Attendance</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">
+            Today's occupancy: <span class="text-green-400 font-medium" id="occupancyCount">{{ occupancy }}</span>
+            <span class="ml-3 text-xs text-gray-600" id="refreshStatus">● Live</span>
+        </p>
+    </div>
+    <button onclick="refreshNow()" class="btn btn-outline text-xs">Refresh Now</button>
+</div>
+
+<!-- Filters -->
+<div class="card mb-4">
+    <form method="get" action="/attendance" class="flex gap-3 items-end">
+        <input type="hidden" name="tab" value="{{ tab }}">
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Search</label>
+            <input type="text" name="q" value="{{ q }}" placeholder="Search by name..." class="w-48">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Date</label>
+            <input type="date" name="day" value="{{ day }}" class="w-40">
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+        <a href="/attendance?tab={{ tab }}" class="btn btn-outline">Clear</a>
+    </form>
+</div>
+
+<!-- Tabs -->
+<div class="flex gap-2 mb-4">
+    <a href="/attendance?tab=clients&q={{ q }}&day={{ day }}"
+       class="btn {% if tab == 'clients' %}btn-primary{% else %}btn-outline{% endif %}">
+        Client Entry Records
+    </a>
+    <a href="/attendance?tab=staff&q={{ q }}&day={{ day }}"
+       class="btn {% if tab == 'staff' %}btn-primary{% else %}btn-outline{% endif %}">
+        Staff Attendance
+    </a>
+    {% if tab == 'staff' %}
+    <div class="ml-auto flex gap-2">
+        <form method="post" action="/attendance/clock-in" style="display:inline">
+            <button type="submit" class="btn btn-success">Clock In</button>
+        </form>
+        <form method="post" action="/attendance/clock-out" style="display:inline">
+            <button type="submit" class="btn btn-danger">Clock Out</button>
+        </form>
+    </div>
+    {% endif %}
+</div>
+
+{% if tab == 'staff' %}
+<!-- Staff Attendance Table -->
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Staff Member</th>
+                <th>Action</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in staff_logs %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ a.timestamp | to_local if a.timestamp else '' }}</td>
+                <td class="font-medium text-gray-200">{{ a.staff.display_name or a.staff.username if a.staff else 'Unknown' }}</td>
+                <td>
+                    {% if a.action == 'clock_in' %}
+                    <span class="badge badge-green">Clock In</span>
+                    {% else %}
+                    <span class="badge badge-red">Clock Out</span>
+                    {% endif %}
+                </td>
+                <td class="text-xs text-gray-500">{{ a.details or '' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not staff_logs %}
+            <tr><td colspan="4" class="text-center text-gray-500 py-8">No staff attendance records</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<!-- Client Entry Records Table -->
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Member</th>
+                <th>UID</th>
+                <th>Direction</th>
+                <th>Method</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in client_logs %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ a.timestamp | to_local if a.timestamp else '' }}</td>
+                <td class="font-medium text-gray-200">{{ a.member.name if a.member else 'Walk-in / Manual' }}</td>
+                <td class="font-mono text-xs text-gray-500">{{ a.member.uid if a.member else '—' }}</td>
+                <td>
+                    {% if a.direction.value == 'IN' %}
+                    <span class="badge badge-green">IN</span>
+                    {% else %}
+                    <span class="badge badge-red">OUT</span>
+                    {% endif %}
+                </td>
+                <td class="text-xs text-gray-500">{{ a.method.value if a.method else '' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not client_logs %}
+            <tr><td colspan="5" class="text-center text-gray-500 py-8">No client entry records</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+<script>
+// ── Real-time attendance refresh ──────────────────────────────────
+// Polls the attendance page every 10 seconds and updates the table
+// and occupancy count without a full page reload.
+const _TAB   = '{{ tab }}';
+const _DAY   = '{{ day }}';
+const _Q     = '{{ q }}';
+let _lastRowCount = document.querySelectorAll('tbody tr').length;
+
+async function refreshNow() {
+    const statusEl = document.getElementById('refreshStatus');
+    statusEl.textContent = '↻ Refreshing...';
+    statusEl.style.color = '#f59e0b';
+    try {
+        const url = `/attendance?tab=${_TAB}&day=${_DAY}&q=${encodeURIComponent(_Q)}`;
+        const res = await fetch(url, { headers: { 'Accept': 'text/html' } });
+        if (!res.ok) return;
+        const html = new DOMParser().parseFromString(await res.text(), 'text/html');
+
+        // Update occupancy count
+        const newOcc = html.getElementById('occupancyCount');
+        if (newOcc) document.getElementById('occupancyCount').textContent = newOcc.textContent;
+
+        // Update the table body
+        const newTbody = html.querySelector('tbody');
+        const curTbody = document.querySelector('tbody');
+        if (newTbody && curTbody) {
+            const newCount = newTbody.querySelectorAll('tr').length;
+            if (newTbody.innerHTML !== curTbody.innerHTML) {
+                curTbody.innerHTML = newTbody.innerHTML;
+                if (newCount > _lastRowCount) {
+                    // Flash the first new row
+                    const firstRow = curTbody.querySelector('tr');
+                    if (firstRow) {
+                        firstRow.style.transition = 'background .4s';
+                        firstRow.style.background = 'rgba(139,92,246,.15)';
+                        setTimeout(() => { firstRow.style.background = ''; }, 1500);
+                    }
+                }
+                _lastRowCount = newCount;
+            }
+        }
+
+        statusEl.textContent = '● Live';
+        statusEl.style.color = '#22c55e';
+    } catch(e) {
+        statusEl.textContent = '○ Offline';
+        statusEl.style.color = '#ef4444';
+    }
+}
+
+// Auto-refresh every 10 seconds (only when no date filter = viewing today)
+if (!_DAY || _DAY === new Date().toISOString().slice(0,10)) {
+    setInterval(refreshNow, 10000);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,571 @@
+{% extends "base.html" %}
+{% block title %}Coach Students — {{ coach.display_name or coach.username }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">{{ coach.display_name or coach.username }}'s Students</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ assignments|length }} enrollment{{ 's' if assignments|length != 1 }}</p>
+    </div>
+    <div class="flex gap-2">
+        <button onclick="document.getElementById('enrollModal').classList.remove('hidden')" class="btn btn-primary">+ Enroll Student</button>
+        <a href="/coaches" class="btn btn-outline">Back</a>
+    </div>
+</div>
+
+<!-- Search Bar -->
+<div class="card mb-4 py-3">
+    <form method="get" action="/coaches/{{ coach.id }}/students" class="flex gap-2 items-center">
+        <svg class="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+        </svg>
+        <input type="text" name="q" value="{{ q }}"
+               class="flex-1 text-sm bg-transparent border-none outline-none"
+               placeholder="Search students by name…">
+        <select name="member_status" class="text-xs bg-transparent border-none outline-none text-gray-400">
+            <option value="">All Status</option>
+            <option value="active" {% if member_status == 'active' %}selected{% endif %}>Active</option>
+            <option value="expired" {% if member_status == 'expired' %}selected{% endif %}>Expired</option>
+            <option value="frozen" {% if member_status == 'frozen' %}selected{% endif %}>Frozen</option>
+            <option value="cancelled" {% if member_status == 'cancelled' %}selected{% endif %}>Cancelled</option>
+        </select>
+        <button type="submit" class="btn btn-primary text-xs">Search</button>
+        {% if q or member_status %}
+        <a href="/coaches/{{ coach.id }}/students" class="text-xs text-gray-500 hover:text-gray-300">Clear</a>
+        {% endif %}
+    </form>
+</div>
+
+<!-- Error Messages -->
+{% if request.query_params.get('error') == 'already_enrolled' %}
+<div class="alert-red mb-4 text-sm">This member is already enrolled with the coach.</div>
+{% elif request.query_params.get('error') == 'invalid_member' %}
+<div class="alert-red mb-4 text-sm">Cannot enroll a deleted or invalid member.</div>
+{% elif request.query_params.get('error') == 'edit_failed' %}
+<div class="alert-red mb-4 text-sm">Failed to edit assignment. Check server logs for details.</div>
+{% endif %}
+
+<!-- Enroll Modal -->
+<div id="enrollModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-[480px] max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">Enroll Student</h3>
+
+        <!-- Tab switcher -->
+        <div class="flex gap-1 mb-4 p-1 rounded-lg" style="background:rgba(139,92,246,.08);">
+            <button type="button" id="tabExisting" onclick="switchEnrollTab('existing')"
+                    class="flex-1 text-sm font-medium py-1.5 rounded-md transition"
+                    style="background:rgba(139,92,246,.2);color:#c4b5fd;">
+                Existing Member
+            </button>
+            <button type="button" id="tabNew" onclick="switchEnrollTab('new')"
+                    class="flex-1 text-sm font-medium py-1.5 rounded-md transition text-gray-400">
+                + New Student
+            </button>
+        </div>
+
+        <!-- Tab 1: Enroll Existing Member -->
+        <form id="formExisting" method="post" action="/coaches/{{ coach.id }}/enroll" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Search Member</label>
+                <input type="text" id="memberSearch" class="w-full mt-1 mb-2"
+                       placeholder="Type to filter…"
+                       oninput="filterMemberSelect(this.value)">
+                <select name="member_id" required class="w-full" id="memberSelect" size="6"
+                        style="max-height:180px;">
+                    <option value="" disabled>-- Choose Member --</option>
+                    {% for m in members %}
+                    <option value="{{ m.id }}" data-name="{{ m.name|lower }}" data-status="{{ m.status.value }}">
+                        {{ m.name }} [{{ m.status.value }}] {% if m.discount_type %}({% if m.discount_type == "pwd" %}PWD{% else %}{{ m.discount_type|capitalize }}{% endif %}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+                {% if not members %}
+                <p class="text-xs text-gray-500 mt-1">No available members to enroll.</p>
+                {% endif %}
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Coaching Plan</label>
+                <select name="coaching_plan_id" class="w-full mt-1" onchange="updateEnrollExpiry(this)">
+                    <option value="">-- No Plan --</option>
+                    {% for cp in coaching_plans %}
+                    <option value="{{ cp.id }}" data-days="{{ cp.duration_days }}" data-expiry="{{ cp.expiry_date or '' }}" data-price="{{ cp.price }}" data-commission="{{ cp.commission_pct }}">
+                        {{ cp.name }} — {{ cp.duration_days }}d — ₱{{ cp.price }} {% if cp.commission_pct > 0 %}(Gym {{ cp.commission_pct }}% = ₱{{ "%.2f"|format(cp.price * cp.commission_pct / 100) }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Enrollment Start Date</label>
+                <input type="date" name="start_date" class="w-full mt-1" id="existingStartDate"
+                       value="{{ today }}">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Expiry Date (auto-calculated)</label>
+                <input type="date" name="expiry_date" class="w-full mt-1" id="existingExpiryDate"
+                       readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Notes (optional)</label>
+                <input type="text" name="notes" class="w-full mt-1" placeholder="Training goals, schedule, etc.">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1" {% if not members %}disabled{% endif %}>Enroll</button>
+                <button type="button" onclick="document.getElementById('enrollModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+
+        <!-- Tab 2: Create New Student -->
+        <form id="formNew" method="post" action="/coaches/{{ coach.id }}/enroll-new" class="space-y-3 hidden">
+            <div>
+                <label class="text-xs text-gray-400">Full Name</label>
+                <input type="text" name="name" required class="w-full mt-1" placeholder="Student's full name">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-400">Phone (optional)</label>
+                    <input type="text" name="phone" class="w-full mt-1" placeholder="09XX XXX XXXX">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400">Member Type</label>
+                    <select name="member_type" class="w-full mt-1">
+                        <option value="regular">Regular</option>
+                        <option value="student">Student</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Student ID Number (if student type)</label>
+                <input type="text" name="student_id" class="w-full mt-1" placeholder="e.g. 2024-12345">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Coaching Plan</label>
+                <select name="coaching_plan_id" class="w-full mt-1" onchange="updateNewEnrollExpiry(this)">
+                    <option value="">-- No Plan --</option>
+                    {% for cp in coaching_plans %}
+                    <option value="{{ cp.id }}" data-days="{{ cp.duration_days }}" data-expiry="{{ cp.expiry_date or '' }}" data-price="{{ cp.price }}" data-commission="{{ cp.commission_pct }}">
+                        {{ cp.name }} — {{ cp.duration_days }}d — ₱{{ cp.price }} {% if cp.commission_pct > 0 %}(Gym {{ cp.commission_pct }}% = ₱{{ "%.2f"|format(cp.price * cp.commission_pct / 100) }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Enrollment Start Date</label>
+                <input type="date" name="start_date" class="w-full mt-1" id="newStartDate"
+                       value="{{ today }}">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Expiry Date (auto-calculated)</label>
+                <input type="date" name="expiry_date" class="w-full mt-1" id="newExpiryDate"
+                       readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Notes (optional)</label>
+                <input type="text" name="notes" class="w-full mt-1" placeholder="Training goals, schedule, etc.">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-success flex-1">Create &amp; Enroll</button>
+                <button type="button" onclick="document.getElementById('enrollModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Renew Modal -->
+<div id="renewModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-[480px] max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">Renew Student</h3>
+        <p class="text-sm text-gray-400 mb-4" id="renewStudentName"></p>
+        <form id="formRenew" method="post" action="" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Coaching Plan</label>
+                <select name="coaching_plan_id" class="w-full mt-1" id="renewPlanSelect" onchange="updateRenewExpiry(this)">
+                    <option value="">-- No Plan --</option>
+                    {% for cp in coaching_plans %}
+                    <option value="{{ cp.id }}" data-days="{{ cp.duration_days }}" data-expiry="{{ cp.expiry_date or '' }}" data-price="{{ cp.price }}" data-commission="{{ cp.commission_pct }}">
+                        {{ cp.name }} — {{ cp.duration_days }}d — ₱{{ cp.price }} {% if cp.commission_pct > 0 %}(Gym {{ cp.commission_pct }}% = ₱{{ "%.2f"|format(cp.price * cp.commission_pct / 100) }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Start Date</label>
+                <input type="date" name="start_date" class="w-full mt-1" id="renewStartDate"
+                       value="{{ today }}">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Expiry Date (auto-calculated)</label>
+                <input type="date" name="expiry_date" class="w-full mt-1" id="renewExpiryDate"
+                       readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Notes (optional)</label>
+                <input type="text" name="notes" class="w-full mt-1" placeholder="Additional notes...">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-success flex-1">Renew</button>
+                <button type="button" onclick="document.getElementById('renewModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-[480px] max-h-[85vh] overflow-y-auto">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">Edit Student Assignment</h3>
+        <p class="text-sm text-gray-400 mb-4" id="editStudentName"></p>
+        <form id="formEdit" method="post" action="" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Coaching Plan</label>
+                <select name="coaching_plan_id" class="w-full mt-1" id="editPlanSelect" onchange="updateEditExpiry(this)">
+                    <option value="">-- No Plan --</option>
+                    {% for cp in coaching_plans %}
+                    <option value="{{ cp.id }}" data-days="{{ cp.duration_days }}" data-expiry="{{ cp.expiry_date or '' }}" data-price="{{ cp.price }}" data-commission="{{ cp.commission_pct }}">
+                        {{ cp.name }} — {{ cp.duration_days }}d — ₱{{ cp.price }} {% if cp.commission_pct > 0 %}(Gym {{ cp.commission_pct }}% = ₱{{ "%.2f"|format(cp.price * cp.commission_pct / 100) }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Start Date</label>
+                <input type="date" name="start_date" class="w-full mt-1" id="editStartDate">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Expiry Date (auto-calculated)</label>
+                <input type="date" name="expiry_date" class="w-full mt-1" id="editExpiryDate"
+                       readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Notes (optional)</label>
+                <input type="text" name="notes" class="w-full mt-1" id="editNotes" placeholder="Additional notes...">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Save Changes</button>
+                <button type="button" onclick="document.getElementById('editModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Admin Password Modal -->
+<div id="adminPwModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">Admin Password Required</h3>
+        <p class="text-sm text-gray-400 mb-4">Enter admin password to edit this assignment.</p>
+        <form id="formAdminPw" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Admin Password</label>
+                <input type="password" id="adminPwInput" required class="w-full mt-1" placeholder="Enter admin password">
+            </div>
+            <p id="adminPwError" class="text-sm text-red-400 hidden">Incorrect password.</p>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Verify</button>
+                <button type="button" onclick="closeAdminPwModal()" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openRenewModal(assignmentId, memberId, currentExpiry, memberName) {
+    document.getElementById('renewStudentName').textContent = 'Renewing: ' + memberName;
+    document.getElementById('formRenew').action = '/coaches/assignment/' + assignmentId + '/renew';
+    document.getElementById('renewStartDate').value = '{{ today }}';
+    document.getElementById('renewExpiryDate').value = '';
+    document.getElementById('renewPlanSelect').selectedIndex = 0;
+    document.getElementById('renewModal').classList.remove('hidden');
+}
+
+function updateRenewExpiry(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const days = parseInt(opt.dataset.days) || 0;
+    const planExpiry = opt.dataset.expiry;
+    const startDate = document.getElementById('renewStartDate').value;
+    const expiryInput = document.getElementById('renewExpiryDate');
+    
+    if (days > 0 && startDate) {
+        const start = new Date(startDate);
+        start.setDate(start.getDate() + days);
+        expiryInput.value = start.toISOString().split('T')[0];
+    } else if (planExpiry) {
+        expiryInput.value = planExpiry;
+    } else {
+        expiryInput.value = '';
+    }
+}
+
+document.getElementById('renewStartDate').addEventListener('change', function() {
+    const planSel = document.getElementById('renewPlanSelect');
+    if (planSel) updateRenewExpiry(planSel);
+});
+
+document.getElementById('editStartDate').addEventListener('change', function() {
+    const planSel = document.getElementById('editPlanSelect');
+    if (planSel) updateEditExpiry(planSel);
+});
+
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('btn-edit-assignment')) {
+        const btn = e.target;
+        openEditModal(btn.dataset.id, btn.dataset.memberId, btn.dataset.expiry, btn.dataset.notes, btn.dataset.planId, btn.dataset.memberName);
+    } else if (e.target.classList.contains('btn-renew-assignment')) {
+        const btn = e.target;
+        openRenewModal(btn.dataset.id, btn.dataset.memberId, btn.dataset.expiry, btn.dataset.memberName);
+    }
+});
+
+let pendingEditData = null;
+
+function openEditModal(assignmentId, memberId, currentExpiry, currentNotes, currentPlanId, memberName) {
+    const userRole = '{{ request.session.get("role") or "" }}';
+    if (userRole !== 'admin') {
+        pendingEditData = { assignmentId, memberId, currentExpiry, currentNotes, currentPlanId, memberName };
+        document.getElementById('adminPwInput').value = '';
+        document.getElementById('adminPwError').classList.add('hidden');
+        document.getElementById('adminPwModal').classList.remove('hidden');
+        setTimeout(() => document.getElementById('adminPwInput').focus(), 100);
+        return;
+    }
+    showEditModal(assignmentId, memberId, currentExpiry, currentNotes, currentPlanId, memberName);
+}
+
+function showEditModal(assignmentId, memberId, currentExpiry, currentNotes, currentPlanId, memberName) {
+    document.getElementById('editStudentName').textContent = 'Editing: ' + memberName;
+    document.getElementById('formEdit').action = '/coaches/assignment/' + assignmentId + '/edit';
+    document.getElementById('editStartDate').value = '{{ today }}';
+    document.getElementById('editExpiryDate').value = currentExpiry || '';
+    document.getElementById('editNotes').value = currentNotes || '';
+    const planSel = document.getElementById('editPlanSelect');
+    planSel.value = currentPlanId || '';
+    if (planSel.value) updateEditExpiry(planSel);
+    document.getElementById('editModal').classList.remove('hidden');
+}
+
+function updateEditExpiry(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const days = parseInt(opt.dataset.days) || 0;
+    const planExpiry = opt.dataset.expiry;
+    const startDate = document.getElementById('editStartDate').value;
+    const expiryInput = document.getElementById('editExpiryDate');
+    
+    if (days > 0 && startDate) {
+        const start = new Date(startDate);
+        start.setDate(start.getDate() + days);
+        expiryInput.value = start.toISOString().split('T')[0];
+    } else if (planExpiry) {
+        expiryInput.value = planExpiry;
+    } else {
+        expiryInput.value = '';
+    }
+}
+
+function closeAdminPwModal() {
+    document.getElementById('adminPwModal').classList.add('hidden');
+    pendingEditData = null;
+}
+
+document.getElementById('formAdminPw').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('adminPwInput').value;
+    const errEl = document.getElementById('adminPwError');
+    try {
+        const res = await fetch('/api/admin/verify-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'password=' + encodeURIComponent(pw)
+        });
+        const data = await res.json();
+        if (data.ok && pendingEditData) {
+            document.getElementById('adminPwModal').classList.add('hidden');
+            showEditModal(pendingEditData.assignmentId, pendingEditData.memberId,
+                          pendingEditData.currentExpiry, pendingEditData.currentNotes,
+                          pendingEditData.currentPlanId, pendingEditData.memberName);
+            pendingEditData = null;
+        } else {
+            errEl.classList.remove('hidden');
+            errEl.textContent = data.reason || 'Incorrect password.';
+        }
+    } catch(e) {
+        errEl.classList.remove('hidden');
+        errEl.textContent = 'Verification failed.';
+    }
+});
+
+function switchEnrollTab(tab) {
+    const tabExisting = document.getElementById('tabExisting');
+    const tabNew = document.getElementById('tabNew');
+    const formExisting = document.getElementById('formExisting');
+    const formNew = document.getElementById('formNew');
+
+    if (tab === 'existing') {
+        tabExisting.style.background = 'rgba(139,92,246,.2)';
+        tabExisting.style.color = '#c4b5fd';
+        tabNew.style.background = 'transparent';
+        tabNew.style.color = '#6b7280';
+        formExisting.classList.remove('hidden');
+        formNew.classList.add('hidden');
+    } else {
+        tabNew.style.background = 'rgba(34,197,94,.2)';
+        tabNew.style.color = '#22c55e';
+        tabExisting.style.background = 'transparent';
+        tabExisting.style.color = '#6b7280';
+        formNew.classList.remove('hidden');
+        formExisting.classList.add('hidden');
+    }
+}
+
+function updateEnrollExpiry(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const days = parseInt(opt.dataset.days) || 0;
+    const planExpiry = opt.dataset.expiry;
+    const startDate = document.getElementById('existingStartDate').value;
+    const expiryInput = document.getElementById('existingExpiryDate');
+    
+    if (days > 0 && startDate) {
+        const start = new Date(startDate);
+        start.setDate(start.getDate() + days);
+        expiryInput.value = start.toISOString().split('T')[0];
+    } else if (planExpiry) {
+        expiryInput.value = planExpiry;
+    } else {
+        expiryInput.value = '';
+    }
+}
+
+function updateNewEnrollExpiry(sel) {
+    const opt = sel.options[sel.selectedIndex];
+    const days = parseInt(opt.dataset.days) || 0;
+    const planExpiry = opt.dataset.expiry;
+    const startDate = document.getElementById('newStartDate').value;
+    const expiryInput = document.getElementById('newExpiryDate');
+    
+    if (days > 0 && startDate) {
+        const start = new Date(startDate);
+        start.setDate(start.getDate() + days);
+        expiryInput.value = start.toISOString().split('T')[0];
+    } else if (planExpiry) {
+        expiryInput.value = planExpiry;
+    } else {
+        expiryInput.value = '';
+    }
+}
+
+// Recalculate expiry when start date changes
+document.getElementById('existingStartDate').addEventListener('change', function() {
+    const planSel = document.querySelector('#formExisting select[name="coaching_plan_id"]');
+    if (planSel) updateEnrollExpiry(planSel);
+});
+document.getElementById('newStartDate').addEventListener('change', function() {
+    const planSel = document.querySelector('#formNew select[name="coaching_plan_id"]');
+    if (planSel) updateNewEnrollExpiry(planSel);
+});
+
+function filterMemberSelect(query) {
+    const q = query.toLowerCase().trim();
+    const select = document.getElementById('memberSelect');
+    for (const opt of select.options) {
+        if (!opt.value) continue;
+        const name = opt.getAttribute('data-name') || '';
+        opt.style.display = (!q || name.includes(q)) ? '' : 'none';
+    }
+}
+
+// Reset modal state when opened
+const enrollModal = document.getElementById('enrollModal');
+const observer = new MutationObserver((mutations) => {
+    mutations.forEach((m) => {
+        if (!enrollModal.classList.contains('hidden')) {
+            switchEnrollTab('existing');
+            document.getElementById('memberSearch').value = '';
+            filterMemberSelect('');
+        }
+    });
+});
+observer.observe(enrollModal, { attributes: true, attributeFilter: ['class'] });
+</script>
+
+<!-- Assignments Table -->
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Member</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Plan Expiry</th>
+                <th>Notes</th>
+                <th>Enrolled</th>
+                <th>Active</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in assignments %}
+            <tr>
+                <td>
+                    <a href="/members/{{ a.member.id }}" class="text-purple-400 hover:text-purple-300 font-medium">{{ a.member.name }}</a>
+                </td>
+                <td class="text-sm text-gray-400">{{ a.member.member_type or 'regular' }}</td>
+                <td>
+                    {% if a.member.status.value == 'active' %}
+                    <span class="badge badge-green">Active</span>
+                    {% elif a.member.status.value == 'expired' %}
+                    <span class="badge badge-red">Expired</span>
+                    {% else %}
+                    <span class="badge badge-yellow">{{ a.member.status.value }}</span>
+                    {% endif %}
+                </td>
+                <td class="text-sm {% if a.is_expired %}text-red-400 font-semibold{% else %}text-gray-400{% endif %}">
+                    {% if a.expiry_date %}
+                        {{ a.expiry_date }}
+                        {% if a.is_expired %}
+                        <span class="text-xs text-red-500">(expired)</span>
+                        {% endif %}
+                    {% else %}
+                        —
+                    {% endif %}
+                </td>
+                <td class="text-sm text-gray-400">{{ a.notes or '—' }}</td>
+                <td class="text-xs text-gray-500">{{ a.created_at | to_local_date if a.created_at else '' }}</td>
+                <td>
+                    {% if a.is_active and not a.is_expired %}
+                    <span class="badge badge-green">Active</span>
+                    {% else %}
+                    <span class="badge badge-red">Inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="post" action="/coaches/assignment/{{ a.id }}/toggle" style="display:inline">
+                        <button type="submit" class="text-yellow-400 hover:text-yellow-300 text-xs">
+                            {{ 'Deactivate' if a.is_active else 'Reactivate' }}
+                        </button>
+                    </form>
+                    <button type="button" class="btn-edit-assignment text-blue-400 hover:text-blue-300 text-xs ml-2"
+                            data-id="{{ a.id }}"
+                            data-member-id="{{ a.member_id }}"
+                            data-expiry="{{ a.expiry_date | default('', true) }}"
+                            data-notes="{{ a.notes | default('', true) }}"
+                            data-plan-id="{{ a.coaching_plan_id | default('', true) }}"
+                            data-member-name="{{ a.member.name }}">Edit</button>
+                    <button type="button" class="btn-renew-assignment text-green-400 hover:text-green-300 text-xs ml-2"
+                            data-id="{{ a.id }}"
+                            data-member-id="{{ a.member_id }}"
+                            data-expiry="{{ a.expiry_date | default('', true) }}"
+                            data-member-name="{{ a.member.name }}">Renew</button>
+                    <form method="post" action="/coaches/assignment/{{ a.id }}/delete"
+                          style="display:inline"
+                          onsubmit="return confirm('Remove this student from this coach?')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs ml-2">Remove</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not assignments %}
+            <tr><td colspan="8" class="text-center text-gray-500 py-8">
+                {% if q %}No students match your search.{% else %}No students enrolled{% endif %}
+            </td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

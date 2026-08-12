@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}RFID Lookup{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto">
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-1">RFID Lookup</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">Tap a card on the reader or type the UID to see the owner</p>
+
+        <form method="GET" action="/rfid-lookup" class="flex gap-2 mb-4">
+            <input type="text" name="uid" id="rfidLookupInput" value="{{ uid }}" placeholder="Tap card or type UID..."
+                   class="flex-1 text-lg font-mono tracking-widest" autocomplete="off" autofocus>
+            <button type="submit" class="btn btn-primary">Lookup</button>
+        </form>
+
+        {% if uid %}
+            {% if member %}
+            <div class="alert-green mb-4">
+                <div class="font-medium">Member Found</div>
+            </div>
+            <div class="flex items-start gap-4 p-4 rounded bg-gray-800 bg-opacity-50">
+                {% if member.photo_path %}
+                <img src="{{ photo_url(member.photo_path) }}"
+                     class="w-20 h-20 rounded-full object-cover" onerror="this.style.display='none'">
+                {% else %}
+                <div class="w-20 h-20 rounded-full bg-gray-700 flex items-center justify-center text-xl text-gray-500">{{ member.name[0] }}</div>
+                {% endif %}
+                <div class="flex-1 space-y-1">
+                    <div class="text-lg font-bold text-gray-100">{{ member.name }}</div>
+                    <div class="text-sm text-gray-400">UID: <span class="font-mono">{{ member.uid }}</span></div>
+                    <div class="text-sm">
+                        Status:
+                        {% if member.status.value == 'active' %}
+                        <span class="badge badge-green">Active</span>
+                        {% elif member.status.value == 'expired' %}
+                        <span class="badge badge-red">Expired</span>
+                        {% elif member.status.value == 'frozen' %}
+                        <span class="badge badge-blue">Frozen</span>
+                        {% endif %}
+                    </div>
+                    <div class="text-sm text-gray-400">Expiry: {{ member.expiry_date or 'N/A' }}</div>
+                    {% if member.discount_type %}
+                    <span class="badge badge-yellow">★ {% if member.discount_type == "pwd" %}PWD Discount{% else %}{{ member.discount_type|capitalize }}{% if member.discount_type == "student" %} Student{% elif member.discount_type == "senior" %} Senior{% endif %}{% endif %}</span>
+                    {% endif %}
+                    <div class="flex gap-2 mt-3">
+                        <a href="/members/{{ member.id }}" class="btn btn-outline text-xs">View Profile</a>
+                        <a href="/sales/renew/{{ member.id }}" class="btn btn-success text-xs">Renew</a>
+                    </div>
+                </div>
+            </div>
+            {% else %}
+            <div class="alert-red">
+                <div class="font-medium">Unknown Badge</div>
+                <div class="text-sm mt-1">UID <span class="font-mono">{{ uid }}</span> is not registered to any member.</div>
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<script>
+// Capture RFID reader keystrokes
+let buf = '';
+let timer = null;
+document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    const isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || document.activeElement?.isContentEditable;
+    if (isInput) return;
+    if (e.key === 'Enter' && buf.length >= 4) {
+        document.getElementById('rfidLookupInput').value = buf.toUpperCase();
+        document.querySelector('form').submit();
+        buf = '';
+        return;
+    }
+    if (e.key.length === 1) {
+        buf += e.key;
+        clearTimeout(timer);
+        timer = setTimeout(() => { buf = ''; }, 200);
+    }
+});
+</script>
+{% endblock %}

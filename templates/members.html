@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Members — Solo Leveling Gym{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Members</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ members|length }} shown — {{ active_members }} active, {{ expired_members }} expired, {{ total_members }} total</p>
+    </div>
+    <a href="/members/register" class="btn btn-primary">+ Register New</a>
+</div>
+
+<!-- Summary Cards -->
+<div class="grid grid-cols-3 gap-4 mb-4">
+    <div class="card text-center py-6" style="border:2px solid rgba(34,197,94,.4);background:rgba(34,197,94,.05);">
+        <div class="text-5xl font-bold text-green-400">{{ active_members | default(0) }}</div>
+        <div class="text-lg font-semibold text-green-300 mt-1">ACTIVE MEMBERS</div>
+    </div>
+    <div class="card text-center py-6" style="border:2px solid rgba(239,68,68,.4);background:rgba(239,68,68,.05);">
+        <div class="text-5xl font-bold text-red-400">{{ expired_members | default(0) }}</div>
+        <div class="text-lg font-semibold text-red-300 mt-1">EXPIRED MEMBERS</div>
+    </div>
+    <div class="card text-center py-6" style="border:2px solid rgba(139,92,246,.4);background:rgba(139,92,246,.05);">
+        <div class="text-5xl font-bold text-purple-400">{{ total_members | default(0) }}</div>
+        <div class="text-lg font-semibold text-purple-300 mt-1">TOTAL MEMBERS</div>
+    </div>
+</div>
+
+<!-- Search & Filters -->
+<div class="card mb-4">
+    <form method="get" action="/members" class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Search</label>
+            <input type="text" name="q" value="{{ q }}" placeholder="Name, UID, phone..." class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Status</label>
+            <select name="status" class="w-full">
+                <option value="">All</option>
+                <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Active</option>
+                <option value="expired" {% if status_filter == 'expired' %}selected{% endif %}>Expired</option>
+                <option value="frozen" {% if status_filter == 'frozen' %}selected{% endif %}>Frozen</option>
+                <option value="at-risk" {% if status_filter == 'at-risk' %}selected{% endif %}>At-Risk (≤7 days)</option>
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Plan</label>
+            <select name="plan_id" class="w-full">
+                <option value="0">All Plans</option>
+                {% for p in plans %}
+                <option value="{{ p.id }}" {% if plan_filter == p.id %}selected{% endif %}>{{ p.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Registered From</label>
+            <input type="date" name="date_from" value="{{ date_from }}" class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Registered To</label>
+            <input type="date" name="date_to" value="{{ date_to }}" class="w-full">
+        </div>
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary flex-1">Filter</button>
+            <a href="/members" class="btn btn-outline">Clear</a>
+        </div>
+    </form>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Photo</th>
+                <th>Name</th>
+                <th>UID</th>
+                <th>Plan</th>
+                <th>Expiry</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="memberTable">
+            {% for m in members %}
+            <tr>
+                <td>
+                    {% if m.photo_path %}
+                    <img src="{{ photo_url(m.photo_path) }}" class="w-9 h-9 rounded-full object-cover" onerror="this.src=''">
+                    {% else %}
+                    <div class="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-xs text-gray-500">{{ m.name[0] if m.name else '?' }}</div>
+                    {% endif %}
+                </td>
+                <td class="font-medium text-gray-200">
+                    {{ m.name }}
+                    {% if m.discount_type %}<span class="badge badge-yellow ml-1">{{ m.discount_type[0]|upper }}</span>{% endif %}
+                </td>
+                <td class="font-mono text-xs text-gray-400">{{ m.uid or '—' }}</td>
+                <td class="text-sm">{{ m.plan.name if m.plan else '—' }}</td>
+                <td class="text-sm {% if m.expiry_date and m.expiry_date.isoformat() < today %}text-red-400{% endif %}">
+                    {{ m.expiry_date or '—' }}
+                </td>
+                <td>
+                    {% if m.status.value == 'active' %}
+                    <span class="badge badge-green">Active</span>
+                    {% elif m.status.value == 'expired' %}
+                    <span class="badge badge-red">Expired</span>
+                    {% elif m.status.value == 'frozen' %}
+                    <span class="badge badge-blue">Frozen</span>
+                    {% else %}
+                    <span class="badge" style="background:rgba(100,116,139,.15);color:#94a3b8">{{ m.status.value }}</span>
+                    {% endif %}
+                </td>
+                <td class="space-x-1">
+                    <a href="/members/{{ m.id }}" class="text-purple-400 hover:text-purple-300 text-xs">Profile</a>
+                    <a href="/sales/renew/{{ m.id }}" class="text-green-400 hover:text-green-300 text-xs">Renew</a>
+                    <a href="/admin/card/{{ m.id }}" class="text-gray-400 hover:text-gray-300 text-xs" target="_blank">Card</a>
+                    <form method="POST" action="/members/{{ m.id }}/delete" class="inline"
+                          onsubmit="return confirm('Permanently delete {{ m.name }}? This removes all their records and cannot be undone.');">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

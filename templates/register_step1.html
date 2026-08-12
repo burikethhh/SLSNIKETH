@@ -1,0 +1,182 @@
+                                                                                                                                                                                                                                                                            {% extends "base.html" %}
+{% block title %}Register — Step 1{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <div class="flex items-center gap-3 mb-6">
+        <div class="flex items-center gap-2 text-sm">
+            <span class="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold" style="background:#7c3aed;">1</span>
+            <span class="font-medium" style="color:#c4b5fd;">Details</span>
+            <span class="text-gray-600 mx-2">→</span>
+            <span class="w-7 h-7 rounded-full bg-gray-700 text-gray-400 flex items-center justify-center text-xs">2</span>
+            <span class="text-gray-500">Face</span>
+            <span class="text-gray-600 mx-2">→</span>
+            <span class="w-7 h-7 rounded-full bg-gray-700 text-gray-400 flex items-center justify-center text-xs">3</span>
+            <span class="text-gray-500">RFID</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-4">Member Details</h2>
+        {% if error %}
+        <div class="alert-red mb-4 text-sm">{{ error }}</div>
+        {% endif %}
+        <form method="POST" action="/members/register/step1" enctype="multipart/form-data" class="space-y-4">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Full Name *</label>
+                <input type="text" name="name" required class="w-full" placeholder="Juan Dela Cruz">
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Membership Start Date *
+                    <span class="text-gray-500 font-normal">(backdate if member already started)</span>
+                </label>
+                <input type="date" name="start_date" required class="w-full" id="startDate">
+                <p class="text-xs text-gray-500 mt-1">Expiry will be calculated from this date. Leave as today for new members.</p>
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Membership Plan *</label>
+                <select name="plan_id" required class="w-full" id="planSelect">
+                    {% for p in plans %}
+                    <option value="{{ p.id }}" data-regular="{{ p.regular_price }}" data-student="{{ p.student_price }}">
+                        {{ p.name }} — {{ p.duration_days }}d — ₱{{ p.regular_price }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <div id="pricePreview" class="text-sm mt-2 font-semibold" style="color:#a78bfa;">
+                    Price: ₱<span id="priceValue">{{ plans[0].regular_price if plans else 0 }}</span>
+                </div>
+                <p id="expiryPreview" class="text-xs mt-1" style="color:#a78bfa;"></p>
+            </div>
+
+            <div class="p-3 rounded bg-gray-800 bg-opacity-50 space-y-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Discount Type</label>
+                    <select name="discount_type" id="discountType" class="w-full" onchange="onDiscountChange(this.value)">
+                        <option value="">None</option>
+                        <option value="student">Student</option>
+                        <option value="senior">Senior Citizen</option>
+                        <option value="pwd">PWD</option>
+                        <option value="voucher">Voucher</option>
+                    </select>
+                </div>
+                <div id="discountIdSection" class="hidden">
+                    <label class="block text-xs text-gray-400 mb-1" id="discountIdLabel">Student ID Number (optional)</label>
+                    <input type="text" name="discount_id_number" class="w-full" placeholder="e.g. 2024-000123">
+                    <label class="block text-xs text-gray-400 mb-1 mt-2" id="discountPhotoLabel">Student ID Photo</label>
+                    <input type="file" name="discount_id_file" id="discountIdFileInput" accept="image/*" class="w-full text-sm">
+                </div>
+                <div id="voucherSection" class="hidden">
+                    <label class="block text-xs text-gray-400 mb-1">Voucher Type</label>
+                    <select name="voucher_title" class="w-full" id="voucherTitle">
+                        <option value="">-- Select Voucher Type --</option>
+                        {% for t in voucher_titles %}
+                        <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
+                    {% if not voucher_titles %}
+                    <p class="text-xs text-red-400 mt-1">No voucher types configured.</p>
+                    {% endif %}
+                    <label class="block text-xs text-gray-400 mb-1 mt-2">Voucher Photo (optional)</label>
+                    <input type="file" name="voucher_id_file" id="voucherIdFileInput" accept="image/*" class="w-full text-sm">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-2">Payment Method</label>
+                <div class="grid grid-cols-3 gap-2">
+                    <label class="card text-center cursor-pointer hover:border-green-500 transition" style="padding:.6rem;border-color:var(--border);">
+                        <input type="radio" name="payment_method" value="Cash" checked class="hidden"
+                               onchange="this.closest('label').style.borderColor='#22c55e';document.querySelectorAll('input[name=payment_method]').forEach(r=>r.closest('label').style.borderColor=r.checked?'#22c55e':'var(--border)')">
+                        <svg class="w-4 h-4 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                        <div class="text-xs text-gray-400">Cash</div>
+                    </label>
+                    <label class="card text-center cursor-pointer hover:border-green-500 transition" style="padding:.6rem;border-color:var(--border);">
+                        <input type="radio" name="payment_method" value="GCash" class="hidden"
+                               onchange="this.closest('label').style.borderColor='#22c55e';document.querySelectorAll('input[name=payment_method]').forEach(r=>r.closest('label').style.borderColor=r.checked?'#22c55e':'var(--border)')">
+                        <svg class="w-4 h-4 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                        <div class="text-xs text-gray-400">GCash</div>
+                    </label>
+                    <label class="card text-center cursor-pointer hover:border-green-500 transition" style="padding:.6rem;border-color:var(--border);">
+                        <input type="radio" name="payment_method" value="Bank" class="hidden"
+                               onchange="this.closest('label').style.borderColor='#22c55e';document.querySelectorAll('input[name=payment_method]').forEach(r=>r.closest('label').style.borderColor=r.checked?'#22c55e':'var(--border)')">
+                        <svg class="w-4 h-4 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                        <div class="text-xs text-gray-400">Bank Transfer</div>
+                    </label>
+                </div>
+            </div>
+
+            <div class="flex gap-3 pt-2">
+                <button type="submit" class="btn btn-primary">Next → Face Capture</button>
+                <a href="/members" class="btn btn-outline">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function onDiscountChange(value) {
+    const isStudent = value === 'student';
+    const isSenior = value === 'senior';
+    const isPwd = value === 'pwd';
+    const needsId = isStudent || isSenior || isPwd;
+    const isVoucher = value === 'voucher';
+    document.getElementById('discountIdSection').classList.toggle('hidden', !needsId);
+    document.getElementById('voucherSection').classList.toggle('hidden', !isVoucher);
+    const discountInput = document.getElementById('discountIdFileInput');
+    if (discountInput) discountInput.required = needsId;
+    const voucherInput = document.getElementById('voucherIdFileInput');
+    if (voucherInput) voucherInput.required = false;
+    const idLabel = document.getElementById('discountIdLabel');
+    const photoLabel = document.getElementById('discountPhotoLabel');
+    if (isStudent) {
+        idLabel.textContent = 'Student ID Number (optional)';
+        photoLabel.textContent = 'Student ID Photo';
+    } else if (isSenior) {
+        idLabel.textContent = 'Senior Citizen ID Number (optional)';
+        photoLabel.textContent = 'Senior Citizen ID Photo';
+    } else if (isPwd) {
+        idLabel.textContent = 'PWD ID Number (optional)';
+        photoLabel.textContent = 'PWD ID Photo';
+    }
+    updatePrice();
+}
+
+function updatePrice() {
+    const discountType = document.getElementById('discountType').value;
+    const hasDiscount = discountType === 'student' || discountType === 'senior' || discountType === 'pwd' || discountType === 'voucher';
+    const planSelect = document.getElementById('planSelect');
+    const opt = planSelect.options[planSelect.selectedIndex];
+    const price = hasDiscount ? parseFloat(opt.dataset.student) : parseFloat(opt.dataset.regular);
+    document.getElementById('priceValue').textContent = price.toFixed(2);
+    
+    const pricePreview = document.getElementById('pricePreview');
+    const label = discountType ? (discountType === 'pwd' ? 'PWD Discount' : discountType.charAt(0).toUpperCase() + discountType.slice(1) + ' Discount') : '';
+    if (hasDiscount) {
+        pricePreview.innerHTML = 'Price: ₱<span id="priceValue">' + price.toFixed(2) + '</span> <span class="text-green-400 text-xs">[' + label + ']</span>';
+    } else {
+        pricePreview.innerHTML = 'Price: ₱<span id="priceValue">' + price.toFixed(2) + '</span>';
+    }
+}
+
+// Pre-fill start date with today
+document.getElementById('startDate').valueAsDate = new Date();
+
+// Live expiry preview
+const planDurations = { {% for p in plans %}{{ p.id }}: {{ p.duration_days }},{% endfor %} };
+function updateExpiryPreview() {
+    const startVal = document.getElementById('startDate').value;
+    const planId = parseInt(document.querySelector('[name=plan_id]').value);
+    const preview = document.getElementById('expiryPreview');
+    if (!startVal || !planDurations[planId]) { preview.textContent = ''; return; }
+    const start = new Date(startVal);
+    const days = planDurations[planId];
+    start.setDate(start.getDate() + days);
+    preview.textContent = `→ Expires: ${start.toISOString().slice(0,10)} (${days} days from start)`;
+}
+document.getElementById('startDate').addEventListener('change', updateExpiryPreview);
+document.querySelector('[name=plan_id]').addEventListener('change', function() { updateExpiryPreview(); updatePrice(); });
+updateExpiryPreview();
+updatePrice();
+</script>
+{% endblock %}

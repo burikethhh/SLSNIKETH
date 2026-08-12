@@ -1,0 +1,45 @@
+{
+  "name": "gympos-shell",
+  "version": "1.0.0",
+  "description": "Solo Leveling Gym POS — Electron desktop shell",
+  "author": "Solo Leveling Gym",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "postinstall": "node bin-shim/install-shim.js",
+    "shim": "node bin-shim/install-shim.js",
+    "start": "electron .",
+    "pack": "npm run shim && electron-builder --dir",
+    "dist": "npm run shim && electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.sololeveling.gympos",
+    "productName": "GymPOS",
+    "directories": {
+      "output": "C:/GymPOS-build",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "afterPack": "./afterPack.js",
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "GymPOS.exe"
+    }
+  }
+}

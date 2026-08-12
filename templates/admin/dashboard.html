@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Solo Leveling Gym{% endblock %}
+{% block head %}<script src="/static/vendor/js/chart.umd.min.js"></script>{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Dashboard</h1>
+    <p class="text-sm" style="color:rgba(139,92,246,.4);">Combined overview — Gym &amp; Store &middot; Today's snapshot</p>
+</div>
+
+<!-- Grand Total Banner -->
+<div class="card mb-6 aura-glow" style="border-color:rgba(139,92,246,.3);">
+    <div class="flex items-center justify-between">
+        <div>
+            <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(139,92,246,.55);font-family:Rajdhani,sans-serif;">Grand Total — 30 Days</div>
+            <div class="text-3xl font-bold mt-1" style="color:#c4b5fd;">₱{{ "{:,.2f}".format(gym_month + store_month) }}</div>
+        </div>
+        <div class="text-right">
+            <div class="text-xs text-gray-500 mb-1">Gym + Store Combined</div>
+            <div class="flex gap-3 text-sm">
+                <span class="text-purple-400">Gym: ₱{{ "{:,.2f}".format(gym_month) }}</span>
+                <span class="text-green-400">Store: ₱{{ "{:,.2f}".format(store_month) }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Today Row -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="card">
+        <div class="text-xs uppercase font-semibold" style="color:rgba(139,92,246,.5);font-family:Rajdhani,sans-serif;">Gym — Today</div>
+        <div class="text-xl font-bold text-purple-400 mt-1">₱{{ "{:,.2f}".format(gym_today) }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase font-semibold" style="color:rgba(34,197,94,.5);font-family:Rajdhani,sans-serif;">Store — Today</div>
+        <div class="text-xl font-bold text-green-400 mt-1">₱{{ "{:,.2f}".format(store_today) }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase font-semibold" style="color:rgba(245,158,11,.5);font-family:Rajdhani,sans-serif;">Active Members</div>
+        <div class="text-xl font-bold text-yellow-400 mt-1">{{ active_members }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase font-semibold" style="color:rgba(168,85,247,.5);font-family:Rajdhani,sans-serif;">Gym This Week</div>
+        <div class="text-xl font-bold mt-1" style="color:#a78bfa;">₱{{ "{:,.2f}".format(gym_week) }}</div>
+    </div>
+</div>
+
+<!-- Combined Revenue Chart -->
+<div class="card mb-6">
+    <h2 class="text-sm font-semibold text-gray-300 mb-3">30-Day Revenue — Gym vs Store</h2>
+    <canvas id="combinedChart" height="200"></canvas>
+</div>
+
+<!-- Analytics Quick Links -->
+<div class="grid grid-cols-2 gap-4 mb-6">
+    <a href="/admin/gym-analytics" class="card group" style="transition:all .2s;">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center text-lg" style="background:rgba(124,58,237,.15);">🏋️</div>
+            <div>
+                <div class="font-semibold" style="color:#c4b5fd;font-family:Rajdhani,sans-serif;">Gym Analytics</div>
+                <div class="text-xs text-gray-500">Peak hours, demographics, membership trends</div>
+            </div>
+            <div class="ml-auto text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
+        </div>
+    </a>
+    <a href="/admin/store-analytics" class="card group" style="transition:all .2s;">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center text-lg" style="background:rgba(34,197,94,.1);">🛍️</div>
+            <div>
+                <div class="font-semibold text-green-400" style="font-family:Rajdhani,sans-serif;">Store Analytics</div>
+                <div class="text-xs text-gray-500">Product sales, top items, stock health</div>
+            </div>
+            <div class="ml-auto text-green-400 opacity-0 group-hover:opacity-100 transition-opacity">→</div>
+        </div>
+    </a>
+</div>
+
+<!-- Operations Quick Links -->
+<div class="grid grid-cols-4 gap-3">
+    <a href="/admin/reports" class="card text-center" style="transition:all .2s;">
+        <div class="text-lg font-bold" style="color:#a78bfa;font-family:Rajdhani,sans-serif;">Gym Reports</div>
+        <div class="text-xs" style="color:rgba(139,92,246,.35);">CSV &amp; PDF</div>
+    </a>
+    <a href="/admin/store-reports" class="card text-center" style="transition:all .2s;">
+        <div class="text-lg font-bold text-green-400" style="font-family:Rajdhani,sans-serif;">Store Reports</div>
+        <div class="text-xs text-green-700">CSV &amp; PDF</div>
+    </a>
+    <a href="/admin/incidents" class="card text-center" style="transition:all .2s;">
+        <div class="text-red-400 text-lg font-bold" style="font-family:Rajdhani,sans-serif;">Incidents</div>
+        <div class="text-xs" style="color:rgba(239,68,68,.35);">Security Gallery</div>
+    </a>
+    <a href="/admin/maintenance" class="card text-center" style="transition:all .2s;">
+        <div class="text-yellow-400 text-lg font-bold" style="font-family:Rajdhani,sans-serif;">Maintenance</div>
+        <div class="text-xs" style="color:rgba(245,158,11,.35);">Backups &amp; Health</div>
+    </a>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Chart.defaults.color = '#7c849b';
+new Chart(document.getElementById('combinedChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ chart_labels | tojson }},
+        datasets: [
+            { label: 'Gym (₱)', data: {{ gym_values | tojson }},
+              backgroundColor: 'rgba(124,58,237,.55)', borderColor: '#7c3aed', borderWidth: 1, borderRadius: 3 },
+            { label: 'Store (₱)', data: {{ store_values | tojson }},
+              backgroundColor: 'rgba(34,197,94,.45)', borderColor: '#22c55e', borderWidth: 1, borderRadius: 3 },
+        ]
+    },
+    options: { responsive: true,
+        plugins: { legend: { position: 'top', labels: { padding: 16, font: { size: 11 } } } },
+        scales: {
+            x: { stacked: false, grid: { color: 'rgba(139,92,246,.06)' }, ticks: { maxRotation: 45, font: { size: 9 } } },
+            y: { stacked: false, grid: { color: 'rgba(139,92,246,.06)' }, beginAtZero: true }
+        }
+    }
+});
+</script>
+{% endblock %}

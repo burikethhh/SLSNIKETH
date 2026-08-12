@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}End of Day Summary{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">End of Day Summary</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Daily financial overview</p>
+    </div>
+</div>
+
+<!-- Date Selector -->
+<div class="card mb-4">
+    <form method="get" class="flex items-end gap-3">
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Select Date</label>
+            <input type="date" name="day" value="{{ target_date }}" class="w-48">
+        </div>
+        <button type="submit" class="btn btn-primary">View</button>
+    </form>
+</div>
+
+<!-- Income / Expenses / Revenue Cards -->
+<div class="grid grid-cols-3 gap-4 mb-6">
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(34,197,94,.5);font-family:Rajdhani,system-ui,sans-serif;">Total Income</div>
+        <div class="text-2xl font-bold text-green-400 mt-1">₱{{ "{:,.2f}".format(total_income) }}</div>
+        <div class="mt-2 space-y-1 text-sm">
+            <div class="flex justify-between"><span class="text-gray-400">Cash</span><span class="text-gray-200">₱{{ "{:,.2f}".format(cash_income) }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">GCash</span><span class="text-gray-200">₱{{ "{:,.2f}".format(gcash_income) }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Bank Transfer</span><span class="text-gray-200">₱{{ "{:,.2f}".format(bank_income) }}</span></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(239,68,68,.5);font-family:Rajdhani,system-ui,sans-serif;">Total Expenses</div>
+        <div class="text-2xl font-bold text-red-400 mt-1">₱{{ "{:,.2f}".format(total_expenses) }}</div>
+        <div class="mt-2 space-y-1 text-sm">
+            <div class="flex justify-between"><span class="text-gray-400">Cash</span><span class="text-gray-200">₱{{ "{:,.2f}".format(cash_expenses) }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">GCash</span><span class="text-gray-200">₱{{ "{:,.2f}".format(gcash_expenses) }}</span></div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(139,92,246,.5);font-family:Rajdhani,system-ui,sans-serif;">Net Revenue</div>
+        <div class="text-2xl font-bold mt-1 {% if net_revenue >= 0 %}text-green-400{% else %}text-red-400{% endif %}">₱{{ "{:,.2f}".format(net_revenue) }}</div>
+        <div class="mt-2 space-y-1 text-sm">
+            <div class="flex justify-between"><span class="text-gray-400">Transactions</span><span class="text-gray-200">{{ total_transactions }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Walk-ins</span><span class="text-gray-200">{{ walkin_count }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Registrations</span><span class="text-gray-200">{{ reg_count }}</span></div>
+            <div class="flex justify-between"><span class="text-gray-400">Renewals</span><span class="text-gray-200">{{ renewal_count }}</span></div>
+        </div>
+    </div>
+</div>
+
+<!-- Sales Breakdown -->
+<div class="grid grid-cols-2 gap-4 mb-4">
+    <div class="card overflow-hidden">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Gym Sales ({{ sales|length }})</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Receipt</th>
+                    <th>Time</th>
+                    <th>Member</th>
+                    <th>Amount</th>
+                    <th>Method</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sales %}
+                <tr>
+                    <td class="text-xs font-mono text-gray-500">{{ s.receipt_no or '—' }}</td>
+                    <td class="text-xs text-gray-400">{{ s.created_at | to_local_time if s.created_at else '' }}</td>
+                    <td class="text-sm">{{ s.member.name if s.member else 'Walk-in' }}</td>
+                    <td class="text-green-400 text-sm">₱{{ "{:,.2f}".format(s.amount_paid) }}</td>
+                    <td class="text-xs">{{ s.payment_method }}</td>
+                </tr>
+                {% endfor %}
+                {% if not sales %}
+                <tr><td colspan="5" class="text-center text-gray-500 py-4">No gym sales</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card overflow-hidden">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Store Sales ({{ store_sales|length }}) — ₱{{ "{:,.2f}".format(total_store_income) }}</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Product</th>
+                    <th>Qty</th>
+                    <th>Total</th>
+                    <th>Method</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for ss in store_sales %}
+                <tr>
+                    <td class="text-xs text-gray-400">{{ ss.created_at }}</td>
+                    <td class="text-sm">{{ ss.product_name }}</td>
+                    <td class="text-sm">{{ ss.quantity }}</td>
+                    <td class="text-green-400 text-sm">₱{{ "{:,.2f}".format(ss.total_amount) }}</td>
+                    <td class="text-xs">{{ ss.payment_method }}</td>
+                </tr>
+                {% endfor %}
+                {% if not store_sales %}
+                <tr><td colspan="5" class="text-center text-gray-500 py-4">No store sales</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Expenses -->
+<div class="card overflow-hidden">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Expenses ({{ expenses|length }})</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Time</th>
+                <th>Category</th>
+                <th>Amount</th>
+                <th>Method</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for e in expenses %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ e.created_at | to_local_time if e.created_at else '' }}</td>
+                <td class="text-sm">{{ e.category }}</td>
+                <td class="text-red-400 text-sm">₱{{ "{:,.2f}".format(e.amount) }}</td>
+                <td class="text-xs">{{ e.payment_method }}</td>
+                <td class="text-xs text-gray-500">{{ e.description or '—' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not expenses %}
+            <tr><td colspan="5" class="text-center text-gray-500 py-4">No expenses</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Store Sales History{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Store Sales History</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ sales|length }} transaction{{ 's' if sales|length != 1 }}</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="/store" class="btn btn-primary text-xs">+ New Sale</a>
+        <a href="/admin/store-reports" class="btn btn-outline text-xs">Reports</a>
+    </div>
+</div>
+
+<!-- Filters -->
+{% if request.query_params.get('deleted') == '1' %}
+<div class="alert-green mb-4 text-sm">Store sale deleted successfully.</div>
+{% elif request.query_params.get('error') == 'not_found' %}
+<div class="alert-red mb-4 text-sm">Sale not found.</div>
+{% endif %}
+
+<div class="card mb-4">
+    <form method="GET" class="grid grid-cols-5 gap-3 items-end">
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">From</label>
+            <input type="date" name="date_from" value="{{ date_from }}" class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">To</label>
+            <input type="date" name="date_to" value="{{ date_to }}" class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Product</label>
+            <input type="text" name="q" value="{{ q }}" placeholder="Product name..." class="w-full">
+        </div>
+        <div>
+            <label class="text-xs text-gray-400 block mb-1">Payment</label>
+            <select name="method" class="w-full">
+                <option value="">All</option>
+                <option value="cash" {% if method=='cash' %}selected{% endif %}>Cash</option>
+                <option value="gcash" {% if method=='gcash' %}selected{% endif %}>GCash</option>
+            </select>
+        </div>
+        <div class="flex gap-2">
+            <button type="submit" class="btn btn-primary flex-1">Filter</button>
+            <a href="/store/history" class="btn btn-outline">Clear</a>
+        </div>
+    </form>
+</div>
+
+<!-- Summary -->
+<div class="grid grid-cols-3 gap-4 mb-4">
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider" style="color:rgba(34,197,94,.5);font-family:Rajdhani,sans-serif;">Total Revenue</div>
+        <div class="text-2xl font-bold text-green-400 mt-1">₱{{ "{:,.2f}".format(total_revenue) }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider" style="color:rgba(139,92,246,.5);font-family:Rajdhani,sans-serif;">Transactions</div>
+        <div class="text-2xl font-bold mt-1" style="color:#a78bfa;">{{ sales|length }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider" style="color:rgba(245,158,11,.5);font-family:Rajdhani,sans-serif;">Items Sold</div>
+        <div class="text-2xl font-bold text-yellow-400 mt-1">{{ total_qty }}</div>
+    </div>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Product</th>
+                <th>Qty</th>
+                <th>Unit Price</th>
+                <th>Total</th>
+                <th>Payment</th>
+                <th>Staff</th>
+                <th>Notes</th>
+                {% if request.session.get('role') == 'admin' %}
+                <th>Actions</th>
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in sales %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ s.created_at | to_local if s.created_at else '—' }}</td>
+                <td class="font-medium text-gray-200 text-sm">{{ s.product_name }}</td>
+                <td class="text-sm">{{ s.quantity }}</td>
+                <td class="text-sm text-gray-400">₱{{ "{:,.2f}".format(s.unit_price) }}</td>
+                <td class="font-semibold text-green-400 text-sm">₱{{ "{:,.2f}".format(s.total_amount) }}</td>
+                <td><span class="badge {% if s.payment_method=='gcash' %}badge-blue{% else %}badge-green{% endif %}">{{ s.payment_method|upper }}</span></td>
+                <td class="text-xs text-gray-400">{{ s.staff_name or '—' }}</td>
+                <td class="text-xs text-gray-500">{{ s.notes or '—' }}</td>
+                {% if request.session.get('role') == 'admin' %}
+                <td>
+                    <form method="POST" action="/store/sales/{{ s.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete this store sale? Total: P{{ s.total_amount }}')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </form>
+                </td>
+                {% endif %}
+            </tr>
+            {% endfor %}
+            {% if not sales %}
+            <tr><td colspan="9" class="text-center text-gray-500 py-6">No sales in this period.</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

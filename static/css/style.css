@@ -1,0 +1,58 @@
+/* Solo Leveling Gym — Purple Aura Theme */
+
+/* ── Smooth scrollbar (purple) ─────────────────────── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #080b12; }
+::-webkit-scrollbar-thumb { background: rgba(139,92,246,.3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(139,92,246,.5); }
+
+/* ── Card hover aura ──────────────────────────────── */
+.card { transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.2s ease; }
+.card:hover { transform: translateY(-1px); }
+
+/* ── Payment method radio highlight ───────────────── */
+input[type="radio"]:checked + div { opacity: 1; }
+label:has(input[type="radio"]:checked) { border-color: #7c3aed !important; box-shadow: 0 0 15px rgba(124,58,237,.15); }
+
+/* ── Pulse animation for live indicators ──────────── */
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; box-shadow: 0 0 4px currentColor; }
+    50% { opacity: 0.4; box-shadow: 0 0 8px currentColor; }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* ── Shadow aura glow (purple energy) ─────────────── */
+@keyframes aura-glow {
+    0%, 100% { box-shadow: 0 0 15px rgba(124,58,237,.1), 0 0 45px rgba(124,58,237,.03); }
+    50% { box-shadow: 0 0 25px rgba(124,58,237,.18), 0 0 65px rgba(124,58,237,.06); }
+}
+.aura-glow { animation: aura-glow 3s ease-in-out infinite; }
+
+/* ── Stat number countup flash ────────────────────── */
+@keyframes stat-flash {
+    0% { color: #c4b5fd; text-shadow: 0 0 10px rgba(139,92,246,.5); }
+    100% { text-shadow: none; }
+}
+
+/* ── Tailgate alarm pulse ─────────────────────────── */
+@keyframes alarm-pulse {
+    0%, 100% { border-color: rgba(239,68,68,.3); }
+    50% { border-color: rgba(239,68,68,.7); box-shadow: 0 0 20px rgba(239,68,68,.15); }
+}
+.alarm-active { animation: alarm-pulse 1s ease-in-out infinite; }
+
+/* ── Entrance line (decorative) ───────────────────── */
+.glow-line {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(139,92,246,.4), transparent);
+}
+
+/* ── Status dots ──────────────────────────────────── */
+.status-online { background: #4ade80; box-shadow: 0 0 6px rgba(74,222,128,.4); }
+.status-offline { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,.3); }
+
+/* ── Print card styles ────────────────────────────── */
+@media print {
+    body { background: #fff !important; }
+    .sidebar, main > div > *:not(.card) { display: none !important; }
+}

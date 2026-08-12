@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Freeze — {{ member.name }}{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto">
+    <a href="/members/{{ member.id }}" class="text-sm hover:text-gray-300" style="color:rgba(139,92,246,.5);">← Back to {{ member.name }}</a>
+
+    <div class="card mt-4">
+        <h2 class="text-lg font-semibold mb-1">Membership Freeze</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">
+            {{ member.name }} — Status: <span class="badge {% if member.status.value == 'active' %}badge-green{% elif member.status.value == 'frozen' %}badge-blue{% else %}badge-red{% endif %}">{{ member.status.value }}</span>
+            · Expiry: {{ member.expiry_date or 'N/A' }}
+        </p>
+
+        {% if member.status.value == 'frozen' %}
+        <div class="alert-yellow mb-4">
+            <strong>Membership is currently frozen.</strong><br>
+            <span class="text-xs">Face scan and RFID entry are blocked. Unfreeze to restore access.</span>
+        </div>
+        <form method="POST" action="/members/{{ member.id }}/unfreeze">
+            <button type="submit" class="btn btn-success w-full">Unfreeze & Restore Access</button>
+        </form>
+        {% else %}
+        <div class="text-xs text-gray-400 mb-3 p-2 rounded" style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.15);">
+            Freezing will block this member from entering via face scan and RFID. The frozen days will be added back to their expiry when unfrozen.
+        </div>
+        <form method="POST" action="/members/{{ member.id }}/freeze" class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-xs text-gray-400">Freeze Start</label>
+                    <input type="date" name="freeze_start" required class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400">Freeze End</label>
+                    <input type="date" name="freeze_end" required class="w-full mt-1">
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Reason (optional)</label>
+                <input type="text" name="reason" class="w-full mt-1" placeholder="e.g. Medical, Travel, Personal">
+            </div>
+            <button type="submit" class="btn btn-primary w-full">Freeze Membership</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if freezes %}
+    <div class="card mt-4">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Freeze History</h3>
+        <table>
+            <thead><tr><th>Start</th><th>End</th><th>Days</th><th>Reason</th></tr></thead>
+            <tbody>
+                {% for f in freezes %}
+                <tr>
+                    <td class="text-sm">{{ f.freeze_start }}</td>
+                    <td class="text-sm">{{ f.freeze_end }}</td>
+                    <td class="text-sm">{{ f.days_frozen }}</td>
+                    <td class="text-sm text-gray-400">{{ f.reason or '—' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exit Kiosk — Solo Leveling Gym</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background: #0f0f14; color: #e5e7eb; font-family: system-ui, sans-serif; }
+        .card { background: #1a1a2e; border: 1px solid #2d2d44; border-radius: 12px; padding: 1.5rem; }
+        .btn-exit { background: #7c3aed; color: white; border: none; border-radius: 8px;
+                    padding: 0.75rem 1.5rem; font-size: 1rem; font-weight: 600;
+                    cursor: pointer; transition: background 0.2s; }
+        .btn-exit:hover { background: #6d28d9; }
+        .btn-exit:disabled { background: #4b5563; cursor: not-allowed; }
+        .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:0.75rem; font-weight:600; }
+        .badge-walkin { background:#1e3a5f; color:#60a5fa; }
+        .badge-regular { background:#1e3a2e; color:#4ade80; }
+        .toast { position:fixed; bottom:2rem; left:50%; transform:translateX(-50%);
+                 background:#22c55e; color:white; padding:1rem 2rem; border-radius:8px;
+                 font-weight:600; display:none; z-index:9999; }
+        .toast.error { background:#ef4444; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-start p-6">
+
+    <div class="w-full max-w-md">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold mb-1" style="color:#c4b5fd;">Exit Kiosk</h1>
+            <p class="text-gray-400 text-sm">Tap your name to open the exit door</p>
+        </div>
+
+        <div id="memberList" class="space-y-3">
+            {% if not members %}
+            <div class="card text-center text-gray-500 py-10">
+                <p class="text-lg">No members currently inside</p>
+                <p class="text-sm mt-1">Check in via face scan at the entrance</p>
+            </div>
+            {% endif %}
+            {% for m in members %}
+            <div class="card flex items-center justify-between gap-4">
+                <div class="flex items-center gap-3">
+                    {% if m.photo_path %}
+                    <img src="/photos/{{ m.photo_path.split('/')[-1] }}" class="w-12 h-12 rounded-full object-cover bg-gray-700" onerror="this.style.display='none'">
+                    {% else %}
+                    <div class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-xl font-bold" style="color:#c4b5fd;">
+                        {{ m.name[0].upper() }}
+                    </div>
+                    {% endif %}
+                    <div>
+                        <p class="font-semibold text-white">{{ m.name }}</p>
+                        <span class="badge {% if m.member_type.value == 'walkin' %}badge-walkin{% else %}badge-regular{% endif %}">
+                            {{ "Walk-in" if m.member_type.value == "walkin" else "Member" }}
+                        </span>
+                    </div>
+                </div>
+                <button class="btn-exit" onclick="exitMember({{ m.id }}, '{{ m.name }}', this)">
+                    Exit →
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="text-center mt-8">
+            <button onclick="location.reload()" class="text-gray-500 text-sm hover:text-gray-300 transition-colors">
+                ↻ Refresh list
+            </button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+    function showToast(msg, isError=false) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.className = 'toast' + (isError ? ' error' : '');
+        t.style.display = 'block';
+        setTimeout(() => { t.style.display = 'none'; }, 3000);
+    }
+
+    async function exitMember(memberId, name, btn) {
+        btn.disabled = true;
+        btn.textContent = 'Opening...';
+        try {
+            const res = await fetch('/exit-kiosk/exit', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({member_id: memberId})
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                showToast(`Goodbye, ${name}! Door is open.`);
+                btn.textContent = 'Exited ✓';
+                btn.style.background = '#16a34a';
+                setTimeout(() => location.reload(), 2500);
+            } else {
+                showToast(data.message || 'Error', true);
+                btn.disabled = false;
+                btn.textContent = 'Exit →';
+            }
+        } catch {
+            showToast('Connection error', true);
+            btn.disabled = false;
+            btn.textContent = 'Exit →';
+        }
+    }
+    </script>
+</body>
+</html>

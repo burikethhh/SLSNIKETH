@@ -1,0 +1,583 @@
+﻿{% extends "base.html" %}
+{% block title %}Staff Management — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Staff Management</h1>
+</div>
+
+{% if request.query_params.get('error') == 'exists' %}
+<div class="alert-red mb-4">Username already exists.</div>
+{% elif request.query_params.get('error') == 'rfid_taken' %}
+<div class="alert-red mb-4">RFID UID is already assigned to another staff member.</div>
+{% elif request.query_params.get('error') == 'self_delete' %}
+<div class="alert-red mb-4">You cannot delete your own account.</div>
+{% elif request.query_params.get('deleted') == '1' %}
+<div class="alert-green mb-4">Staff account deleted permanently.</div>
+{% endif %}
+
+<!-- Staff List -->
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>ID</th><th>Photo</th><th>Username</th><th>Display Name</th><th>RFID</th><th>Role</th><th>Active</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for s in staff_list %}
+            <tr class="{% if not s.is_active %}opacity-50{% endif %}">
+                <td>{{ s.id }}</td>
+                <td>
+                    {% if s.photo_path %}
+                    <img src="{{ photo_url(s.photo_path) }}" class="w-8 h-8 rounded-full object-cover" onerror="this.style.display='none'" style="border:1px solid #7c3aed;">
+                    {% else %}
+                    <div class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-xs text-gray-400">{{ (s.display_name or s.username)[0]|upper }}</div>
+                    {% endif %}
+                </td>
+                <td class="font-medium">{{ s.username }}</td>
+                <td>{{ s.display_name or '—' }}</td>
+                <td class="font-mono text-xs">{{ s.uid or '—' }}</td>
+                <td><span class="badge {% if s.role.value == 'admin' %}badge-yellow{% elif s.role.value == 'coach' %}badge-purple{% else %}badge-blue{% endif %}">{{ s.role.value }}</span></td>
+                <td>
+                    {% if s.is_active %}<span class="badge badge-green">Active</span>
+                    {% else %}<span class="badge badge-red">Disabled</span>{% endif %}
+                </td>
+                <td class="space-x-2">
+                    <button onclick="showEdit({{ s.id }}, '{{ s.display_name or '' }}', '{{ s.role.value }}', '{{ s.uid or '' }}')" class="text-xs text-purple-400 hover:text-purple-300">Edit</button>
+                    <form method="POST" action="/admin/staff/{{ s.id }}/toggle" class="inline">
+                        <button type="submit" class="text-xs text-purple-400 hover:text-purple-300">{{ 'Disable' if s.is_active else 'Enable' }}</button>
+                    </form>
+                    <button onclick="showReset({{ s.id }})" class="text-xs text-yellow-400 hover:text-yellow-300">Reset PW</button>
+                    <form method="POST" action="/admin/staff/{{ s.id }}/delete" class="inline"
+                          onsubmit="return confirm('Permanently delete \'{{ s.username }}\'? Cannot be undone.');">
+                        <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Password Reset Modal -->
+<div id="resetModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-80">
+        <h3 class="text-sm font-semibold mb-3">Reset Password</h3>
+        <form id="resetForm" method="POST" class="space-y-3">
+            <input type="password" name="new_password" required placeholder="New password (min 4)" class="w-full" minlength="4">
+            <div class="flex gap-2">
+                <button type="submit" class="btn btn-danger flex-1">Reset</button>
+                <button type="button" onclick="hideReset()" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Staff Modal -->
+<div id="editModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card" style="width:640px;max-width:96vw;max-height:92vh;overflow-y:auto;">
+        <h3 class="text-sm font-semibold mb-3">Edit Staff</h3>
+        <form id="editForm" method="POST" enctype="multipart/form-data" class="space-y-3">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-500">Display Name</label>
+                    <input type="text" name="display_name" id="editDisplayName" class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Role</label>
+                    <select name="role" id="editRole" class="w-full mt-1">
+                        <option value="staff">Staff</option>
+                        <option value="admin">Admin</option>
+                        <option value="coach">Coach</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">RFID UID</label>
+                <div class="flex gap-2 mt-1">
+                    <input type="text" name="rfid_uid" id="editRfid" class="flex-1" placeholder="Scan or type RFID">
+                    <button type="button" onclick="listenEditRfid()" class="btn btn-outline text-xs" id="editRfidBtn">Scan</button>
+                </div>
+            </div>
+
+            <!-- ── 3-Angle Face Capture ── -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-xs text-gray-500">Face Capture — 3 Angles</label>
+                    <span class="text-xs text-purple-400" id="editCapturedCount">0 / 3 angles</span>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <!-- Left: live preview + angle buttons -->
+                    <div>
+                        <div class="flex items-center gap-1 mb-1">
+                            <select id="editCamSelect" class="text-xs flex-1" onchange="switchEditCam()">
+                                <option value="cam1">Camera 1 (Face)</option>
+                                <option value="cam2">Camera 2 (Overhead)</option>
+                            </select>
+                            <button type="button" onclick="detectBestEditCam()" class="btn btn-outline text-xs px-2">Auto</button>
+                            <button type="button" onclick="startEditCam()" class="btn btn-outline text-xs px-2" id="editCamBtn">Start</button>
+                        </div>
+                        <div class="relative rounded overflow-hidden mb-2" style="background:#000;min-height:110px;">
+                            <img id="editCamVideo" class="w-full" style="max-height:140px;object-fit:cover;display:none;">
+                            <div id="editCamFallback" class="flex items-center justify-center text-gray-500 text-xs py-8">Click "Start" to preview</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1">
+                            <button type="button" onclick="captureEditAngle('front')" id="editBtnFront" class="btn btn-outline text-xs py-1.5">📸 Front</button>
+                            <button type="button" onclick="captureEditAngle('left')"  id="editBtnLeft"  class="btn btn-outline text-xs py-1.5">↰ Left</button>
+                            <button type="button" onclick="captureEditAngle('right')" id="editBtnRight" class="btn btn-outline text-xs py-1.5">↱ Right</button>
+                        </div>
+                    </div>
+                    <!-- Right: preview slots + file upload -->
+                    <div>
+                        <div class="space-y-1 mb-2">
+                            <div id="editSlotFront" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="editThumbFront"><span class="text-xs text-gray-600">F</span></div>
+                                <span class="text-xs text-gray-500" id="editLabelFront">Front — waiting</span>
+                            </div>
+                            <div id="editSlotLeft" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="editThumbLeft"><span class="text-xs text-gray-600">L</span></div>
+                                <span class="text-xs text-gray-500" id="editLabelLeft">Left — waiting</span>
+                            </div>
+                            <div id="editSlotRight" class="flex items-center gap-2 p-1.5 rounded border border-dashed border-gray-700">
+                                <div class="w-10 h-10 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="editThumbRight"><span class="text-xs text-gray-600">R</span></div>
+                                <span class="text-xs text-gray-500" id="editLabelRight">Right — waiting</span>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-600 mb-1">Or upload files (optional):</div>
+                        <input type="file" name="face_front_file" accept="image/*" class="w-full text-xs mb-0.5">
+                        <input type="file" name="face_left_file"  accept="image/*" class="w-full text-xs mb-0.5">
+                        <input type="file" name="face_right_file" accept="image/*" class="w-full text-xs">
+                    </div>
+                </div>
+                <input type="hidden" name="face_photo_b64" id="editFaceB64">
+                <input type="hidden" name="face_front_b64" id="editFaceFront">
+                <input type="hidden" name="face_left_b64"  id="editFaceLeft">
+                <input type="hidden" name="face_right_b64" id="editFaceRight">
+            </div>
+
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Save</button>
+                <button type="button" onclick="hideEdit()" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Add Staff -->
+<div class="card">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add Staff</h3>
+    <form method="POST" action="/admin/staff" enctype="multipart/form-data" class="space-y-4">
+        <div class="grid grid-cols-5 gap-3 items-end">
+            <div>
+                <label class="text-xs text-gray-500">Username</label>
+                <input type="text" name="username" required class="w-full mt-1">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Password</label>
+                <input type="password" name="password" required class="w-full mt-1" minlength="4">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Display Name</label>
+                <input type="text" name="display_name" class="w-full mt-1">
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Role</label>
+                <select name="role" class="w-full mt-1">
+                    <option value="staff">Staff</option>
+                    <option value="admin">Admin</option>
+                    <option value="coach">Coach</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">RFID UID</label>
+                <div class="flex gap-1 mt-1">
+                    <input type="text" name="rfid_uid" id="addRfid" class="flex-1" placeholder="Scan RFID">
+                    <button type="button" onclick="listenAddRfid()" class="btn btn-outline text-xs" id="addRfidBtn">Scan</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── 3-Angle Face Capture ── -->
+        <div>
+            <div class="flex items-center justify-between mb-2">
+                <label class="text-xs text-gray-500 font-medium">Face Capture — 3 Angles</label>
+                <span class="text-xs text-purple-400" id="addCapturedCount">0 / 3 angles</span>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+                <!-- Left: live preview + angle buttons -->
+                <div>
+                    <div class="flex items-center gap-2 mb-2">
+                        <select id="addCamSelect" class="text-xs flex-1" onchange="switchAddCam()">
+                            <option value="cam1">Camera 1 (Face)</option>
+                            <option value="cam2">Camera 2 (Overhead)</option>
+                        </select>
+                        <button type="button" onclick="detectBestAddCam()" class="btn btn-outline text-xs">Auto</button>
+                        <button type="button" onclick="startAddCam()" class="btn btn-outline text-xs" id="addCamBtn">Start</button>
+                    </div>
+                    <div class="relative rounded overflow-hidden mb-2" style="background:#000;min-height:130px;">
+                        <img id="addCamVideo" class="w-full" style="max-height:160px;object-fit:cover;display:none;">
+                        <div id="addCamFallback" class="flex items-center justify-center text-gray-500 text-xs py-10">Click "Start" to preview</div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-1">
+                        <button type="button" onclick="captureAddAngle('front')" id="addBtnFront" class="btn btn-outline text-xs py-2">📸 Front</button>
+                        <button type="button" onclick="captureAddAngle('left')"  id="addBtnLeft"  class="btn btn-outline text-xs py-2">↰ Left</button>
+                        <button type="button" onclick="captureAddAngle('right')" id="addBtnRight" class="btn btn-outline text-xs py-2">↱ Right</button>
+                    </div>
+                    <p class="text-xs text-gray-600 mt-1.5">Tip: Position the person, then capture each angle. They can turn between shots.</p>
+                </div>
+                <!-- Right: preview slots + file upload -->
+                <div>
+                    <div class="space-y-1.5 mb-3">
+                        <div id="addSlotFront" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addThumbFront"><span class="text-xs text-gray-600">Front</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addLabelFront">Front — waiting</span>
+                        </div>
+                        <div id="addSlotLeft" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addThumbLeft"><span class="text-xs text-gray-600">Left</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addLabelLeft">Left — waiting</span>
+                        </div>
+                        <div id="addSlotRight" class="flex items-center gap-2 p-2 rounded border border-dashed border-gray-700">
+                            <div class="w-12 h-12 rounded bg-gray-800 flex-shrink-0 overflow-hidden flex items-center justify-center" id="addThumbRight"><span class="text-xs text-gray-600">Right</span></div>
+                            <span class="text-xs text-gray-500 flex-1" id="addLabelRight">Right — waiting</span>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-600 mb-1">Or upload files:</div>
+                    <input type="file" name="face_front_file" accept="image/*" class="w-full text-xs mb-0.5">
+                    <input type="file" name="face_left_file"  accept="image/*" class="w-full text-xs mb-0.5">
+                    <input type="file" name="face_right_file" accept="image/*" class="w-full text-xs">
+                    <input type="hidden" name="face_photo_b64" id="addFaceB64">
+                    <input type="hidden" name="face_front_b64" id="addFaceFront">
+                    <input type="hidden" name="face_left_b64"  id="addFaceLeft">
+                    <input type="hidden" name="face_right_b64" id="addFaceRight">
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <button type="submit" class="btn btn-primary">Add Staff</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ══════════════════════════════════════════════════════════════════
+// Camera engine — ID-based lazy lookup, context-aware
+// All DOM elements are looked up by ID at call time so null refs
+// can never happen even if the modal was not open at engine creation.
+// ══════════════════════════════════════════════════════════════════
+function makeCameraEngine(ids) {
+    let ws = null, pollTimer = null, hbTimer = null;
+    let cam = ids.cam || 'cam1';
+    const hid = ids.holderId;
+
+    const $   = (id) => document.getElementById(id);
+    const $feed   = () => $(ids.feedId);
+    const $fb     = () => $(ids.fallbackId);
+    const $camBtn = () => $(ids.camBtnId);
+
+    async function acquire() {
+        try {
+            const r = await fetch(`/api/camera-context/acquire?context=admin_staff&holder=${hid}`);
+            const d = await r.json();
+            if (!d.acquired) console.warn('[cam] context busy:', d.holder);
+        } catch(e) { console.warn('[cam] acquire failed', e); }
+    }
+    async function release() {
+        stopHb(); stop();
+        try { await fetch(`/api/camera-context/release?holder=${hid}`, {method:'POST'}); } catch(e) {}
+    }
+    function startHb() {
+        stopHb();
+        hbTimer = setInterval(async () => {
+            try { await fetch(`/api/camera-context/heartbeat?holder=${hid}`); } catch(e) {}
+        }, 10000);
+    }
+    function stopHb() { if (hbTimer) { clearInterval(hbTimer); hbTimer = null; } }
+
+    async function start() {
+        const fb = $fb(), btn = $camBtn(), feed = $feed();
+        if (!fb || !feed) return;
+        if (ws || pollTimer) { stop(); if (btn) btn.textContent = 'Start'; await release(); return; }
+        fb.textContent = 'Checking camera…'; fb.style.color = '#9ca3af'; fb.style.display = '';
+        if (btn) btn.textContent = 'Stop';
+        await acquire();
+
+        // Wait up to 12 s for the camera to produce a frame (handles reconnect backoff)
+        let preflightOk = false;
+        const deadline = Date.now() + 12000;
+        while (!preflightOk && Date.now() < deadline) {
+            try {
+                const r = await fetch(`/api/camera-snapshot?cam=${cam}&_t=${Date.now()}`);
+                if (r.ok && r.status !== 204) {
+                    const b = await r.blob();
+                    if (b.size > 200) {
+                        const url = URL.createObjectURL(b);
+                        feed.src = url; feed.style.display = '';
+                        fb.style.display = 'none';
+                        preflightOk = true;
+                        break;
+                    }
+                }
+            } catch(e) {}
+            const waited = Math.round((Date.now() - (deadline - 12000)) / 1000);
+            fb.textContent = `Camera starting… (${waited}s)`;
+            await new Promise(r => setTimeout(r, 1200));
+        }
+        if (!preflightOk) {
+            fb.textContent = 'Camera not ready — frames may appear once it reconnects';
+            fb.style.color = '#fbbf24';
+        }
+
+        const wsNum = cam === 'cam2' ? '2' : '1';
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        ws = new WebSocket(`${proto}://${location.host}/ws/camera${wsNum}`);
+        ws.binaryType = 'arraybuffer';
+        let wsAlive = false;
+        ws.onmessage = (evt) => {
+            wsAlive = true;
+            const blob = new Blob([evt.data], {type:'image/jpeg'});
+            const url = URL.createObjectURL(blob);
+            const f = $feed(), fall = $fb(), b = $camBtn();
+            if (!f) return;
+            const old = f.src;
+            f.src = url; f.style.display = '';
+            if (fall) fall.style.display = 'none';
+            if (b) b.textContent = 'Stop';
+            if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+        };
+        ws.onopen  = () => { startHb(); };
+        ws.onerror = () => { if (!wsAlive) { ws = null; startPoll(); } };
+        setTimeout(() => { if (!wsAlive && ws) { ws.close(); ws = null; startPoll(); } }, 2000);
+    }
+
+    function startPoll() {
+        let busy = false;
+        pollTimer = setInterval(async () => {
+            if (busy) return; busy = true;
+            try {
+                const r = await fetch(`/api/camera-snapshot?cam=${cam}&_t=${Date.now()}`);
+                if (r.ok && r.status !== 204) {
+                    const b = await r.blob();
+                    if (b.size > 200) {
+                        const url = URL.createObjectURL(b);
+                        const f = $feed(), fall = $fb(), btn = $camBtn();
+                        if (!f) { busy = false; return; }
+                        const old = f.src;
+                        f.src = url; f.style.display = '';
+                        if (fall) fall.style.display = 'none';
+                        if (btn) btn.textContent = 'Stop';
+                        if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+                    }
+                }
+            } catch(e) {}
+            busy = false;
+        }, 250);
+        startHb();
+    }
+
+    function stop() {
+        if (ws)        { try { ws.close(); }        catch(e){} ws = null; }
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        stopHb();
+    }
+
+    // Generic HQ snapshot capture (used by angle capture functions)
+    async function snapshotHQ() {
+        const resp = await fetch(`/api/camera-snapshot/hq?cam=${cam}`);
+        if (!resp.ok || resp.status === 204) throw new Error('No frame — start camera first');
+        const blob = await resp.blob();
+        if (blob.size < 500) throw new Error('Frame too small');
+        return new Promise((ok, fail) => {
+            const rd = new FileReader();
+            rd.onload = () => ok(rd.result);
+            rd.onerror = fail;
+            rd.readAsDataURL(blob);
+        });
+    }
+
+    function setCam(c) { cam = c; }
+    function getCam()  { return cam; }
+    return { start, stop, snapshotHQ, setCam, getCam, release };
+}
+
+// ── Helper: update angle slot UI ─────────────────────────────────
+function setAngleSlot(prefix, angle, dataUrl) {
+    const A = angle.charAt(0).toUpperCase() + angle.slice(1);
+    const thumb = document.getElementById(prefix + 'Thumb' + A);
+    const label = document.getElementById(prefix + 'Label' + A);
+    const slot  = document.getElementById(prefix + 'Slot'  + A);
+    const btn   = document.getElementById(prefix + 'Btn'   + A);
+    if (thumb) thumb.innerHTML = '<img src="' + dataUrl + '" class="w-full h-full object-cover">';
+    if (label) label.innerHTML = A + ' <span class="badge badge-green ml-1">✓</span>';
+    if (slot)  { slot.style.borderColor = '#22c55e'; slot.style.borderStyle = 'solid'; }
+    if (btn)   { btn.classList.remove('btn-outline'); btn.classList.add('btn-success'); btn.textContent = '✓ ' + A; }
+}
+function resetAngleSlot(prefix, angle, label) {
+    const A = angle.charAt(0).toUpperCase() + angle.slice(1);
+    const thumb = document.getElementById(prefix + 'Thumb' + A);
+    const lbl   = document.getElementById(prefix + 'Label' + A);
+    const slot  = document.getElementById(prefix + 'Slot'  + A);
+    const btn   = document.getElementById(prefix + 'Btn'   + A);
+    if (thumb) thumb.innerHTML = '<span class="text-xs text-gray-600">' + A[0] + '</span>';
+    if (lbl)   lbl.textContent = A + ' — waiting';
+    if (slot)  { slot.style.borderColor = ''; slot.style.borderStyle = 'dashed'; }
+    if (btn)   { btn.classList.add('btn-outline'); btn.classList.remove('btn-success'); btn.textContent = label; }
+}
+
+// ── Password Reset ────────────────────────────────────────────────
+function showReset(id) {
+    document.getElementById('resetForm').action = `/admin/staff/${id}/reset-password`;
+    document.getElementById('resetModal').classList.remove('hidden');
+}
+function hideReset() { document.getElementById('resetModal').classList.add('hidden'); }
+
+// ══════════════════════════════════════════════════════════════════
+// EDIT STAFF
+// ══════════════════════════════════════════════════════════════════
+let editSelectedCam = 'cam1';
+const editAngles = { front: null, left: null, right: null };
+const editEngine = makeCameraEngine({
+    holderId: 'staff_edit_' + Date.now(),
+    feedId: 'editCamVideo', fallbackId: 'editCamFallback', camBtnId: 'editCamBtn',
+    cam: 'cam1',
+});
+
+function showEdit(id, displayName, role, rfid) {
+    document.getElementById('editForm').action = `/admin/staff/${id}/update`;
+    document.getElementById('editDisplayName').value = displayName;
+    document.getElementById('editRole').value = role;
+    document.getElementById('editRfid').value = rfid;
+    // Reset angle state
+    Object.keys(editAngles).forEach(a => { editAngles[a] = null; });
+    ['front','left','right'].forEach((a, i) => {
+        const labels = ['📸 Front','↰ Left','↱ Right'];
+        document.getElementById('editFace' + a[0].toUpperCase() + a.slice(1)).value = '';
+        resetAngleSlot('edit', a, labels[i]);
+    });
+    document.getElementById('editFaceB64').value = '';
+    document.getElementById('editCapturedCount').textContent = '0 / 3 angles';
+    document.getElementById('editCamFallback').textContent = 'Click "Start" to preview';
+    document.getElementById('editCamVideo').style.display = 'none';
+    document.getElementById('editCamBtn').textContent = 'Start';
+    document.getElementById('editModal').classList.remove('hidden');
+    editSelectedCam = 'cam1';
+    document.getElementById('editCamSelect').value = 'cam1';
+    editEngine.setCam('cam1');
+}
+function hideEdit() {
+    document.getElementById('editModal').classList.add('hidden');
+    editEngine.release();
+}
+function startEditCam()  { editEngine.start(); }
+function stopEditPreview() { editEngine.stop(); }
+function switchEditCam() {
+    editSelectedCam = document.getElementById('editCamSelect').value;
+    editEngine.setCam(editSelectedCam); editEngine.stop(); editEngine.start();
+}
+async function detectBestEditCam() {
+    for (const c of ['cam1','cam2']) {
+        try {
+            const r = await fetch('/api/camera-snapshot?cam=' + c);
+            if (r.ok && r.status !== 204) { const b = await r.blob(); if (b.size > 5000) {
+                editSelectedCam = c; document.getElementById('editCamSelect').value = c;
+                editEngine.setCam(c); editEngine.stop(); editEngine.start(); return;
+            } }
+        } catch(e) {}
+    }
+    alert('No cameras available');
+}
+async function captureEditAngle(angle) {
+    const A = angle.charAt(0).toUpperCase() + angle.slice(1);
+    const btn = document.getElementById('editBtn' + A);
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+        const dataUrl = await editEngine.snapshotHQ();
+        editAngles[angle] = dataUrl;
+        document.getElementById('editFace' + A).value = dataUrl;
+        if (angle === 'front') document.getElementById('editFaceB64').value = dataUrl;
+        setAngleSlot('edit', angle, dataUrl);
+        const n = Object.values(editAngles).filter(Boolean).length;
+        document.getElementById('editCapturedCount').textContent = n + ' / 3 angles';
+    } catch(e) { alert('Capture failed: ' + e.message); if (btn) btn.textContent = orig; }
+    if (btn) btn.disabled = false;
+}
+
+// ══════════════════════════════════════════════════════════════════
+// ADD STAFF
+// ══════════════════════════════════════════════════════════════════
+let addSelectedCam = 'cam1';
+const addAngles = { front: null, left: null, right: null };
+const addEngine = makeCameraEngine({
+    holderId: 'staff_add_' + Date.now(),
+    feedId: 'addCamVideo', fallbackId: 'addCamFallback', camBtnId: 'addCamBtn',
+    cam: 'cam1',
+});
+
+function startAddCam()   { addEngine.start(); }
+function stopAddPreview(){ addEngine.stop(); }
+function switchAddCam() {
+    addSelectedCam = document.getElementById('addCamSelect').value;
+    addEngine.setCam(addSelectedCam); addEngine.stop(); addEngine.start();
+}
+async function detectBestAddCam() {
+    for (const c of ['cam1','cam2']) {
+        try {
+            const r = await fetch('/api/camera-snapshot?cam=' + c);
+            if (r.ok && r.status !== 204) { const b = await r.blob(); if (b.size > 5000) {
+                addSelectedCam = c; document.getElementById('addCamSelect').value = c;
+                addEngine.setCam(c); addEngine.stop(); addEngine.start(); return;
+            } }
+        } catch(e) {}
+    }
+    alert('No cameras available');
+}
+async function captureAddAngle(angle) {
+    const A = angle.charAt(0).toUpperCase() + angle.slice(1);
+    const btn = document.getElementById('addBtn' + A);
+    const orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+        const dataUrl = await addEngine.snapshotHQ();
+        addAngles[angle] = dataUrl;
+        document.getElementById('addFace' + A).value = dataUrl;
+        if (angle === 'front') document.getElementById('addFaceB64').value = dataUrl;
+        setAngleSlot('add', angle, dataUrl);
+        const n = Object.values(addAngles).filter(Boolean).length;
+        document.getElementById('addCapturedCount').textContent = n + ' / 3 angles';
+    } catch(e) { alert('Capture failed: ' + e.message); if (btn) btn.textContent = orig; }
+    if (btn) btn.disabled = false;
+}
+
+// ── RFID ──────────────────────────────────────────────────────────
+let rfidPolling = null;
+function listenAddRfid() {
+    const btn = document.getElementById('addRfidBtn');
+    if (rfidPolling) { clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); return; }
+    btn.textContent = 'Scanning…'; btn.classList.add('animate-pulse');
+    rfidPolling = setInterval(async () => {
+        try { const r = await fetch('/api/rfid-latest'); const d = await r.json();
+            if (d.uid) { document.getElementById('addRfid').value = d.uid; clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); }
+        } catch(e) {}
+    }, 500);
+    setTimeout(() => { if (rfidPolling) { clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); } }, 15000);
+}
+function listenEditRfid() {
+    const btn = document.getElementById('editRfidBtn');
+    if (rfidPolling) { clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); return; }
+    btn.textContent = 'Scanning…'; btn.classList.add('animate-pulse');
+    rfidPolling = setInterval(async () => {
+        try { const r = await fetch('/api/rfid-latest'); const d = await r.json();
+            if (d.uid) { document.getElementById('editRfid').value = d.uid; clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); }
+        } catch(e) {}
+    }, 500);
+    setTimeout(() => { if (rfidPolling) { clearInterval(rfidPolling); rfidPolling = null; btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); } }, 15000);
+}
+
+window.addEventListener('beforeunload', () => {
+    editEngine.release();
+    addEngine.release();
+    if (rfidPolling) clearInterval(rfidPolling);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Freeze — {{ member.name }}{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto">
+    <a href="/members/{{ member.id }}" class="text-sm hover:text-gray-300" style="color:rgba(139,92,246,.5);">← Back to {{ member.name }}</a>
+
+    <div class="card mt-4">
+        <h2 class="text-lg font-semibold mb-1">Membership Freeze</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">
+            {{ member.name }} — Status: <span class="badge {% if member.status.value == 'active' %}badge-green{% elif member.status.value == 'frozen' %}badge-blue{% else %}badge-red{% endif %}">{{ member.status.value }}</span>
+            · Expiry: {{ member.expiry_date or 'N/A' }}
+        </p>
+
+        {% if member.status.value != 'frozen' %}
+        <form method="POST" action="/admin/freeze/{{ member.id }}" class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="text-xs text-gray-400">Freeze Start</label>
+                    <input type="date" name="freeze_start" required class="w-full mt-1">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-400">Freeze End</label>
+                    <input type="date" name="freeze_end" required class="w-full mt-1">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary w-full">Freeze Membership</button>
+        </form>
+        {% else %}
+        <div class="alert-yellow mb-4">Membership is currently frozen.</div>
+        <form method="POST" action="/admin/unfreeze/{{ member.id }}">
+            <button type="submit" class="btn btn-success w-full">Unfreeze &amp; Restore</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if freezes %}
+    <div class="card mt-4">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Freeze History</h3>
+        <table>
+            <thead><tr><th>Start</th><th>End</th><th>Days</th></tr></thead>
+            <tbody>
+                {% for f in freezes %}
+                <tr>
+                    <td class="text-sm">{{ f.freeze_start }}</td>
+                    <td class="text-sm">{{ f.freeze_end }}</td>
+                    <td class="text-sm">{{ f.days_frozen }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

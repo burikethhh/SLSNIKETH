@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Register — Step 3: RFID{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto">
+    <div class="flex items-center gap-3 mb-6">
+        <div class="flex items-center gap-2 text-sm">
+            <span class="w-7 h-7 rounded-full bg-green-600 text-white flex items-center justify-center text-xs">✓</span>
+            <span class="text-green-400">Details</span>
+            <span class="text-gray-600 mx-2">→</span>
+            <span class="w-7 h-7 rounded-full bg-green-600 text-white flex items-center justify-center text-xs">✓</span>
+            <span class="text-green-400">Face</span>
+            <span class="text-gray-600 mx-2">→</span>
+            <span class="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold" style="background:#7c3aed;">3</span>
+            <span class="font-medium" style="color:#c4b5fd;">RFID</span>
+        </div>
+    </div>
+
+    {% if error %}
+    <div class="alert-red mb-4 text-sm">{{ error }}</div>
+    {% endif %}
+
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-2">RFID Badge Mapping — {{ member_name }}</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">Tap the member's RFID card on the reader, or type the UID manually.</p>
+
+        <form method="POST" action="/members/register/step3" class="space-y-4">
+            <input type="hidden" name="session_data" value="{{ session_data }}">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">RFID UID</label>
+                <input type="text" name="rfid_uid" id="rfidInput" required
+                       class="w-full text-lg tracking-widest font-mono" placeholder="Tap card or type UID..."
+                       autocomplete="off">
+                <p class="text-xs text-gray-500 mt-1">The reader types the UID like a keyboard. Just focus this field and tap.</p>
+            </div>
+
+            <div class="flex gap-3 pt-2">
+                <button type="submit" class="btn btn-primary">Save &amp; Complete Registration</button>
+                <a href="/members/" class="btn btn-outline">Cancel</a>
+            </div>
+        </form>
+    </div>
+
+    <!-- Registration Summary -->
+    <div class="card mt-4">
+        <h3 class="text-sm font-semibold text-gray-400 mb-2">Registration Summary</h3>
+        <div class="flex gap-4 items-start">
+            {% if photo_front %}
+            <img src="/static/photos/{{ photo_front.split('/')[-1] }}" alt="Photo" class="w-20 h-20 rounded object-cover" onerror="this.style.display='none'">
+            {% endif %}
+            <table class="flex-1">
+                <tr><td class="text-gray-500 pr-4">Name</td><td>{{ member_name }}</td></tr>
+                <tr><td class="text-gray-500 pr-4">Plan</td><td>{{ plan_name or 'N/A' }}</td></tr>
+                <tr><td class="text-gray-500 pr-4">Price</td><td>₱{{ price or 'N/A' }}</td></tr>
+                {% if discount_type %}
+                <tr><td class="text-gray-500 pr-4">Discount</td><td><span class="badge badge-yellow">★ {% if discount_type == "pwd" %}PWD Discount{% else %}{{ discount_type|capitalize }}{% if discount_type == "student" %} Student{% elif discount_type == "senior" %} Senior{% endif %} Discount{% endif %}</span></td></tr>
+                {% endif %}
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+const rfidInput = document.getElementById('rfidInput');
+const rfidForm = rfidInput.closest('form');
+rfidInput.focus();
+
+let rfidBuffer = '';
+let rfidTimer = null;
+let rfidConfirmed = false;
+
+// Block form submission until user explicitly clicks Confirm
+rfidForm.addEventListener('submit', (e) => {
+    if (!rfidConfirmed) {
+        e.preventDefault();
+        showRfidConfirm();
+    }
+});
+
+// Prevent Enter key on RFID input from submitting — show confirm instead
+rfidInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const val = rfidInput.value.trim();
+        if (val.length >= 4) showRfidConfirm();
+    }
+});
+
+// Capture RFID reader output when input is NOT focused (keyboard-emulation mode)
+document.addEventListener('keydown', (e) => {
+    const tag = document.activeElement?.tagName?.toLowerCase();
+    const isInput = tag === 'input' || tag === 'textarea' || tag === 'select' || document.activeElement?.isContentEditable;
+    if (isInput) return;
+    if (e.key === 'Enter' && rfidBuffer.length >= 4) {
+        rfidInput.value = rfidBuffer.toUpperCase();
+        rfidBuffer = '';
+        showRfidConfirm();
+        return;
+    }
+    if (e.key.length === 1) {
+        rfidBuffer += e.key;
+        clearTimeout(rfidTimer);
+        rfidTimer = setTimeout(() => { rfidBuffer = ''; }, 200);
+    }
+});
+
+function showRfidConfirm() {
+    const uid = rfidInput.value.trim().toUpperCase();
+    if (!uid || uid.length < 4) return;
+    rfidInput.value = uid;
+
+    // Show confirmation banner
+    let banner = document.getElementById('rfidConfirmBanner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'rfidConfirmBanner';
+        banner.className = 'mt-4 p-4 rounded';
+        banner.style.cssText = 'background:rgba(124,58,237,.12);border:2px solid #7c3aed;';
+        rfidForm.parentElement.insertBefore(banner, rfidForm.nextSibling);
+    }
+    banner.innerHTML = `
+        <div class="flex items-center gap-3">
+            <svg class="w-6 h-6 text-purple-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+            <div class="flex-1">
+                <div class="text-sm font-semibold text-purple-300">RFID Detected: <span class="font-mono tracking-widest">${uid}</span></div>
+                <div class="text-xs text-gray-400 mt-0.5">Please verify the UID above is correct before completing registration.</div>
+            </div>
+            <button type="button" onclick="confirmRfid()" class="btn btn-primary text-sm">
+                Confirm &amp; Register
+            </button>
+        </div>
+    `;
+    banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function confirmRfid() {
+    rfidConfirmed = true;
+    rfidForm.submit();
+}
+</script>
+{% endblock %}

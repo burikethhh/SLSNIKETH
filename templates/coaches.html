@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}Coaches — Solo Leveling Gym{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Coaches</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ coach_data|length }} coach{{ 'es' if coach_data|length != 1 }}</p>
+    </div>
+    <div class="flex gap-2">
+        <button onclick="document.getElementById('addModal').classList.remove('hidden')" class="btn btn-primary">+ Add Coach</button>
+    </div>
+</div>
+
+<!-- Add Coach Modal -->
+<div id="addModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">Add Coach</h3>
+        <form method="post" action="/coaches/add" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Username</label>
+                <input type="text" name="username" required class="w-full mt-1" placeholder="coach_username">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Password</label>
+                <input type="password" name="password" required class="w-full mt-1" minlength="4">
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Display Name</label>
+                <input type="text" name="display_name" class="w-full mt-1" placeholder="Coach Name">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Create Coach</button>
+                <button type="button" onclick="document.getElementById('addModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Coaches Table -->
+{% if request.query_params.get('created') == '1' %}
+<div class="alert-green mb-4 text-sm">Coach created successfully.</div>
+{% elif request.query_params.get('deleted') == '1' %}
+<div class="alert-green mb-4 text-sm">Coach removed successfully.</div>
+{% elif request.query_params.get('error') == 'dup_username' %}
+<div class="alert-red mb-4 text-sm">Username already taken.</div>
+{% endif %}
+
+<!-- Status Filter -->
+<div class="card mb-4">
+    <div class="flex gap-2 items-center">
+        <span class="text-xs text-gray-400">Filter:</span>
+        <a href="/coaches" class="text-xs px-2 py-1 rounded {% if not status_filter %}bg-purple-600 text-white{% else %}text-gray-400 hover:text-gray-200{% endif %}">All</a>
+        <a href="/coaches?status=active" class="text-xs px-2 py-1 rounded {% if status_filter == 'active' %}bg-green-600 text-white{% else %}text-gray-400 hover:text-gray-200{% endif %}">Has Active Students</a>
+        <a href="/coaches?status=expired" class="text-xs px-2 py-1 rounded {% if status_filter == 'expired' %}bg-red-600 text-white{% else %}text-gray-400 hover:text-gray-200{% endif %}">Has Expired Students</a>
+    </div>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Username</th>
+                <th>Students</th>
+                <th>Active</th>
+                <th>Expired</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for cd in coach_data %}
+            <tr>
+                <td class="font-medium text-gray-200">{{ cd.coach.display_name or cd.coach.username }}</td>
+                <td class="text-sm text-gray-400">{{ cd.coach.username }}</td>
+                <td><span class="badge badge-purple">{{ cd.student_count }}</span></td>
+                <td><span class="badge badge-green">{{ cd.active_count }}</span></td>
+                <td>
+                    {% if cd.expired_count > 0 %}
+                    <span class="badge badge-red">{{ cd.expired_count }}</span>
+                    {% else %}
+                    <span class="text-gray-600">0</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if cd.coach.is_active %}
+                    <span class="badge badge-green">Active</span>
+                    {% else %}
+                    <span class="badge badge-red">Inactive</span>
+                    {% endif %}
+                </td>
+                <td class="space-x-2">
+                    <a href="/coaches/{{ cd.coach.id }}/students" class="text-purple-400 hover:text-purple-300 text-xs">Students</a>
+                    <form method="post" action="/coaches/{{ cd.coach.id }}/toggle" style="display:inline">
+                        <button type="submit" class="text-yellow-400 hover:text-yellow-300 text-xs">
+                            {{ 'Deactivate' if cd.coach.is_active else 'Activate' }}
+                        </button>
+                    </form>
+                    <form method="post" action="/coaches/{{ cd.coach.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Remove this coach?')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not coach_data %}
+            <tr><td colspan="7" class="text-center text-gray-500 py-8">
+                {% if status_filter %}No coaches with {{ status_filter }} students.{% else %}No coaches registered{% endif %}
+            </td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+{% if request.query_params.get('session_created') == '1' %}
+<div id="sessionCreatedAlert" class="alert-green mb-4 text-sm">Session recorded.</div>
+{% elif request.query_params.get('session_deleted') == '1' %}
+<div id="sessionDeletedAlert" class="alert-green mb-4 text-sm">Session deleted.</div>
+{% endif %}
+
+<!-- ════════════ COACHING SESSIONS — embedded on coaches page ════════════ -->
+<div class="mt-8">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Coaching Sessions</h2>
+        <button onclick="document.getElementById('sessionModal').classList.remove('hidden')" class="btn btn-primary text-sm">+ New Session</button>
+    </div>
+
+    <!-- Date Filter -->
+    <div class="card mb-4">
+        <form method="get" action="/coaches" class="flex gap-3 items-end">
+            <input type="hidden" name="status" value="{{ status_filter }}">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Filter by date</label>
+                <input type="date" name="session_date" value="{{ session_filter }}" class="w-48">
+            </div>
+            <button type="submit" class="btn btn-outline text-xs">Filter</button>
+            {% if session_filter %}
+            <a href="/coaches" class="text-xs text-purple-400 hover:text-purple-300">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+
+    <!-- Sessions Table -->
+    <div class="card overflow-hidden">
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Coach</th>
+                    <th>Member</th>
+                    <th>Notes</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sessions %}
+                <tr>
+                    <td class="text-sm whitespace-nowrap">{{ s.session_date }}</td>
+                    <td class="font-medium text-gray-200">{{ s.coach_name }}</td>
+                    <td>{{ s.member_name }}</td>
+                    <td class="text-sm text-gray-400 max-w-xs truncate">{{ s.notes or '' }}</td>
+                    <td>
+                        <form method="post" action="/coach/sessions/{{ s.id }}/delete" style="display:inline"
+                              onsubmit="return confirm('Delete this session?')">
+                            <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not sessions %}
+                <tr><td colspan="5" class="text-center text-gray-500 py-8">No coaching sessions recorded</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Add Session Modal -->
+<div id="sessionModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">New Coaching Session</h3>
+        <form method="post" action="/coaches/add-session" class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Coach *</label>
+                <select name="coach_id" required class="w-full">
+                    <option value="">— Select Coach —</option>
+                    {% for c in coach_data %}
+                    <option value="{{ c.coach.id }}">{{ c.coach.display_name or c.coach.username }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Member / Client Name *</label>
+                <input type="text" name="member_name" required class="w-full" placeholder="e.g. Juan Dela Cruz">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <input type="text" name="notes" class="w-full" placeholder="Optional">
+            </div>
+            <p class="text-xs text-gray-500">Session date is auto-set to today. Gym share (percent or fixed price) is set in Admin → Gym Plans.</p>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Record Session</button>
+                <button type="button" onclick="document.getElementById('sessionModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// Show session modal on error/created query param
+{% if request.query_params.get('session_created') == '1' %}
+document.addEventListener('DOMContentLoaded', function() {
+    const el = document.getElementById('sessionCreatedAlert');
+    if (el) setTimeout(() => el.remove(), 3000);
+});
+{% endif %}
+</script>
+{% endblock %}

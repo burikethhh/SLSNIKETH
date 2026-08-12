@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Activity Log — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Staff Activity Log</h1>
+</div>
+
+<div class="card mb-4">
+    <form method="GET" class="flex gap-4 items-end">
+        <div>
+            <label class="text-xs text-gray-500">Staff</label>
+            <select name="staff_filter" class="mt-1">
+                <option value="0">All Staff</option>
+                {% for s in staff_list %}
+                <option value="{{ s.id }}" {% if staff_filter == s.id %}selected{% endif %}>{{ s.display_name or s.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Action</label>
+            <input type="text" name="action_filter" value="{{ action_filter }}" class="mt-1" placeholder="e.g. create_member">
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+    </form>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Time</th><th>Staff</th><th>Action</th><th>Target</th><th>Details</th></tr>
+        </thead>
+        <tbody>
+            {% for a in activities %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ a.timestamp | to_local if a.timestamp else '' }}</td>
+                <td class="text-sm">Staff #{{ a.staff_id }}</td>
+                <td><span class="badge badge-blue">{{ a.action }}</span></td>
+                <td class="text-xs text-gray-400">{{ a.target_type }}{% if a.target_id %} #{{ a.target_id }}{% endif %}</td>
+                <td class="text-sm text-gray-400 max-w-xs truncate">{{ a.details or '' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not activities %}
+            <tr><td colspan="5" class="text-center text-gray-500 py-8">No activity recorded</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

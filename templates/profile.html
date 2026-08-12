@@ -1,0 +1,313 @@
+{% extends "base.html" %}
+{% block title %}{{ member.name }} — Profile{% endblock %}
+{% block content %}
+<div class="max-w-4xl mx-auto">
+    <div class="flex items-center gap-2 mb-6">
+        <a href="/members" class="text-sm hover:text-gray-300" style="color:rgba(139,92,246,.5);">← Members</a>
+    </div>
+
+    <div class="grid grid-cols-3 gap-6">
+        <!-- Left: Photo + Details -->
+        <div class="card col-span-1">
+            <div class="text-center mb-4">
+                {% if member.photo_path %}
+                <img src="{{ photo_url(member.photo_path) }}"
+                     class="w-28 h-28 rounded-full object-cover mx-auto" style="border:2px solid #7c3aed;box-shadow:0 0 12px rgba(124,58,237,.3);" onerror="this.style.display='none'">
+                {% else %}
+                <div class="w-28 h-28 rounded-full bg-gray-700 flex items-center justify-center mx-auto text-2xl text-gray-500">{{ member.name[0] if member.name else '?' }}</div>
+                {% endif %}
+                <h2 class="text-lg font-bold mt-3 text-gray-100">{{ member.name }}</h2>
+                <div class="text-xs text-gray-500">ID #{{ member.id }}</div>
+                {% if member.discount_type %}
+                <span class="badge badge-yellow mt-1">★ {% if member.discount_type == "pwd" %}PWD Discount{% else %}{{ member.discount_type|capitalize }}{% if member.discount_type == "student" %} Student{% elif member.discount_type == "senior" %} Senior{% endif %}{% endif %}</span>
+                {% endif %}
+                {% if member.student_id_photo %}
+                <div class="mt-3">
+                    <img src="{{ photo_url(member.student_id_photo) }}"
+                         class="max-h-32 rounded mx-auto" style="border:1px solid #2d2d44;" onerror="this.style.display='none'">
+                <div class="text-xs font-semibold tracking-wider mt-1" style="color:#c4b5fd;">{% if member.discount_type == "student" %}STUDENT ID{% elif member.discount_type == "senior" %}SENIOR CITIZEN ID{% elif member.discount_type == "pwd" %}PWD ID{% elif member.discount_type == "voucher" %}VOUCHER{% endif %}</div>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="space-y-2 text-sm">
+                <div class="flex justify-between"><span class="text-gray-500">UID</span><span class="font-mono text-xs">{{ member.uid or 'N/A' }}</span></div>
+                <div class="flex justify-between"><span class="text-gray-500">Plan</span><span>{{ member.plan.name if member.plan else 'N/A' }}</span></div>
+                <div class="flex justify-between"><span class="text-gray-500">Expiry</span><span class="{% if member.expiry_date and member.expiry_date.isoformat() < today %}text-red-400{% endif %}">{{ member.expiry_date or 'N/A' }}</span></div>
+                <div class="flex justify-between"><span class="text-gray-500">Status</span>
+                    {% if member.status.value == 'active' %}
+                    <span class="badge badge-green">Active</span>
+                    {% elif member.status.value == 'expired' %}
+                    <span class="badge badge-red">Expired</span>
+                    {% elif member.status.value == 'frozen' %}
+                    <span class="badge badge-blue">Frozen</span>
+                    {% elif member.status.value == 'deleted' %}
+                    <span class="badge badge-red">Deleted</span>
+                    {% else %}
+                    <span class="badge">{{ member.status.value }}</span>
+                    {% endif %}
+                </div>
+                <div class="flex justify-between"><span class="text-gray-500">Joined</span><span class="text-xs">{{ member.created_at | to_local_date if member.created_at else 'N/A' }}</span></div>
+            </div>
+
+            {% if member.status.value == 'active' %}
+            <div class="mt-4 pt-4 border-t border-gray-800">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs text-gray-400">Today</span>
+                    <span id="statusBadge" class="badge {% if today_direction == 'IN' %}badge-green{% elif today_direction == 'OUT' %}badge-blue{% else %}{% endif %}" style="{% if not today_direction %}background:#2d2d44;color:#9ca3af;{% endif %}">
+                        {% if today_direction == 'IN' %}Inside ↑{% elif today_direction == 'OUT' %}Outside ↓{% else %}Not checked in{% endif %}
+                    </span>
+                </div>
+            </div>
+            {% endif %}
+
+            <div class="flex flex-col gap-2 mt-4 pt-4 border-t border-gray-800">
+                <a href="/sales/renew/{{ member.id }}" class="btn btn-success w-full text-center">Renew</a>
+                <a href="/admin/card/{{ member.id }}" target="_blank" class="btn btn-outline w-full text-center">Print Card</a>
+                <button onclick="showRegModal()" class="btn btn-outline w-full text-center" style="border-color:#a78bfa;color:#a78bfa;">Registration Details</button>
+                {% if member.status.value == 'frozen' %}
+                <form method="POST" action="/members/{{ member.id }}/unfreeze">
+                    <button type="submit" class="btn btn-primary w-full">Unfreeze</button>
+                </form>
+                {% else %}
+                <a href="/members/{{ member.id }}/freeze" class="btn btn-outline w-full text-center" style="border-color:#3b82f6;color:#3b82f6;">Freeze Membership</a>
+                {% endif %}
+                <a href="/members/{{ member.id }}/re-scan" class="btn btn-outline w-full text-center" style="border-color:#8b5cf6;color:#8b5cf6;">Rescan Face</a>
+                <form method="POST" action="/members/{{ member.id }}/delete" onsubmit="return confirm('PERMANENTLY DELETE {{ member.name }}?\n\nThis will remove:\n  - All attendance records\n  - All payment history\n  - All freeze records\n  - Face scan and RFID data\n\nThis action CANNOT be undone.');">
+                    <button type="submit" class="btn w-full" style="background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3);">Delete Member</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Right: History -->
+        <div class="col-span-2 space-y-4">
+            <!-- Edit Details -->
+            <div class="card">
+                <h3 class="text-sm font-semibold text-gray-300 mb-3">Edit Details</h3>
+                <form method="POST" action="/members/{{ member.id }}/update" class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="text-xs text-gray-500">Name</label>
+                        <input type="text" name="name" value="{{ member.name }}" class="w-full mt-1">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-500">Expiry Date
+                            <span class="text-gray-600">(admin locked)</span>
+                        </label>
+                        <div id="expiryLocked" class="mt-1">
+                            <span class="text-sm text-gray-300">{{ member.expiry_date.isoformat() if member.expiry_date else 'N/A' }}</span>
+                            <button type="button" onclick="unlockExpiry()" class="text-xs text-purple-400 hover:text-purple-300 ml-2">Change</button>
+                        </div>
+                        <div id="expiryUnlockPanel" class="mt-1 hidden">
+                            <div class="flex gap-1 mb-1">
+                                <input type="password" id="expiryPw" class="flex-1 text-xs" placeholder="Admin password">
+                                <button type="button" onclick="verifyExpiryPw()" class="btn btn-outline text-xs" id="expiryPwBtn">Unlock</button>
+                            </div>
+                            <div id="expiryPwErr" class="text-xs text-red-400 hidden">Wrong password</div>
+                        </div>
+                        <input type="date" name="expiry_date" id="expiryInput"
+                               value="{{ member.expiry_date.isoformat() if member.expiry_date else '' }}"
+                               class="w-full mt-1 hidden" disabled>
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-500">RFID UID</label>
+                        <div class="flex gap-1 mt-1">
+                            <input type="text" name="uid" id="editUid" value="{{ member.uid or '' }}" class="flex-1" placeholder="Scan or type RFID">
+                            <button type="button" onclick="listenRfid()" class="btn btn-outline text-xs" id="rfidScanBtn">Scan</button>
+                        </div>
+                    </div>
+                    {% if member.discount_type and member.discount_type in ("student", "senior", "pwd") %}
+                    <div>
+                        <label class="text-xs text-gray-500">{% if member.discount_type == "pwd" %}PWD{% else %}{{ member.discount_type|capitalize }}{% endif %} ID Number</label>
+                        <input type="text" name="discount_id_number" value="{{ member.id | student_id }}" class="w-full mt-1" placeholder="e.g. ID-12345">
+                    </div>
+                    {% endif %}
+                    <div class="col-span-2">
+                        <button type="submit" class="btn btn-outline text-xs">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Attendance History -->
+            <div class="card">
+                <h3 class="text-sm font-semibold text-gray-300 mb-3">Recent Attendance</h3>
+                <table>
+                    <thead><tr><th>Date</th><th>Direction</th><th>Method</th></tr></thead>
+                    <tbody>
+                        {% for a in attendance %}
+                        <tr>
+                            <td class="text-xs">{{ a.timestamp | to_local if a.timestamp else '' }}</td>
+                            <td><span class="badge {% if a.direction.value == 'IN' %}badge-green{% else %}badge-red{% endif %}">{{ a.direction.value }}</span></td>
+                            <td class="text-xs text-gray-400">{{ a.method.value if a.method else '' }}</td>
+                        </tr>
+                        {% endfor %}
+                        {% if not attendance %}
+                        <tr><td colspan="3" class="text-center text-gray-500 py-4">No attendance records</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Sales History -->
+            <div class="card">
+                <h3 class="text-sm font-semibold text-gray-300 mb-3">Payment History</h3>
+                <table>
+                    <thead><tr><th>Date</th><th>Amount</th><th>Method</th><th>Receipt</th></tr></thead>
+                    <tbody>
+                        {% for s in sales %}
+                        <tr>
+                            <td class="text-xs">{{ s.created_at | to_local_date if s.created_at else '' }}</td>
+                            <td class="text-green-400">₱{{ "{:,.2f}".format(s.amount_paid) }}</td>
+                            <td class="text-xs">{{ s.payment_method or '' }}</td>
+                            <td class="text-xs font-mono text-gray-400">{{ s.receipt_no or '' }}</td>
+                        </tr>
+                        {% endfor %}
+                        {% if not sales %}
+                        <tr><td colspan="4" class="text-center text-gray-500 py-4">No payments</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Registration Details Modal -->
+<div id="regModal" class="fixed inset-0 z-50 hidden items-center justify-center" style="background:rgba(0,0,0,.7);" onclick="if(event.target===this)hideRegModal()">
+    <div class="rounded-lg max-w-md w-full mx-4 overflow-hidden" style="background:#1e1e2e;border:1px solid #2d2d44;">
+        <div class="flex items-center justify-between p-4 border-b border-gray-800">
+            <h3 class="font-semibold" style="color:#c4b5fd;">Registration Details</h3>
+            <button onclick="hideRegModal()" class="text-gray-500 hover:text-gray-300 text-xl leading-none">&times;</button>
+        </div>
+        <div class="p-4 space-y-4">
+            {% if member.student_id_photo %}
+            <div class="text-center">
+                <img src="{{ photo_url(member.student_id_photo) }}"
+                     class="max-h-48 rounded mx-auto" style="border:1px solid #2d2d44;" onerror="this.style.display='none'">
+                <div class="text-xs font-semibold tracking-wider mt-1" style="color:#c4b5fd;">{% if member.discount_type == "student" %}STUDENT ID{% elif member.discount_type == "senior" %}SENIOR CITIZEN ID{% elif member.discount_type == "pwd" %}PWD ID{% elif member.discount_type == "voucher" %}VOUCHER{% endif %}</div>
+            </div>
+            {% endif %}
+            {% set sid = member.id | student_id %}
+            {% if sid %}
+            <div class="text-center">
+                <div class="text-xs text-gray-500">{% if member.discount_type == "senior" %}Senior Citizen ID Number{% elif member.discount_type == "pwd" %}PWD ID Number{% elif member.discount_type == "voucher" %}Voucher Code{% else %}Student ID Number{% endif %}</div>
+                <div class="text-sm font-mono tracking-wider" style="color:#c4b5fd;">{{ sid }}</div>
+            </div>
+            {% endif %}
+            <div class="grid grid-cols-2 gap-3 text-sm">
+                <div><span class="text-gray-500">Name</span><br><span class="text-gray-200">{{ member.name }}</span></div>
+                <div><span class="text-gray-500">Member #</span><br><span class="text-gray-200">{{ member.id }}</span></div>
+                <div><span class="text-gray-500">Plan</span><br><span class="text-gray-200">{{ member.plan.name if member.plan else 'N/A' }}</span></div>
+                <div><span class="text-gray-500">Discount</span><br><span class="text-gray-200">{% if member.discount_type %}{% if member.discount_type == "pwd" %}PWD Discount{% else %}{{ member.discount_type|capitalize }} Discount{% endif %}{% else %}None{% endif %}</span></div>
+                <div><span class="text-gray-500">Joined</span><br><span class="text-gray-200">{{ member.created_at | to_local_date if member.created_at else 'N/A' }}</span></div>
+                <div><span class="text-gray-500">Expiry</span><br><span class="text-gray-200">{{ member.expiry_date if member.expiry_date else 'N/A' }}</span></div>
+                {% if member.phone %}
+                <div class="col-span-2"><span class="text-gray-500">Phone</span><br><span class="text-gray-200">{{ member.phone }}</span></div>
+                {% endif %}
+                {% if member.email %}
+                <div class="col-span-2"><span class="text-gray-500">Email</span><br><span class="text-gray-200">{{ member.email }}</span></div>
+                {% endif %}
+                {% if member.emergency_contact %}
+                <div class="col-span-2"><span class="text-gray-500">Emergency Contact</span><br><span class="text-gray-200">{{ member.emergency_contact }}</span></div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Registration Details Modal ──────────────────────────
+function showRegModal() {
+    document.getElementById('regModal').classList.remove('hidden');
+    document.getElementById('regModal').classList.add('flex');
+}
+function hideRegModal() {
+    document.getElementById('regModal').classList.add('hidden');
+    document.getElementById('regModal').classList.remove('flex');
+}
+
+// ── Expiry date admin lock ──────────────────────────────
+function unlockExpiry() {
+    document.getElementById('expiryLocked').classList.add('hidden');
+    document.getElementById('expiryUnlockPanel').classList.remove('hidden');
+    document.getElementById('expiryPw').focus();
+}
+async function verifyExpiryPw() {
+    const pw = document.getElementById('expiryPw').value;
+    const err = document.getElementById('expiryPwErr');
+    const btn = document.getElementById('expiryPwBtn');
+    if (!pw) return;
+    btn.disabled = true; btn.textContent = '...';
+    try {
+        const res = await fetch('/api/admin/verify-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `password=${encodeURIComponent(pw)}`
+        });
+        const data = await res.json();
+        if (data.ok) {
+            document.getElementById('expiryUnlockPanel').classList.add('hidden');
+            const inp = document.getElementById('expiryInput');
+            inp.classList.remove('hidden');
+            inp.disabled = false;
+        } else {
+            err.classList.remove('hidden');
+            document.getElementById('expiryPw').value = '';
+        }
+    } catch(e) { err.textContent = 'Error'; err.classList.remove('hidden'); }
+    finally { btn.disabled = false; btn.textContent = 'Unlock'; }
+}
+
+let rfidPolling = null;
+let rfidCountdown = null;
+function listenRfid() {
+    const btn = document.getElementById('rfidScanBtn');
+    if (rfidPolling) {
+        clearInterval(rfidPolling); clearInterval(rfidCountdown);
+        rfidPolling = null; rfidCountdown = null;
+        btn.textContent = 'Scan'; btn.classList.remove('animate-pulse', 'btn-primary');
+        btn.classList.add('btn-outline');
+        return;
+    }
+    let remaining = 15;
+    btn.textContent = `Scanning (${remaining}s)`;
+    btn.classList.add('animate-pulse', 'btn-primary');
+    btn.classList.remove('btn-outline');
+
+    rfidCountdown = setInterval(() => {
+        remaining--;
+        btn.textContent = `Scanning (${remaining}s)`;
+        if (remaining <= 0) {
+            clearInterval(rfidPolling); clearInterval(rfidCountdown);
+            rfidPolling = null; rfidCountdown = null;
+            btn.textContent = 'Timeout — Retry';
+            btn.classList.remove('animate-pulse', 'btn-primary');
+            btn.classList.add('btn-outline');
+            setTimeout(() => { btn.textContent = 'Scan'; }, 2000);
+        }
+    }, 1000);
+
+    rfidPolling = setInterval(async () => {
+        try {
+            const res = await fetch('/api/rfid-latest');
+            const d = await res.json();
+            if (d.uid) {
+                document.getElementById('editUid').value = d.uid;
+                clearInterval(rfidPolling); clearInterval(rfidCountdown);
+                rfidPolling = null; rfidCountdown = null;
+                btn.textContent = '✓ Scanned!';
+                btn.classList.remove('animate-pulse', 'btn-primary');
+                btn.classList.add('btn-success');
+                setTimeout(() => {
+                    btn.textContent = 'Scan';
+                    btn.classList.remove('btn-success');
+                    btn.classList.add('btn-outline');
+                }, 2000);
+            }
+        } catch(e) {}
+    }, 500);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Manual Overrides — Admin{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Manual Override Log</h1>
+    <p class="text-sm" style="color:rgba(139,92,246,.4);">Every gate override with photo evidence and payment cross-reference</p>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Photo</th>
+                <th>Time</th>
+                <th>Staff</th>
+                <th>Reason</th>
+                <th>Note</th>
+                <th>Payment</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for ov in overrides %}
+            <tr>
+                <td>
+                    {% if ov.photo_path %}
+                    <img src="{{ photo_url(ov.photo_path) }}"
+                         class="w-12 h-12 rounded object-cover" onerror="this.style.display='none'">
+                    {% else %}
+                    <div class="w-12 h-12 rounded bg-gray-800 flex items-center justify-center text-xs text-gray-600">—</div>
+                    {% endif %}
+                </td>
+                <td class="text-xs text-gray-400">{{ ov.timestamp | to_local if ov.timestamp else '' }}</td>
+                <td class="text-sm">Staff #{{ ov.staff_id }}</td>
+                <td><span class="badge badge-yellow">{{ ov.reason_code or '—' }}</span></td>
+                <td class="text-sm text-gray-400 max-w-xs truncate">{{ ov.note or '' }}</td>
+                <td>
+                    {% if ov.has_paid_transaction %}
+                    <span class="badge badge-green">Paid ✓</span>
+                    {% else %}
+                    <span class="badge badge-red">No payment</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not overrides %}
+            <tr><td colspan="6" class="text-center text-gray-500 py-8">No manual overrides recorded</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

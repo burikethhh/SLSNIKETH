@@ -1,0 +1,352 @@
+{% extends "base.html" %}
+{% block title %}Walk-in Management{% endblock %}
+{% block content %}
+<style>
+    .wi-card{transition:all .3s ease;border-left:3px solid transparent;}
+    .wi-card.inside{border-left-color:#22c55e;}
+    .wi-card.outside{border-left-color:#4b5563;}
+    .wi-dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+    .wi-dot.in{background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,.5);}
+    .wi-dot.out{background:#4b5563;}
+    .wi-count{display:inline-flex;align-items:center;gap:.4rem;padding:.25rem .7rem;
+              border-radius:9999px;font-size:.75rem;font-weight:600;}
+    .renew-panel{display:none;margin-top:.75rem;padding:.75rem;
+                 background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);
+                 border-radius:.5rem;}
+    .renew-panel.open{display:block;}
+</style>
+
+<div class="max-w-3xl mx-auto">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-5">
+        <div>
+            <h1 class="text-xl font-bold" style="font-family:Rajdhani,system-ui,sans-serif;">Walk-in Management</h1>
+            <p class="text-xs mt-1" style="color:#6b7280;">RFID-controlled entry &amp; exit — automatic tracking</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <span class="wi-count" id="inside-count" style="background:rgba(34,197,94,.1);color:#22c55e;">
+                <span class="wi-dot in"></span>
+                <span id="cnt-in">{{ walkins|selectattr('is_inside')|list|length }}</span> inside
+            </span>
+            <a href="/sales/walkin" class="btn btn-success text-xs">
+                <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                </svg>
+                New Walk-in
+            </a>
+        </div>
+    </div>
+
+    <!-- Search -->
+    <div class="card mb-4 py-3">
+        <div class="flex gap-2 items-center">
+            <svg class="w-4 h-4 text-gray-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <input type="text" id="walkinSearch"
+                   class="flex-1 text-sm bg-transparent border-none outline-none"
+                   placeholder="Search by name or RFID…"
+                   oninput="filterWalkins(this.value)">
+            <button onclick="document.getElementById('walkinSearch').value=''; filterWalkins('');"
+                    class="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+        </div>
+    </div>
+
+    {% if request.query_params.get('error') == 'rfid_taken' %}
+    <div class="alert-red mb-4 text-sm">RFID card is already assigned to another person.</div>
+    {% elif request.query_params.get('error') == 'empty_uid' %}
+    <div class="alert-red mb-4 text-sm">Please scan or enter an RFID card UID.</div>
+    {% endif %}
+
+    {% if not walkins %}
+    <div class="card text-center py-12">
+        <svg class="w-14 h-14 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#4b5563;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+        </svg>
+        <p class="text-gray-500 mb-1">No active walk-in members</p>
+        <p class="text-xs text-gray-600 mb-4">Register a walk-in to get started</p>
+        <a href="/sales/walkin" class="btn btn-success">Register Walk-in</a>
+    </div>
+    {% else %}
+    <div class="space-y-3" id="walkin-list">
+        {% for w in walkins %}
+        {% set ins_used  = w.ins_used  if w.ins_used  is defined else 0 %}
+        {% set outs_used = w.outs_used if w.outs_used is defined else 0 %}
+
+        <div class="card wi-card {{ 'inside' if w.is_inside else 'outside' }} py-3 px-4"
+             id="walkin-{{ w.id }}">
+
+            <!-- Main row -->
+            <div class="flex items-center gap-4">
+                <!-- Avatar -->
+                <div class="w-11 h-11 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center"
+                     style="background:rgba(139,92,246,.12);">
+                    {% if w.photo %}
+                    <img src="/static/{{ w.photo }}" class="w-full h-full object-cover" alt="">
+                    {% else %}
+                    <span class="text-base font-bold" style="color:#a78bfa;">{{ w.name[0]|upper }}</span>
+                    {% endif %}
+                </div>
+
+                <!-- Info -->
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                        <input type="text" id="name-input-{{ w.id }}"
+                               value="{{ w.name }}"
+                               class="font-semibold text-sm bg-transparent border-b border-transparent hover:border-gray-600 focus:border-purple-500 outline-none transition truncate flex-1"
+                               onchange="updateWalkinName({{ w.id }}, this.value)"
+                               onkeydown="if(event.key==='Enter'){this.blur();event.preventDefault();}">
+                        <button onclick="updateWalkinName({{ w.id }}, document.getElementById('name-input-{{ w.id }}').value)"
+                                class="text-xs text-gray-500 hover:text-purple-400 transition" title="Save name">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="flex items-center gap-2 mt-1 flex-wrap">
+                        <span class="flex items-center gap-1.5 text-xs font-medium"
+                              id="status-{{ w.id }}">
+                            <span class="wi-dot {{ 'in' if w.is_inside else 'out' }}"
+                                  id="dot-{{ w.id }}"></span>
+                            <span id="label-{{ w.id }}">{{ 'INSIDE' if w.is_inside else 'OUTSIDE' }}</span>
+                        </span>
+                        {% if w.last_time %}
+                        <span class="text-xs" style="color:#4b5563;">at {{ w.last_time }}</span>
+                        {% endif %}
+                        <span class="badge {{ 'badge-blue' if w.uid else '' }} text-xs"
+                              id="rfid-badge-{{ w.id }}"
+                              style="{% if not w.uid %}background:rgba(107,114,128,.15);color:#6b7280;{% endif %}">
+                            {{ ('RFID: ' ~ w.uid[-4:]) if w.uid else 'No RFID' }}
+                        </span>
+                        <span class="text-xs" style="color:#4b5563;">
+                            IN {{ ins_used }}/3 · OUT {{ outs_used }}/3
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="flex flex-col gap-1 flex-shrink-0">
+                    <!-- Renew -->
+                    <button onclick="openRenew({{ w.id }})"
+                            class="btn btn-outline text-xs py-1 px-3"
+                            style="border-color:rgba(139,92,246,.4);color:#a78bfa;min-width:90px;">
+                        ↺ Renew
+                    </button>
+                    <!-- Log Out (surrender RFID) -->
+                    <button onclick="doLogout({{ w.id }})"
+                            class="btn btn-outline text-xs py-1 px-3"
+                            id="logout-btn-{{ w.id }}"
+                            style="border-color:rgba(59,130,246,.4);color:#60a5fa;min-width:90px;">
+                        ⏏ Log Out
+                    </button>
+                    <!-- Delete -->
+                    <form method="post" action="/walkins/{{ w.id }}/delete" style="margin:0"
+                          onsubmit="return confirm('Delete {{ w.name }}?\n\nThis permanently removes the walk-in record, all attendance records, and all sales.')">
+                        <button type="submit"
+                                class="btn btn-outline text-xs py-1 px-3 w-full"
+                                style="border-color:rgba(239,68,68,.4);color:#f87171;">
+                            ✕ Delete
+                        </button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Renew panel (hidden by default) -->
+            <div class="renew-panel" id="renew-panel-{{ w.id }}">
+                <p class="text-xs font-semibold mb-2" style="color:#a78bfa;">
+                    Renew Walk-in — assign new RFID + record new payment
+                </p>
+                <div class="grid grid-cols-2 gap-2 mb-2">
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">Amount (₱)</label>
+                        <input type="number" id="renew-amount-{{ w.id }}"
+                               class="w-full text-sm" value="{{ default_rate }}"
+                               step="0.01" min="0">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-500 block mb-1">New RFID Card</label>
+                        <div class="flex gap-1">
+                            <input type="text" id="renew-uid-{{ w.id }}"
+                                   class="flex-1 text-xs font-mono"
+                                   placeholder="Scan or type UID…" autocomplete="off">
+                            <button onclick="startRenewScan({{ w.id }})"
+                                    class="btn btn-outline text-xs"
+                                    id="renew-scan-btn-{{ w.id }}">Scan</button>
+                        </div>
+                        <div id="renew-error-{{ w.id }}" class="text-xs text-red-400 mt-1 hidden"></div>
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="doRenew({{ w.id }})"
+                            class="btn btn-success text-xs flex-1">Confirm Renewal</button>
+                    <button onclick="closeRenew({{ w.id }})"
+                            class="btn btn-outline text-xs">Cancel</button>
+                </div>
+            </div>
+
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// ── Search / filter ──────────────────────────────────────────────
+function filterWalkins(query) {
+    const q = query.toLowerCase().trim();
+    let visible = 0;
+    document.querySelectorAll('#walkin-list > div[id^="walkin-"]').forEach(card => {
+        const name = (card.querySelector('a')?.textContent || '').toLowerCase();
+        const rfid = (card.querySelector('[id^="rfid-badge-"]')?.textContent || '').toLowerCase();
+        const show = !q || name.includes(q) || rfid.includes(q);
+        card.style.display = show ? '' : 'none';
+        if (show) visible++;
+    });
+    // Update "no results" message
+    let noRes = document.getElementById('no-search-results');
+    if (!noRes) {
+        noRes = document.createElement('div');
+        noRes.id = 'no-search-results';
+        noRes.className = 'card text-center py-8 text-gray-500 text-sm';
+        noRes.textContent = 'No walk-ins match your search.';
+        document.getElementById('walkin-list')?.after(noRes);
+    }
+    noRes.style.display = (q && visible === 0) ? '' : 'none';
+}
+
+// ── Renew panel ───────────────────────────────────────────────────
+function openRenew(id) {
+    // Close any other open panel first
+    document.querySelectorAll('.renew-panel.open').forEach(p => {
+        if (p.id !== `renew-panel-${id}`) p.classList.remove('open');
+    });
+    document.getElementById(`renew-panel-${id}`).classList.toggle('open');
+}
+function closeRenew(id) {
+    document.getElementById(`renew-panel-${id}`).classList.remove('open');
+    stopRenewScan(id);
+}
+
+let _renewPolls = {};
+function startRenewScan(id) {
+    const btn = document.getElementById(`renew-scan-btn-${id}`);
+    const inp = document.getElementById(`renew-uid-${id}`);
+    if (_renewPolls[id]) { stopRenewScan(id); return; }
+    btn.textContent = 'Scanning…';
+    btn.classList.add('animate-pulse');
+    _renewPolls[id] = setInterval(async () => {
+        try {
+            const r = await fetch('/api/rfid-latest');
+            const d = await r.json();
+            if (d.uid) { inp.value = d.uid; stopRenewScan(id); }
+        } catch(e) {}
+    }, 500);
+    setTimeout(() => stopRenewScan(id), 15000);
+}
+function stopRenewScan(id) {
+    if (_renewPolls[id]) { clearInterval(_renewPolls[id]); delete _renewPolls[id]; }
+    const btn = document.getElementById(`renew-scan-btn-${id}`);
+    if (btn) { btn.textContent = 'Scan'; btn.classList.remove('animate-pulse'); }
+}
+
+async function doRenew(id) {
+    const uid    = (document.getElementById(`renew-uid-${id}`).value || '').trim();
+    const amount = document.getElementById(`renew-amount-${id}`).value || '100';
+    const errEl  = document.getElementById(`renew-error-${id}`);
+    errEl.classList.add('hidden');
+    if (!uid) { errEl.textContent = 'Please scan or enter an RFID UID.'; errEl.classList.remove('hidden'); return; }
+    stopRenewScan(id);
+
+    const fd = new FormData();
+    fd.append('new_uid', uid);
+    fd.append('amount', amount);
+    try {
+        const res = await fetch(`/walkins/${id}/renew`, { method: 'POST', body: fd });
+        // Follows redirect automatically — page reloads
+        if (res.redirected) { location.href = res.url; }
+        else { location.reload(); }
+    } catch(e) {
+        errEl.textContent = 'Network error — try again.';
+        errEl.classList.remove('hidden');
+    }
+}
+
+// ── Name editor ────────────────────────────────────────────────────
+async function updateWalkinName(id, newName) {
+    const input = document.getElementById(`name-input-${id}`);
+    const trimmed = newName.trim();
+    if (!trimmed) { input.value = input.defaultValue; return; }
+    try {
+        const fd = new FormData();
+        fd.append('name', trimmed);
+        console.log(`[Walkin] Updating name for member ${id}: "${trimmed}"`);
+        const res = await fetch(`/walkins/${id}/update-name`, { method: 'POST', body: fd });
+        console.log(`[Walkin] Response status: ${res.status}`);
+        const data = await res.json();
+        console.log(`[Walkin] Response data:`, data);
+        if (res.ok && data.status === 'ok') {
+            input.defaultValue = trimmed;
+            console.log(`Walk-in ${id} name updated to "${trimmed}"`);
+        } else {
+            input.value = input.defaultValue;
+            console.error(`Walk-in ${id} name update failed:`, data);
+        }
+    } catch(e) {
+        input.value = input.defaultValue;
+        console.error(`Walk-in ${id} name update error:`, e);
+    }
+}
+
+// ── Log Out (surrender RFID) ──────────────────────────────────────
+async function doLogout(id) {
+    const btn = document.getElementById(`logout-btn-${id}`);
+    const nameInput = document.getElementById(`name-input-${id}`);
+    const currentName = nameInput?.value?.trim() || 'Walk-in';
+    
+    if (!confirm(`Log out "${currentName}"?\n\nThis will surrender their RFID card so it can be reused.\nAll attendance and sales records will be kept.`)) {
+        return;
+    }
+    
+    btn.disabled = true; btn.textContent = '…';
+    try {
+        const fd = new FormData();
+        const res = await fetch(`/walkins/${id}/logout`, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            // Update RFID badge to "No RFID"
+            const badge = document.getElementById(`rfid-badge-${id}`);
+            if (badge) {
+                badge.textContent = 'No RFID';
+                badge.className = 'badge text-xs';
+                badge.style.background = 'rgba(107,114,128,.15)';
+                badge.style.color = '#6b7280';
+            }
+            // Update status to OUTSIDE
+            const dot = document.getElementById(`dot-${id}`);
+            const label = document.getElementById(`label-${id}`);
+            const card = document.getElementById(`walkin-${id}`);
+            if (dot) { dot.className = 'wi-dot out'; }
+            if (label) { label.textContent = 'OUTSIDE'; }
+            if (card) { card.classList.remove('inside'); card.classList.add('outside'); }
+            
+            btn.textContent = '✓ Logged Out';
+            btn.style.color = '#22c55e';
+            btn.style.borderColor = 'rgba(34,197,94,.4)';
+            
+            // Update inside count
+            const cntEl = document.getElementById('cnt-in');
+            if (cntEl) {
+                const current = parseInt(cntEl.textContent) || 0;
+                cntEl.textContent = Math.max(0, current - 1);
+            }
+        } else {
+            btn.disabled = false; btn.textContent = '⏏ Log Out';
+        }
+    } catch(e) {
+        btn.disabled = false; btn.textContent = '⏏ Log Out';
+    }
+}
+</script>
+{% endblock %}

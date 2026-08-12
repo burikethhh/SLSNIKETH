@@ -1,0 +1,1872 @@
+{% extends "base.html" %}
+{% block title %}Staff Dashboard — Solo Leveling Gym{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;">Command Center</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Live access monitoring &middot; Face verification &middot; Quick actions</p>
+    </div>
+    <div class="flex gap-2">
+        <button onclick="openHardwareWithPin()" class="btn btn-outline" id="hwSettingsBtn" title="ESP32 Hardware Settings (Admin only)">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Hardware
+        </button>
+        <button onclick="emergencyAccess()" class="btn btn-danger" id="emergencyBtn">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Emergency Access
+        </button>
+        <button onclick="manualUnlock()" class="btn btn-warn" id="unlockBtn">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+            Manual Unlock
+        </button>
+    </div>
+</div>
+
+<!-- Manual Unlock Modal -->
+<div id="unlockModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-lg font-semibold mb-3">Manual Gate Override</h3>
+        <form id="unlockForm" class="space-y-3">
+            <div>
+                <label class="text-xs text-gray-400">Reason</label>
+                <select name="reason" id="unlockReason" class="w-full mt-1">
+                    <option value="visitor">Visitor / Guest</option>
+                    <option value="forgot_card">Member Forgot Card</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="emergency">Emergency</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-xs text-gray-400">Note (optional)</label>
+                <input type="text" name="note" id="unlockNote" placeholder="Brief description" class="w-full mt-1">
+            </div>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-danger flex-1">Unlock Gate</button>
+                <button type="button" onclick="closeUnlockModal()" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Stats -->
+<div class="grid grid-cols-3 gap-4 mb-6">
+    <div class="card aura-glow">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(139,92,246,.5);font-family:Rajdhani,system-ui,sans-serif;">Check-ins Today</div>
+        <div class="text-2xl font-bold mt-1" style="color:#a78bfa;">{{ checkins_today }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(34,197,94,.5);font-family:Rajdhani,system-ui,sans-serif;">Current Occupancy</div>
+        <div class="text-2xl font-bold text-green-400 mt-1">{{ occupancy }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(245,158,11,.5);font-family:Rajdhani,system-ui,sans-serif;">Expiring &le;3 Days</div>
+        <div class="text-2xl font-bold text-yellow-400 mt-1">{{ expiring_soon }}</div>
+    </div>
+</div>
+
+<!-- Hardware Status -->
+<div class="card mb-6">
+    <div class="flex items-center justify-between mb-3">
+        <h2 class="text-sm font-semibold text-gray-300">Hardware Status</h2>
+        <div class="flex items-center gap-3">
+            <span class="text-xs text-gray-600" id="hwLastCheck">--</span>
+            <button onclick="refreshHardware()" class="text-xs text-gray-500 hover:text-gray-300">Refresh</button>
+        </div>
+    </div>
+    <div id="hwStatus" class="grid grid-cols-4 gap-3 text-sm">
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-gray-500" id="hwCamera"></span>
+            <span class="text-gray-400" id="hwCameraLabel">Camera</span>
+        </div>
+        <div class="flex items-center gap-2 cursor-pointer hover:opacity-80" onclick="openHardwareWithPin()" title="Click to open ESP32 settings (Admin password required)">
+            <span class="w-2 h-2 rounded-full bg-gray-500" id="hwSerial"></span>
+            <span class="text-gray-400" id="hwSerialLabel">ESP32</span>
+            <span class="text-xs text-gray-600" id="hwSerialPort"></span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-gray-500" id="hwRfid"></span>
+            <span class="text-gray-400" id="hwRfidLabel">RFID</span>
+        </div>
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-gray-500" id="hwModel"></span>
+            <span class="text-gray-400" id="hwModelLabel">Face Model</span>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ Admin PIN Modal (guards Hardware panel) ═══════ -->
+<div id="hwPinModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden">
+    <div class="card w-80 text-center" style="border-color:rgba(124,58,237,.3);">
+        <div class="mb-4">
+            <svg class="w-10 h-10 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#f59e0b;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+            <h3 class="text-base font-semibold text-gray-200">Admin Access Required</h3>
+            <p class="text-xs mt-1" style="color:#6b7280;">Enter admin password to access hardware settings</p>
+        </div>
+        <input type="password" id="hwPinInput" class="w-full text-center mb-3"
+               placeholder="Admin password"
+               onkeydown="if(event.key==='Enter') verifyHwPin()">
+        <div id="hwPinError" class="text-xs text-red-400 mb-2 hidden">Incorrect password</div>
+        <div class="flex gap-2">
+            <button onclick="closeHwPinModal()" class="btn btn-outline flex-1 text-sm">Cancel</button>
+            <button onclick="verifyHwPin()" class="btn btn-primary flex-1 text-sm" id="hwPinSubmit">Unlock</button>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════ ESP32 Hardware Settings Modal ═══════ -->
+<div id="esp32Modal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 hidden">
+<div class="rounded-lg w-full max-w-2xl mx-4" style="background:#12162b;border:1px solid #1e2745;max-height:90vh;overflow-y:auto;">
+    <div class="flex items-center justify-between p-4 border-b" style="border-color:#1e2745;">
+        <h2 class="text-lg font-bold" style="color:#c4b5fd;">
+            <svg class="w-5 h-5 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/></svg>
+            ESP32 Controller
+        </h2>
+        <button onclick="closeEsp32Panel()" class="text-gray-500 hover:text-white text-xl">&times;</button>
+    </div>
+
+    <!-- Connection -->
+    <div class="p-4 border-b" style="border-color:#1e2745;">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Connection</h3>
+        <div class="flex items-center gap-3 mb-3">
+            <span class="w-3 h-3 rounded-full" id="espDot" style="background:#ef4444;"></span>
+            <span class="text-sm" id="espStatusText">Disconnected</span>
+            <span class="text-xs text-gray-600 ml-auto" id="espPort">--</span>
+        </div>
+        <div class="flex gap-2">
+            <select id="espPortSelect" class="flex-1 text-sm" style="background:#1a1f36;border:1px solid #2d3555;color:#e2e8f0;padding:6px 10px;border-radius:6px;">
+                <option value="">Auto-detect</option>
+            </select>
+            <button onclick="espConnect()" class="btn btn-primary text-sm" id="espConnectBtn">Connect</button>
+            <button onclick="espRefreshPorts()" class="btn btn-outline text-sm">Scan</button>
+        </div>
+    </div>
+
+    <!-- Test Panel -->
+    <div class="p-4 border-b" style="border-color:#1e2745;">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Test Hardware</h3>
+        <div class="grid grid-cols-4 gap-2">
+            <button onclick="espTest('ping')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                Ping
+            </button>
+            <button onclick="espTest('beep')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M12 6v12m-3.536-2.464a5 5 0 010-7.072"/></svg>
+                Buzzer
+            </button>
+            <button onclick="espTest('unlock')" class="btn text-xs py-2" style="background:#065f46;color:#6ee7b7;">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                Unlock
+            </button>
+            <button onclick="espTest('lock')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                Lock
+            </button>
+            <button onclick="espTest('deny')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728L5.636 5.636"/></svg>
+                Deny
+            </button>
+            <button onclick="espTest('lcd_hello')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                LCD Test
+            </button>
+            <button onclick="espTest('lcd_clear')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                LCD Reset
+            </button>
+            <button onclick="espTest('status')" class="btn btn-outline text-xs py-2">
+                <svg class="w-3 h-3 mx-auto mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                Status
+            </button>
+        </div>
+    </div>
+
+    <!-- Serial Monitor -->
+    <div class="p-4 border-b" style="border-color:#1e2745;">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-semibold text-gray-300">
+                <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                Serial Monitor
+            </h3>
+            <div class="flex items-center gap-2">
+                <span class="text-xs" id="monitorStatus" style="color:#6b7280;">Stopped</span>
+                <button onclick="toggleMonitor()" id="monitorToggleBtn" class="btn btn-outline text-xs py-1 px-3">Start</button>
+                <button onclick="clearMonitor()" class="btn btn-outline text-xs py-1 px-3">Clear</button>
+            </div>
+        </div>
+        <div id="serialMonitor" class="font-mono text-xs p-3 rounded overflow-y-auto" style="background:#0a0e1a;border:1px solid #1e2745;max-height:250px;min-height:100px;color:#a5b4fc;">
+            <div style="color:#4b5563;">Click "Start" to begin monitoring...</div>
+        </div>
+        <!-- Raw command input -->
+        <div class="flex gap-2 mt-2">
+            <input type="text" id="rawCmdInput" placeholder="Type command (e.g. UNLOCK:5, LOCK, PING)" class="flex-1 text-xs font-mono" style="background:#0a0e1a;border:1px solid #2d3555;color:#e2e8f0;padding:6px 10px;border-radius:6px;" onkeydown="if(event.key==='Enter')sendRawCmd()">
+            <button onclick="sendRawCmd()" class="btn btn-primary text-xs py-1 px-3">Send</button>
+        </div>
+    </div>
+
+    <!-- Command Log -->
+    <div class="p-4">
+        <h3 class="text-sm font-semibold text-gray-300 mb-2">Command Log</h3>
+        <div id="espLog" class="font-mono text-xs p-3 rounded overflow-y-auto" style="background:#0a0e1a;border:1px solid #1e2745;max-height:120px;min-height:40px;color:#a5b4fc;">
+            <div style="color:#4b5563;">Waiting for commands...</div>
+        </div>
+    </div>
+</div>
+</div>
+
+<!-- Face Verification + Camera + Feed -->
+<div class="grid grid-cols-2 gap-4 mb-6">
+    <!-- Face Verification Panel -->
+    <div class="card">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-gray-300">
+                <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                Face Verification
+            </h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs" id="faceStatus">Ready</span>
+                <span class="w-2 h-2 rounded-full bg-gray-500" id="faceDot"></span>
+            </div>
+        </div>
+        <div class="relative rounded overflow-hidden mb-3" style="background:#000;min-height:240px;">
+            <canvas id="facePreview" class="w-full block" style="max-height:360px;"></canvas>
+            <div id="faceFallback" class="absolute inset-0 flex flex-col items-center justify-center text-gray-500 text-sm">
+                <svg class="w-12 h-12 mb-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                Connecting to camera...
+            </div>
+        </div>
+        <div class="flex gap-2 mb-3">
+            <button onclick="scanFace()" class="btn btn-primary flex-1" id="scanBtn">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                Scan Face
+            </button>
+            <button onclick="toggleAutoScan()" class="btn btn-outline flex-1" id="autoScanBtn">Auto Scan</button>
+        </div>
+        <!-- Match Results -->
+        <div id="matchResults" class="space-y-2 max-h-48 overflow-y-auto"></div>
+    </div>
+
+    <!-- Camera 2 — Tailgate Detection -->
+    <div class="card">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-gray-300">
+                <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg>
+                Camera 2 — Tailgate Detection
+            </h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs" id="cam2Status">Connecting...</span>
+                <span class="w-2 h-2 rounded-full bg-gray-500" id="cam2Dot"></span>
+            </div>
+        </div>
+        <div class="relative rounded overflow-hidden" style="background:#000;min-height:240px;">
+            <canvas id="cam2Preview" class="w-full block" style="max-height:360px;"></canvas>
+            <div id="cam2Fallback" class="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">
+                Camera 2 offline
+            </div>
+        </div>
+        <div class="flex gap-2 mt-3">
+            <button onclick="toggleCam2()" class="btn btn-outline text-xs flex-1" id="cam2Toggle">Start Live</button>
+            <button onclick="refreshCam2Snapshot()" class="btn btn-outline text-xs">Snapshot</button>
+        </div>
+    </div>
+</div>
+
+<!-- Camera Management — detect, assign, configure, detection zone -->
+<div class="card mb-6">
+    <div class="flex items-center justify-between mb-3 cursor-pointer" onclick="toggleCamSettings()">
+        <h2 class="text-sm font-semibold text-gray-300">
+            <svg class="w-4 h-4 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            Camera Management
+            <span class="text-xs text-gray-600 ml-2" id="camSettingsHint">click to expand</span>
+        </h2>
+        <svg id="camSettingsChevron" class="w-4 h-4 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+    </div>
+    <div id="camSettingsBody" class="hidden">
+
+        <!-- Detect & Assign Cameras -->
+        <div class="mb-4 pb-4 border-b border-gray-800">
+            <div class="flex items-center justify-between mb-2">
+                <div class="text-xs text-gray-400 font-semibold">Detect &amp; Assign Cameras</div>
+                <button onclick="detectCameras()" class="btn btn-primary text-xs" id="detectBtn">
+                    <svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                    Detect Cameras
+                </button>
+            </div>
+            <div id="detectedSection" style="display:none;">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs text-gray-500" id="detectCount">—</span>
+                </div>
+                <div id="detectedList" class="space-y-1 mb-3"></div>
+                <form id="assignForm" class="pt-3 border-t border-gray-800" style="display:none;">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-xs text-gray-500">Camera 1 — Entrance (Face Recognition)</label>
+                            <select name="cam1_index" id="assignCam1" class="w-full mt-1 text-xs"></select>
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-500">Camera 2 — Overhead (Tailgate Detection)</label>
+                            <select name="cam2_index" id="assignCam2" class="w-full mt-1 text-xs"></select>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 mt-2">
+                        <button type="submit" class="btn btn-primary text-xs">Apply Assignment</button>
+                        <button type="button" onclick="swapCameras()" class="btn text-xs" id="swapBtn"
+                                style="background:rgba(139,92,246,.12);color:#a78bfa;border:1px solid rgba(139,92,246,.3);">
+                            <svg class="w-3.5 h-3.5 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"/></svg>
+                            Swap Cameras
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Camera Status + Config Grid -->
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <!-- Camera 1 -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs text-gray-400 font-semibold">Camera 1 — Entrance</div>
+                    <span class="w-2 h-2 rounded-full bg-gray-500" id="cfgCam1Dot"></span>
+                </div>
+                <div class="space-y-1 text-xs mb-2" id="cfgCam1Status">
+                    <div class="text-gray-600">Loading status...</div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mb-2">
+                    <div>
+                        <label class="text-xs text-gray-600">Width</label>
+                        <input type="number" id="cfgCam1Width" class="w-full text-xs" placeholder="Auto">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">Height</label>
+                        <input type="number" id="cfgCam1Height" class="w-full text-xs" placeholder="Auto">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">FPS</label>
+                        <input type="number" id="cfgCam1Fps" class="w-full text-xs" placeholder="20">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">JPEG Q</label>
+                        <input type="number" id="cfgCam1Jpeg" class="w-full text-xs" placeholder="62" min="30" max="100">
+                    </div>
+                </div>
+                <button onclick="configureCam('cam1')" class="btn btn-outline text-xs w-full">Apply to Camera 1</button>
+            </div>
+            <!-- Camera 2 -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <div class="text-xs text-gray-400 font-semibold">Camera 2 — Overhead</div>
+                    <span class="w-2 h-2 rounded-full bg-gray-500" id="cfgCam2Dot"></span>
+                </div>
+                <div class="space-y-1 text-xs mb-2" id="cfgCam2Status">
+                    <div class="text-gray-600">Loading status...</div>
+                </div>
+                <div class="grid grid-cols-4 gap-2 mb-2">
+                    <div>
+                        <label class="text-xs text-gray-600">Width</label>
+                        <input type="number" id="cfgCam2Width" class="w-full text-xs" placeholder="Auto">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">Height</label>
+                        <input type="number" id="cfgCam2Height" class="w-full text-xs" placeholder="Auto">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">FPS</label>
+                        <input type="number" id="cfgCam2Fps" class="w-full text-xs" placeholder="20">
+                    </div>
+                    <div>
+                        <label class="text-xs text-gray-600">JPEG Q</label>
+                        <input type="number" id="cfgCam2Jpeg" class="w-full text-xs" placeholder="62" min="30" max="100">
+                    </div>
+                </div>
+                <button onclick="configureCam('cam2')" class="btn btn-outline text-xs w-full">Apply to Camera 2</button>
+            </div>
+        </div>
+
+        <!-- Detection Zone (ROI) for Cam1 — Face Recognition -->
+        <div class="mb-4 pb-4 border-t border-gray-800 pt-4">
+            <div class="flex items-center justify-between mb-2">
+                <div class="text-xs text-gray-400 font-semibold">
+                    <svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                    Detection Zone — Camera 1 (Face Recognition)
+                </div>
+                <span id="cam1RoiStatus" class="badge badge-gray text-xs">Loading...</span>
+            </div>
+            <p class="text-xs mb-3" style="color:rgba(59,130,246,.4);">Draw a polygon on the entrance view to restrict face detection to the doorway area. Faces outside this zone will be ignored — speeds up processing and reduces false matches.</p>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <div class="relative rounded overflow-hidden" style="background:#000;min-height:200px;cursor:crosshair;" id="cam1RoiCanvasWrap">
+                        <canvas id="cam1RoiCanvas" style="width:100%;display:block;"></canvas>
+                        <div id="cam1RoiPlaceholder" class="absolute inset-0 flex items-center justify-center text-gray-600 text-xs">
+                            Click "Load Snapshot" to draw detection zone
+                        </div>
+                    </div>
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="cam1RoiLoadSnapshot()" class="btn btn-primary text-xs flex-1">Load Snapshot</button>
+                        <button onclick="cam1RoiUndo()" class="btn btn-outline text-xs">Undo</button>
+                        <button onclick="cam1RoiClear()" class="btn btn-outline text-xs">Clear</button>
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <div class="p-2 rounded text-xs" style="background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.15);">
+                        <div class="font-semibold text-blue-400 mb-1">How to set up:</div>
+                        <ol class="list-decimal list-inside space-y-0.5 text-gray-400">
+                            <li>Click <b>Load Snapshot</b> to grab cam1's view</li>
+                            <li><b>Click on image</b> to place polygon vertices</li>
+                            <li>At least <b>3 points</b> to form a zone</li>
+                            <li>Blue area = faces WILL be detected</li>
+                            <li>Outside polygon = ignored (background etc.)</li>
+                            <li>Click <b>Save Zone</b> when done</li>
+                        </ol>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="cam1RoiSave()" id="cam1RoiSaveBtn" class="btn btn-primary text-xs flex-1" disabled>Save Zone</button>
+                        <button onclick="cam1RoiDelete()" id="cam1RoiDeleteBtn" class="btn btn-outline text-xs" style="border-color:#ef4444;color:#ef4444;">Remove</button>
+                    </div>
+                    <div id="cam1RoiPointsList" class="text-xs text-gray-500 space-y-0.5" style="max-height:80px;overflow-y:auto;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detection Zone (ROI) for Cam2 -->
+        <div class="mb-4 pb-4 border-t border-gray-800 pt-4">
+            <div class="flex items-center justify-between mb-2">
+                <div class="text-xs text-gray-400 font-semibold">
+                    <svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
+                    Detection Zone — Camera 2 (Anti-Tailgate)
+                </div>
+                <span id="roiStatus" class="badge badge-gray text-xs">Loading...</span>
+            </div>
+            <p class="text-xs mb-3" style="color:rgba(139,92,246,.4);">Draw a polygon on the overhead view to restrict person counting to the indoor entry area. People visible through transparent doors outside this zone will be ignored.</p>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <div class="relative rounded overflow-hidden" style="background:#000;min-height:200px;cursor:crosshair;" id="roiCanvasWrap">
+                        <canvas id="roiCanvas" style="width:100%;display:block;"></canvas>
+                        <div id="roiPlaceholder" class="absolute inset-0 flex items-center justify-center text-gray-600 text-xs">
+                            Click "Load Snapshot" to draw detection zone
+                        </div>
+                    </div>
+                    <div class="flex gap-2 mt-2">
+                        <button onclick="roiLoadSnapshot()" class="btn btn-primary text-xs flex-1">Load Snapshot</button>
+                        <button onclick="roiUndo()" class="btn btn-outline text-xs">Undo</button>
+                        <button onclick="roiClear()" class="btn btn-outline text-xs">Clear</button>
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <div class="p-2 rounded text-xs" style="background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.15);">
+                        <div class="font-semibold text-purple-400 mb-1">How to set up:</div>
+                        <ol class="list-decimal list-inside space-y-0.5 text-gray-400">
+                            <li>Click <b>Load Snapshot</b> to grab cam2's view</li>
+                            <li><b>Click on image</b> to place polygon vertices</li>
+                            <li>At least <b>3 points</b> to form a zone</li>
+                            <li>Green area = persons WILL be counted</li>
+                            <li>Outside polygon = ignored (glass doors etc.)</li>
+                            <li>Click <b>Save Zone</b> when done</li>
+                        </ol>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="roiSave()" id="roiSaveBtn" class="btn btn-primary text-xs flex-1" disabled>Save Zone</button>
+                        <button onclick="roiDelete()" id="roiDeleteBtn" class="btn btn-outline text-xs" style="border-color:#ef4444;color:#ef4444;">Remove</button>
+                    </div>
+                    <div id="roiPointsList" class="text-xs text-gray-500 space-y-0.5" style="max-height:80px;overflow-y:auto;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tips -->
+        <div class="pt-3 border-t border-gray-800">
+            <div class="grid grid-cols-2 gap-4 text-xs text-gray-500">
+                <div class="space-y-1">
+                    <div><span class="text-purple-400 font-semibold">Camera 1 (Entrance):</span> Eye level, ~1.5m distance. 1080p ideal for face detection.</div>
+                    <div><span class="text-purple-400 font-semibold">Camera 2 (Overhead):</span> Mount above entry, 45° down. Wider angle helps person counting.</div>
+                </div>
+                <div class="space-y-1">
+                    <div><span class="text-yellow-400 font-semibold">Performance:</span> 20 FPS + JPEG 62 = smooth preview, low bandwidth. Leave blank to keep current.</div>
+                    <div><span class="text-yellow-400 font-semibold">Detection Zone:</span> Required for glass doors — prevents counting people outside.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast Notification -->
+<div id="toastContainer" class="fixed top-4 right-4 z-50 space-y-2" style="max-width:360px;"></div>
+
+<!-- Live Access Feed (full width) -->
+<div class="card">
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-3">
+            <h2 class="text-sm font-semibold text-gray-300">Live Access Feed</h2>
+            <span class="badge badge-purple" id="eventCount">0</span>
+        </div>
+        <div class="flex items-center gap-3">
+            <button onclick="toggleSound()" class="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1" id="soundBtn" title="Toggle alert sounds">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072M17.95 6.05a8 8 0 010 11.9M6.5 8.5H4a1 1 0 00-1 1v5a1 1 0 001 1h2.5l4 4V4.5l-4 4z"/></svg>
+                <span id="soundLabel">Sound ON</span>
+            </button>
+            <span class="text-xs text-gray-500" id="feedStatus">Polling...</span>
+        </div>
+    </div>
+    <div id="liveFeed" class="space-y-2 max-h-96 overflow-y-auto">
+        {% for ev in recent_events %}
+        <div class="alert-{{ ev.alert or 'green' }} flex items-center gap-3 text-sm">
+            {% if ev.photo %}
+            <img src="{{ photo_url(ev.photo) }}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">
+            {% else %}
+            <div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs text-gray-400">?</div>
+            {% endif %}
+            <div class="flex-1">
+                <span class="font-medium text-gray-200">{{ ev.member_name or 'Unknown' }}</span>
+                <span class="text-gray-500 ml-1">{{ ev.direction }}</span>
+                {% if ev.method %}
+                <span class="badge badge-blue ml-1">{{ ev.method }}</span>
+                {% endif %}
+            </div>
+            <span class="text-xs text-gray-500">{{ ev.time }}</span>
+        </div>
+        {% endfor %}
+        {% if not recent_events %}
+        <div class="text-sm text-gray-500 text-center py-6">No access events yet today</div>
+        {% endif %}
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Alert Sound System ─────────────────────────────────────────
+let soundEnabled = true;
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playBeep(type) {
+    if (!soundEnabled) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    gain.gain.value = 0.15;
+
+    if (type === 'deny' || type === 'incident') {
+        osc.frequency.value = 440; osc.type = 'square';
+        gain.gain.value = 0.25;
+        osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+    } else if (type === 'unlock' || type === 'exit') {
+        osc.frequency.value = 880; osc.type = 'sine';
+        osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+    } else if (type === 'warn') {
+        osc.frequency.value = 660; osc.type = 'triangle';
+        osc.start(); osc.stop(audioCtx.currentTime + 0.25);
+    }
+}
+
+function toggleSound() {
+    soundEnabled = !soundEnabled;
+    document.getElementById('soundLabel').textContent = soundEnabled ? 'Sound ON' : 'Sound OFF';
+    if (soundEnabled) audioCtx.resume();
+}
+
+// ── Toast Notifications ────────────────────────────────────────
+function showToast(message, type) {
+    const container = document.getElementById('toastContainer');
+    const colors = {
+        unlock: 'border-green-500 bg-green-900/30', exit: 'border-blue-500 bg-blue-900/30',
+        deny: 'border-red-500 bg-red-900/30', incident: 'border-red-500 bg-red-900/30',
+        warn: 'border-yellow-500 bg-yellow-900/30', error: 'border-red-500 bg-red-900/30',
+    };
+    const icons = {
+        unlock: '🟢', exit: '🔵', deny: '🔴', incident: '⚠️', warn: '⚡', error: '❌',
+    };
+    const toast = document.createElement('div');
+    toast.className = `border-l-3 rounded-r px-4 py-3 text-sm text-gray-200 shadow-lg transition-all transform ${colors[type] || colors.warn}`;
+    toast.style.cssText = 'border-left-width:3px;animation:slideIn .3s ease-out;';
+    toast.innerHTML = `<span class="mr-1">${icons[type] || '📋'}</span> ${message}`;
+    container.appendChild(toast);
+    setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 4000);
+}
+
+// ── Manual Unlock ──────────────────────────────────────────────
+function manualUnlock() {
+    document.getElementById('unlockModal').classList.remove('hidden');
+}
+function closeUnlockModal() {
+    document.getElementById('unlockModal').classList.add('hidden');
+}
+
+// ── Emergency Access (with debounce) ───────────────────────────
+let emergencyLocked = false;
+async function emergencyAccess() {
+    if (emergencyLocked) return;
+    if (!confirm('EMERGENCY ACCESS: This will immediately unlock the gate and will be logged. Continue?')) return;
+    const btn = document.getElementById('emergencyBtn');
+    emergencyLocked = true;
+    btn.disabled = true;
+    btn.textContent = 'Unlocking...';
+    try {
+        await fetch('/api/emergency-access', {method:'POST'});
+        btn.textContent = 'Unlocked!';
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-success');
+        playBeep('unlock');
+        refreshFeed();
+        setTimeout(() => {
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Emergency Access';
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-danger');
+            btn.disabled = false;
+            emergencyLocked = false;
+        }, 5000);
+    } catch(e) {
+        btn.textContent = 'Error';
+        setTimeout(() => {
+            btn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Emergency Access';
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-danger');
+            btn.disabled = false;
+            emergencyLocked = false;
+        }, 2000);
+    }
+}
+document.getElementById('unlockForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const reason = document.getElementById('unlockReason').value;
+    const note = document.getElementById('unlockNote').value;
+    const fd = new FormData();
+    fd.append('reason', reason);
+    fd.append('note', note);
+    await fetch('/api/manual-unlock', {method:'POST', body: fd});
+    closeUnlockModal();
+    playBeep('warn');
+    refreshFeed();
+});
+
+// ── Hardware Status (auto-poll every 10s, change detection) ────
+let prevHwState = {};
+async function refreshHardware() {
+    try {
+        const res = await fetch('/api/hardware-status');
+        const d = await res.json();
+        setDot('hwCamera', d.camera);
+        setDot('hwSerial', d.serial);
+        const serialPortEl = document.getElementById('hwSerialPort');
+        if (serialPortEl) serialPortEl.textContent = d.serial_port ? '(' + d.serial_port + ')' : '';
+        setDot('hwRfid', d.rfid);
+        setDot('hwModel', d.face_model);
+
+        // Detect status changes and alert staff
+        const newState = {camera: d.camera, serial: d.serial, rfid: d.rfid, face_model: d.face_model};
+        for (const [k, v] of Object.entries(newState)) {
+            if (prevHwState[k] !== undefined && prevHwState[k] !== v) {
+                const label = {camera:'Camera',serial:'ESP32',rfid:'RFID',face_model:'Face Model'}[k];
+                if (!v) {
+                    showToast(`${label} went OFFLINE`, 'deny');
+                    playBeep('deny');
+                } else {
+                    showToast(`${label} reconnected`, 'unlock');
+                }
+            }
+        }
+        prevHwState = newState;
+
+        const now = new Date().toLocaleTimeString();
+        document.getElementById('hwLastCheck').textContent = 'Last: ' + now;
+    } catch(e) {
+        document.getElementById('hwLastCheck').textContent = 'Check failed';
+    }
+}
+function setDot(id, ok) {
+    const el = document.getElementById(id);
+    if (el) el.className = 'w-2 h-2 rounded-full ' + (ok ? 'bg-green-400' : 'bg-red-400 animate-pulse');
+}
+
+// ── Photo URL helper (handles absolute paths from DB) ───────────
+function photoUrl(p) {
+    if (!p) return '';
+    if (p.startsWith('/static/')) return p;
+    p = p.replace(/\\/g, '/');
+    let idx = p.indexOf('static/photos/');
+    if (idx !== -1) return '/' + p.substring(idx);
+    return '/static/photos/members/' + p.split('/').pop();
+}
+
+// ── Live Feed (with event count, sounds, toasts) ───────────────
+let lastEventTime = '';
+let totalEvents = 0;
+const _toastedTimes = new Set();  // dedup: track already-toasted event timestamps
+
+async function refreshFeed() {
+    try {
+        const res = await fetch('/api/live-feed?limit=20');
+        const events = await res.json();
+        const container = document.getElementById('liveFeed');
+        if (!events.length) return;
+
+        // Detect new events since last poll
+        if (lastEventTime && events.length > 0) {
+            for (const ev of events) {
+                if (ev.time && ev.time > lastEventTime && !_toastedTimes.has(ev.time + ev.member_name)) {
+                    // New event — play sound and show toast
+                    _toastedTimes.add(ev.time + ev.member_name);
+                    // Keep dedup set small (max 100 entries)
+                    if (_toastedTimes.size > 100) {
+                        const iter = _toastedTimes.values();
+                        _toastedTimes.delete(iter.next().value);
+                    }
+                    const evType = ev.type || (ev.alert === 'red' ? 'deny' : 'unlock');
+                    playBeep(evType);
+                    const msg = ev.member_name
+                        ? `${ev.member_name} — ${ev.message || ev.direction || evType}`
+                        : (ev.message || evType);
+                    showToast(msg, evType);
+                    totalEvents++;
+                    // Pulse cam2 card red on tailgate incident
+                    if (evType === 'incident') {
+                        const cam2Card = document.querySelector('#cam2Preview')?.closest('.card');
+                        if (cam2Card) {
+                            cam2Card.classList.add('alarm-active');
+                            setTimeout(() => cam2Card.classList.remove('alarm-active'), 9000);
+                        }
+                    }
+                }
+            }
+        } else if (events.length > 0) {
+            totalEvents = events.length;
+        }
+        if (events.length > 0) {
+            lastEventTime = events[0].time || '';
+        }
+        document.getElementById('eventCount').textContent = totalEvents;
+
+        container.innerHTML = events.map(ev => {
+            const typeIcon = {
+                unlock: '✅', exit: '🚪', deny: '🚫', incident: '⚠️',
+                warn: '⚡', error: '❌', manual_override: '🔓',
+            }[ev.type] || '📋';
+            return `
+            <div class="alert-${ev.alert||'green'} flex items-center gap-3 text-sm">
+                ${ev.photo
+                    ? `<img src="${photoUrl(ev.photo)}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
+                    : `<div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-lg">${typeIcon}</div>`}
+                <div class="flex-1">
+                    <span class="font-medium text-gray-200">${ev.member_name||ev.message||'System'}</span>
+                    ${ev.direction ? `<span class="text-gray-500 ml-1">${ev.direction}</span>` : ''}
+                    ${ev.method ? `<span class="badge badge-blue ml-1">${ev.method}</span>` : ''}
+                    ${ev.type === 'incident' ? '<span class="badge badge-red ml-1">ALERT</span>' : ''}
+                    ${ev.type === 'deny' ? '<span class="badge badge-red ml-1">DENIED</span>' : ''}
+                    ${ev.type === 'manual_override' ? '<span class="badge badge-yellow ml-1">OVERRIDE</span>' : ''}
+                    ${ev.message && ev.member_name ? `<div class="text-xs text-gray-500 mt-0.5">${ev.message}</div>` : ''}
+                </div>
+                <span class="text-xs text-gray-500 whitespace-nowrap">${formatTime(ev.time)}</span>
+            </div>`;
+        }).join('');
+        document.getElementById('feedStatus').textContent = 'Live';
+        document.getElementById('feedStatus').className = 'text-xs text-green-400';
+    } catch(e) {
+        document.getElementById('feedStatus').textContent = 'Offline';
+        document.getElementById('feedStatus').className = 'text-xs text-red-400';
+    }
+}
+
+function formatTime(iso) {
+    if (!iso) return '';
+    try {
+        const d = new Date(iso);
+        return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    } catch(e) { return iso; }
+}
+
+// ── Auto-refresh stats ─────────────────────────────────────────
+async function refreshStats() {
+    try {
+        const res = await fetch('/api/live-feed?limit=1');
+        // Stats are server-rendered; full page reload would be heavy.
+        // Instead, re-fetch the dashboard endpoint as HTML fragment
+        // For now just keep feed + hardware fresh (stats update on page nav)
+    } catch(e) {}
+}
+
+// ── SmoothCamera: WebSocket + requestAnimationFrame preview ─────
+class SmoothCamera {
+    constructor(canvasId, wsPath, fallbackId, statusId, dotId) {
+        this.canvas    = document.getElementById(canvasId);
+        this.ctx       = this.canvas ? this.canvas.getContext('2d') : null;
+        this.wsPath    = wsPath;
+        this.fallbackId = fallbackId;
+        this.statusId  = statusId || null;
+        this.dotId     = dotId   || null;
+        this.ws        = null;
+        this.pendingBitmap  = null;
+        this.currentBitmap  = null;
+        this.animFrameId    = null;
+        this.reconnectTimer = null;
+        this.active    = false;
+    }
+
+    start() {
+        if (this.active) return;
+        this.active = true;
+        this._connect();
+        this._renderLoop();
+    }
+
+    stop() {
+        this.active = false;
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        if (this.ws) { try { this.ws.close(); } catch(e) {} this.ws = null; }
+        if (this.animFrameId) { cancelAnimationFrame(this.animFrameId); this.animFrameId = null; }
+        if (this.pendingBitmap) { this.pendingBitmap.close(); this.pendingBitmap = null; }
+        if (this.currentBitmap) { this.currentBitmap.close(); this.currentBitmap = null; }
+        this._setStatus('Paused', 'bg-gray-500');
+    }
+
+    _connect() {
+        if (!this.active) return;
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.ws = new WebSocket(`${proto}//${location.host}${this.wsPath}`);
+        this.ws.binaryType = 'arraybuffer';
+        this.ws.onopen = () => {
+            this._setStatus('Live', 'bg-green-400');
+            const fb = document.getElementById(this.fallbackId);
+            if (fb) fb.style.display = 'none';
+        };
+        this.ws.onmessage = (e) => {
+            // Coalesce: if a decode is already in flight, drop this frame.
+            // Without this, createImageBitmap queues up every WS message and
+            // the main thread starts falling behind, which is what caused
+            // the preview to freeze and crash under load.
+            if (this._decoding) return;
+            this._decoding = true;
+            createImageBitmap(new Blob([e.data], {type:'image/jpeg'})).then(bmp => {
+                this._decoding = false;
+                if (!this.active) { bmp.close(); return; }
+                if (this.pendingBitmap) this.pendingBitmap.close();
+                this.pendingBitmap = bmp;
+            }).catch(() => { this._decoding = false; });
+        };
+        this.ws.onerror = () => {};
+        this.ws.onclose = () => {
+            if (!this.active) return;
+            this._setStatus('Reconnecting...', 'bg-yellow-400 animate-pulse');
+            this.reconnectTimer = setTimeout(() => this._connect(), 2000);
+        };
+    }
+
+    _renderLoop() {
+        if (!this.active) return;
+        if (this.pendingBitmap && this.canvas) {
+            if (this.currentBitmap) this.currentBitmap.close();
+            this.currentBitmap = this.pendingBitmap;
+            this.pendingBitmap = null;
+            if (this.canvas.width  !== this.currentBitmap.width ||
+                this.canvas.height !== this.currentBitmap.height) {
+                this.canvas.width  = this.currentBitmap.width;
+                this.canvas.height = this.currentBitmap.height;
+            }
+            this.ctx.drawImage(this.currentBitmap, 0, 0);
+            // Optional per-camera overlay hook (face boxes, etc.)
+            if (typeof this.onDraw === 'function') {
+                try { this.onDraw(this.ctx, this.canvas); } catch(e) {}
+            }
+        }
+        this.animFrameId = requestAnimationFrame(() => this._renderLoop());
+    }
+
+    _setStatus(text, dotClass) {
+        const s = document.getElementById(this.statusId);
+        const d = document.getElementById(this.dotId);
+        if (s) s.textContent = text;
+        if (d) d.className = `w-2 h-2 rounded-full ${dotClass}`;
+    }
+}
+
+// Instantiate smooth previews (statusId/dotId intentionally omitted for cam1
+// so scan-face logic keeps full control of those indicators)
+const cam1Preview = new SmoothCamera('facePreview',  '/ws/camera1', 'faceFallback');
+const cam2Preview = new SmoothCamera('cam2Preview',  '/ws/camera2', 'cam2Fallback', 'cam2Status', 'cam2Dot');
+
+// Draw face boxes on top of every cam1 frame — overlay is set by scanFace()
+cam1Preview.onDraw = drawFaceOverlay;
+
+// ── Camera 2 toggle ──────────────────────────────────────────────
+function toggleCam2() {
+    const btn = document.getElementById('cam2Toggle');
+    if (cam2Preview.active) {
+        cam2Preview.stop();
+        btn.textContent = 'Start Live';
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline');
+    } else {
+        cam2Preview.start();
+        btn.textContent = 'Stop Live';
+        btn.classList.remove('btn-outline');
+        btn.classList.add('btn-success');
+    }
+}
+
+// Snapshot fallback (draws one frame onto canvas without WebSocket)
+function refreshCam2Snapshot() {
+    if (cam2Preview.active) return; // live stream already running
+    const snapshot = new Image();
+    snapshot.onload = () => {
+        const c = document.getElementById('cam2Preview');
+        if (!c) return;
+        c.width  = snapshot.naturalWidth  || snapshot.width;
+        c.height = snapshot.naturalHeight || snapshot.height;
+        c.getContext('2d').drawImage(snapshot, 0, 0);
+        document.getElementById('cam2Fallback').style.display = 'none';
+        document.getElementById('cam2Status').textContent = 'Snapshot';
+        document.getElementById('cam2Dot').className = 'w-2 h-2 rounded-full bg-blue-400';
+    };
+    snapshot.src = '/api/camera2-snapshot?' + Date.now();
+}
+
+// ── Face Verification ──────────────────────────────────────────
+let autoScanActive = false;
+let autoScanTimer = null;
+let faceOverlay = [];   // [{box:[x,y,w,h], label, color}] in frame coords
+let faceFrameDims = null;   // {width, height} of the server frame
+
+// Redraw overlay whenever the preview repaints — hooked via overrideDraw
+function drawFaceOverlay() {
+    if (!faceOverlay.length || !faceFrameDims) return;
+    const canvas = document.getElementById('facePreview');
+    if (!canvas || !canvas.width) return;
+    const ctx = canvas.getContext('2d');
+    const sx = canvas.width / faceFrameDims.width;
+    const sy = canvas.height / faceFrameDims.height;
+    ctx.lineWidth = Math.max(2, canvas.width / 400);
+    ctx.font = `${Math.max(12, canvas.width / 60)}px sans-serif`;
+    for (const f of faceOverlay) {
+        ctx.strokeStyle = f.color;
+        ctx.fillStyle = f.color;
+        const [x, y, w, h] = f.box;
+        ctx.strokeRect(x * sx, y * sy, w * sx, h * sy);
+        if (f.label) {
+            const tx = x * sx;
+            const ty = Math.max(14, y * sy - 4);
+            ctx.fillText(f.label, tx, ty);
+        }
+    }
+}
+
+async function scanFace() {
+    const btn = document.getElementById('scanBtn');
+    const statusEl = document.getElementById('faceStatus');
+    const dotEl = document.getElementById('faceDot');
+    btn.disabled = true;
+    statusEl.textContent = 'Scanning...';
+    dotEl.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse';
+
+    try {
+        const res = await fetch('/api/face-detect');
+        const data = await res.json();
+
+        if (data.status === 'no_camera') {
+            statusEl.textContent = 'Camera offline';
+            dotEl.className = 'w-2 h-2 rounded-full bg-red-400';
+            faceOverlay = [];
+            return;
+        }
+
+        // Build overlay list — the live WS canvas will draw these on top of
+        // each fresh frame, so there's no need to ship an annotated image.
+        faceFrameDims = { width: data.frame_width, height: data.frame_height };
+        faceOverlay = (data.matches || []).map(m => {
+            if (m.member) {
+                return {
+                    box: m.box,
+                    color: '#22c55e',
+                    label: `${m.member.name} ${(m.match_score * 100).toFixed(0)}%`,
+                };
+            }
+            return { box: m.box, color: '#ef4444', label: 'Unknown' };
+        });
+        if (!autoScanActive) {
+            if (window._overlayTimer) clearTimeout(window._overlayTimer);
+            window._overlayTimer = setTimeout(() => { faceOverlay = []; }, 3000);
+        }
+
+        // Update status
+        const faceCount = data.faces_detected || 0;
+        const matchCount = data.matches ? data.matches.filter(m => m.member).length : 0;
+        statusEl.textContent = `${faceCount} face${faceCount !== 1 ? 's' : ''}, ${matchCount} matched`;
+        dotEl.className = 'w-2 h-2 rounded-full ' + (matchCount > 0 ? 'bg-green-400' : (faceCount > 0 ? 'bg-yellow-400' : 'bg-gray-500'));
+
+        // Show match results
+        const resultsEl = document.getElementById('matchResults');
+        if (data.matches && data.matches.length > 0) {
+            resultsEl.innerHTML = data.matches.map(m => {
+                if (m.member) {
+                    const statusClass = m.member.status === 'active' ? 'badge-green' : 'badge-red';
+                    const expiryInfo = m.member.expiry ? ` · Exp: ${m.member.expiry}` : '';
+                    return `
+                        <div class="alert-green flex items-center gap-3 text-sm">
+                            ${m.member.photo
+                                ? `<img src="${photoUrl(m.member.photo)}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
+                                : '<div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs text-gray-400">?</div>'}
+                            <div class="flex-1">
+                                <a href="/members/${m.member.id}" class="font-medium text-gray-200 hover:text-purple-400">${m.member.name}</a>
+                                <span class="badge ${statusClass} ml-1">${m.member.status}</span>
+                                <div class="text-xs text-gray-500">Confidence: ${(m.confidence * 100).toFixed(1)}%${expiryInfo}</div>
+                            </div>
+                        </div>`;
+                } else {
+                    return `
+                        <div class="alert-red flex items-center gap-3 text-sm">
+                            <div class="w-10 h-10 rounded-full bg-red-900 flex items-center justify-center flex-shrink-0 text-xs text-red-300">?</div>
+                            <div class="flex-1">
+                                <span class="font-medium text-gray-200">Unknown Person</span>
+                                <div class="text-xs text-gray-500">Confidence: ${(m.confidence * 100).toFixed(1)}% · Not registered</div>
+                            </div>
+                        </div>`;
+                }
+            }).join('');
+        } else {
+            resultsEl.innerHTML = '<div class="text-xs text-gray-500 text-center py-2">No faces detected</div>';
+        }
+    } catch(e) {
+        statusEl.textContent = 'Error';
+        dotEl.className = 'w-2 h-2 rounded-full bg-red-400';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function toggleAutoScan() {
+    const btn = document.getElementById('autoScanBtn');
+    if (autoScanActive) {
+        autoScanActive = false;
+        clearInterval(autoScanTimer);
+        btn.textContent = 'Auto Scan';
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline');
+        faceOverlay = [];
+    } else {
+        autoScanActive = true;
+        btn.textContent = 'Stop Auto';
+        btn.classList.remove('btn-outline');
+        btn.classList.add('btn-success');
+        // Keep the WS preview running — overlay boxes get drawn on top of
+        // every live frame by cam1Preview.onDraw, no need to swap streams.
+        scanFace();
+        // 2.5 s is plenty for a staff-side scan. The entry loop runs its
+        // own higher-frequency matching independent of this UI poll.
+        autoScanTimer = setInterval(scanFace, 2500);
+    }
+}
+
+// ── Camera Management (detect, assign, configure, ROI) ─────────
+function toggleCamSettings() {
+    const body = document.getElementById('camSettingsBody');
+    const chev = document.getElementById('camSettingsChevron');
+    const hint = document.getElementById('camSettingsHint');
+    const showing = !body.classList.contains('hidden');
+    if (showing) {
+        body.classList.add('hidden');
+        chev.style.transform = '';
+        hint.textContent = 'click to expand';
+    } else {
+        body.classList.remove('hidden');
+        chev.style.transform = 'rotate(180deg)';
+        hint.textContent = 'click to collapse';
+        refreshCamSettings();
+        cam1RoiLoadStatus();
+        roiLoadStatus();
+    }
+}
+
+// ── Detect Cameras ──────────────────────────────────────────────
+async function detectCameras() {
+    const btn = document.getElementById('detectBtn');
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    try {
+        const res = await fetch('/api/cameras/detect');
+        const data = await res.json();
+        document.getElementById('detectedSection').style.display = '';
+        document.getElementById('detectCount').textContent = data.count + ' camera(s) found';
+
+        const list = document.getElementById('detectedList');
+        if (!data.cameras.length) {
+            list.innerHTML = '<div class="text-xs text-gray-500 text-center py-2">No cameras detected. Connect USB cameras and try again.</div>';
+            document.getElementById('assignForm').style.display = 'none';
+            return;
+        }
+
+        list.innerHTML = data.cameras.map(c => `
+            <div class="flex items-center gap-3 p-2 rounded text-xs" style="background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.15);">
+                <span class="w-2 h-2 rounded-full ${c.working ? 'bg-green-400' : 'bg-red-400'}"></span>
+                <span class="font-medium text-gray-200">Camera ${c.index}</span>
+                <span class="badge badge-purple">${c.label}</span>
+                <span class="text-gray-400 ml-auto">${c.width}×${c.height} @ ${c.fps}fps</span>
+                <span class="text-gray-500">${c.backend}</span>
+            </div>
+        `).join('');
+
+        const sel1 = document.getElementById('assignCam1');
+        const sel2 = document.getElementById('assignCam2');
+        const opts = data.cameras.map(c =>
+            `<option value="${c.index}">Camera ${c.index} — ${c.label} (${c.width}×${c.height})</option>`
+        ).join('');
+        sel1.innerHTML = opts;
+        sel2.innerHTML = opts;
+        if (data.cameras.length >= 2) sel2.selectedIndex = 1;
+        document.getElementById('assignForm').style.display = '';
+    } catch(e) {
+        showToast('Detection failed: ' + e.message, 'deny');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg class="w-3 h-3 inline mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg> Detect Cameras';
+    }
+}
+
+// ── Assign Cameras ──────────────────────────────────────────────
+document.getElementById('assignForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData();
+    fd.append('cam1_index', document.getElementById('assignCam1').value);
+    fd.append('cam2_index', document.getElementById('assignCam2').value);
+    try {
+        const res = await fetch('/api/cameras/assign', {method:'POST', body: fd});
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showToast('Cameras reassigned! Restarting streams...', 'unlock');
+            setTimeout(refreshCamSettings, 2000);
+        } else {
+            showToast('Error: ' + (data.message || 'Unknown'), 'deny');
+        }
+    } catch(e) { showToast('Assign failed: ' + e.message, 'deny'); }
+});
+
+// ── Swap Cameras ────────────────────────────────────────────────
+async function swapCameras() {
+    const btn = document.getElementById('swapBtn');
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    try {
+        const res = await fetch('/api/cameras/swap', { method: 'POST' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showToast(data.message || 'Cameras swapped!', 'unlock');
+            // Update the dropdowns to reflect the swap
+            const sel1 = document.getElementById('assignCam1');
+            const sel2 = document.getElementById('assignCam2');
+            if (sel1 && sel2) {
+                const tmp = sel1.value;
+                sel1.value = sel2.value;
+                sel2.value = tmp;
+            }
+            setTimeout(refreshCamSettings, 2000);
+        } else {
+            showToast('Error: ' + (data.message || 'Unknown'), 'deny');
+        }
+    } catch(e) { showToast('Swap failed: ' + e.message, 'deny'); }
+    finally { btn.disabled = false; btn.style.opacity = '1'; }
+}
+
+// ── Camera Status + Configure ───────────────────────────────────
+async function refreshCamSettings() {
+    try {
+        const res = await fetch('/api/cameras/info');
+        const data = await res.json();
+        for (const name of ['cam1', 'cam2']) {
+            const info = data[name] || {};
+            const tier = info.active_tier || {};
+            const cap = info.capabilities || {};
+            const wd = info.watchdog || {};
+            const isRunning = info.status === 'running';
+            const isReconnecting = info.status === 'reconnecting';
+
+            // Status dot
+            const dot = document.getElementById('cfg' + name[0].toUpperCase() + name.slice(1) + 'Dot');
+            if (dot) dot.className = 'w-2 h-2 rounded-full ' + (isRunning ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400 animate-pulse' : 'bg-red-400');
+
+            // Status info
+            const el = document.getElementById('cfg' + name[0].toUpperCase() + name.slice(1) + 'Status');
+            if (el) {
+                el.innerHTML = `
+                    <div class="flex justify-between"><span class="text-gray-500">Status</span>
+                        <span class="badge ${isRunning ? 'badge-green' : isReconnecting ? 'badge-yellow' : 'badge-red'}">${info.status}</span></div>
+                    ${info.error ? `<div class="text-red-400">${info.error}</div>` : ''}
+                    <div class="flex justify-between"><span class="text-gray-500">Index</span><span class="font-mono">${info.index}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">Max</span><span>${cap.width||'?'}×${cap.height||'?'} @ ${cap.fps||'?'}fps</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">Active</span><span class="text-purple-400">${tier.label||'—'} ${tier.actual_width||'?'}×${tier.actual_height||'?'}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-500">FPS / JPEG</span><span>${info.capture_fps||'?'} / ${info.jpeg_quality||'?'}</span></div>
+                    ${wd.restart_count > 0 ? `<div class="flex justify-between"><span class="text-gray-500">Restarts</span><span class="text-yellow-400">${wd.restart_count}</span></div>` : ''}
+                `;
+            }
+        }
+    } catch(e) { /* ignore */ }
+}
+
+async function configureCam(name) {
+    const prefix = 'cfg' + name[0].toUpperCase() + name.slice(1);
+    const fd = new FormData();
+    const w = document.getElementById(prefix + 'Width').value;
+    const h = document.getElementById(prefix + 'Height').value;
+    const fps = document.getElementById(prefix + 'Fps').value;
+    const jpeg = document.getElementById(prefix + 'Jpeg').value;
+    if (w) fd.append('width', w);
+    if (h) fd.append('height', h);
+    if (fps) fd.append('fps', fps);
+    if (jpeg) fd.append('jpeg_quality', jpeg);
+    try {
+        const res = await fetch(`/api/cameras/${name}/configure`, {method:'POST', body: fd});
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showToast(`${name}: ${data.width}×${data.height} @ ${data.fps}fps, JPEG=${data.jpeg_quality}`, 'unlock');
+            refreshCamSettings();
+        } else {
+            showToast(`${name} config failed: ${data.message || 'unknown'}`, 'deny');
+        }
+    } catch(e) {
+        showToast(`${name} config error: ${e.message}`, 'deny');
+    }
+}
+
+// ── Detection Zone (ROI) Drawing ────────────────────────────────
+const roiCanvas = document.getElementById('roiCanvas');
+const roiCtx = roiCanvas.getContext('2d');
+let roiImage = null;
+let roiPoints = [];
+let roiImageLoaded = false;
+
+function roiLoadSnapshot() {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+        roiImage = img;
+        roiImageLoaded = true;
+        const wrap = document.getElementById('roiCanvasWrap');
+        const displayW = wrap.clientWidth;
+        const displayH = Math.round(displayW * (img.height / img.width));
+        roiCanvas.width = displayW;
+        roiCanvas.height = displayH;
+        roiCanvas.style.height = displayH + 'px';
+        document.getElementById('roiPlaceholder').style.display = 'none';
+        roiDraw();
+    };
+    img.onerror = () => {
+        document.getElementById('roiPlaceholder').textContent = 'Failed to load cam2 snapshot — is the camera running?';
+    };
+    img.src = '/api/camera2-snapshot?' + Date.now();
+}
+
+roiCanvas.addEventListener('click', (e) => {
+    if (!roiImageLoaded) return;
+    const rect = roiCanvas.getBoundingClientRect();
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+    roiPoints.push({ x: Math.round(xPct * 100) / 100, y: Math.round(yPct * 100) / 100 });
+    roiDraw();
+    roiUpdateUI();
+});
+
+function roiDraw() {
+    if (!roiImageLoaded) return;
+    const w = roiCanvas.width, h = roiCanvas.height;
+    roiCtx.clearRect(0, 0, w, h);
+    roiCtx.drawImage(roiImage, 0, 0, w, h);
+    if (roiPoints.length === 0) return;
+
+    if (roiPoints.length >= 3) {
+        roiCtx.beginPath();
+        roiCtx.moveTo(roiPoints[0].x / 100 * w, roiPoints[0].y / 100 * h);
+        for (let i = 1; i < roiPoints.length; i++) {
+            roiCtx.lineTo(roiPoints[i].x / 100 * w, roiPoints[i].y / 100 * h);
+        }
+        roiCtx.closePath();
+        roiCtx.fillStyle = 'rgba(34, 197, 94, 0.15)';
+        roiCtx.fill();
+        roiCtx.strokeStyle = '#22c55e';
+        roiCtx.lineWidth = 2;
+        roiCtx.stroke();
+    } else if (roiPoints.length === 2) {
+        roiCtx.beginPath();
+        roiCtx.moveTo(roiPoints[0].x / 100 * w, roiPoints[0].y / 100 * h);
+        roiCtx.lineTo(roiPoints[1].x / 100 * w, roiPoints[1].y / 100 * h);
+        roiCtx.strokeStyle = '#22c55e';
+        roiCtx.lineWidth = 2;
+        roiCtx.stroke();
+    }
+
+    for (let i = 0; i < roiPoints.length; i++) {
+        const px = roiPoints[i].x / 100 * w;
+        const py = roiPoints[i].y / 100 * h;
+        roiCtx.beginPath();
+        roiCtx.arc(px, py, 5, 0, Math.PI * 2);
+        roiCtx.fillStyle = i === 0 ? '#a855f7' : '#22c55e';
+        roiCtx.fill();
+        roiCtx.strokeStyle = '#fff';
+        roiCtx.lineWidth = 1.5;
+        roiCtx.stroke();
+        roiCtx.fillStyle = '#fff';
+        roiCtx.font = '10px sans-serif';
+        roiCtx.fillText((i + 1).toString(), px + 7, py - 4);
+    }
+}
+
+function roiUpdateUI() {
+    document.getElementById('roiSaveBtn').disabled = roiPoints.length < 3;
+    const list = document.getElementById('roiPointsList');
+    if (roiPoints.length === 0) {
+        list.innerHTML = '<span class="text-gray-600">No points placed yet</span>';
+    } else {
+        list.innerHTML = roiPoints.map((p, i) =>
+            `<div>Point ${i + 1}: (${p.x.toFixed(1)}%, ${p.y.toFixed(1)}%)</div>`
+        ).join('');
+    }
+}
+
+function roiUndo() { roiPoints.pop(); roiDraw(); roiUpdateUI(); }
+function roiClear() { roiPoints = []; roiDraw(); roiUpdateUI(); }
+
+async function roiSave() {
+    if (roiPoints.length < 3) { showToast('Need at least 3 points', 'warn'); return; }
+    try {
+        const res = await fetch('/api/cameras/detection-zone', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(roiPoints),
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showToast('Detection zone saved! Only persons inside this area will be counted.', 'unlock');
+            roiLoadStatus();
+        } else {
+            showToast('Error: ' + (data.message || 'Unknown'), 'deny');
+        }
+    } catch(e) { showToast('Save failed: ' + e.message, 'deny'); }
+}
+
+async function roiDelete() {
+    if (!confirm('Remove detection zone? Person counting will use the full frame.')) return;
+    try {
+        const res = await fetch('/api/cameras/detection-zone', { method: 'DELETE' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            roiPoints = [];
+            roiDraw();
+            roiUpdateUI();
+            roiLoadStatus();
+            showToast('Detection zone removed', 'warn');
+        }
+    } catch(e) { showToast('Delete failed: ' + e.message, 'deny'); }
+}
+
+async function roiLoadStatus() {
+    try {
+        const res = await fetch('/api/cameras/detection-zone');
+        const data = await res.json();
+        const badge = document.getElementById('roiStatus');
+        if (data.active && data.zone) {
+            badge.className = 'badge badge-green text-xs';
+            badge.textContent = `Active — ${data.zone.length} points`;
+            if (roiPoints.length === 0) {
+                roiPoints = data.zone;
+                roiUpdateUI();
+                if (roiImageLoaded) roiDraw();
+            }
+        } else {
+            badge.className = 'badge badge-yellow text-xs';
+            badge.textContent = 'Not configured';
+        }
+    } catch(e) {
+        document.getElementById('roiStatus').textContent = 'Error';
+    }
+}
+
+// ── Cam1 Detection Zone (Face ROI) Drawing ──────────────────────
+const cam1RoiCanvas = document.getElementById('cam1RoiCanvas');
+const cam1RoiCtx = cam1RoiCanvas.getContext('2d');
+let cam1RoiImage = null;
+let cam1RoiPoints = [];
+let cam1RoiImageLoaded = false;
+
+function cam1RoiLoadSnapshot() {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+        cam1RoiImage = img;
+        cam1RoiImageLoaded = true;
+        const wrap = document.getElementById('cam1RoiCanvasWrap');
+        const displayW = wrap.clientWidth;
+        const displayH = Math.round(displayW * (img.height / img.width));
+        cam1RoiCanvas.width = displayW;
+        cam1RoiCanvas.height = displayH;
+        cam1RoiCanvas.style.height = displayH + 'px';
+        document.getElementById('cam1RoiPlaceholder').style.display = 'none';
+        cam1RoiDraw();
+    };
+    img.onerror = () => {
+        document.getElementById('cam1RoiPlaceholder').textContent = 'Failed to load cam1 snapshot — is the camera running?';
+    };
+    img.src = '/api/camera-snapshot?cam=cam1&t=' + Date.now();
+}
+
+cam1RoiCanvas.addEventListener('click', (e) => {
+    if (!cam1RoiImageLoaded) return;
+    const rect = cam1RoiCanvas.getBoundingClientRect();
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+    cam1RoiPoints.push({ x: Math.round(xPct * 100) / 100, y: Math.round(yPct * 100) / 100 });
+    cam1RoiDraw();
+    cam1RoiUpdateUI();
+});
+
+function cam1RoiDraw() {
+    if (!cam1RoiImageLoaded) return;
+    const w = cam1RoiCanvas.width, h = cam1RoiCanvas.height;
+    cam1RoiCtx.clearRect(0, 0, w, h);
+    cam1RoiCtx.drawImage(cam1RoiImage, 0, 0, w, h);
+    if (cam1RoiPoints.length === 0) return;
+
+    if (cam1RoiPoints.length >= 3) {
+        cam1RoiCtx.beginPath();
+        cam1RoiCtx.moveTo(cam1RoiPoints[0].x / 100 * w, cam1RoiPoints[0].y / 100 * h);
+        for (let i = 1; i < cam1RoiPoints.length; i++) {
+            cam1RoiCtx.lineTo(cam1RoiPoints[i].x / 100 * w, cam1RoiPoints[i].y / 100 * h);
+        }
+        cam1RoiCtx.closePath();
+        cam1RoiCtx.fillStyle = 'rgba(59, 130, 246, 0.15)';
+        cam1RoiCtx.fill();
+        cam1RoiCtx.strokeStyle = '#3b82f6';
+        cam1RoiCtx.lineWidth = 2;
+        cam1RoiCtx.stroke();
+    } else if (cam1RoiPoints.length === 2) {
+        cam1RoiCtx.beginPath();
+        cam1RoiCtx.moveTo(cam1RoiPoints[0].x / 100 * w, cam1RoiPoints[0].y / 100 * h);
+        cam1RoiCtx.lineTo(cam1RoiPoints[1].x / 100 * w, cam1RoiPoints[1].y / 100 * h);
+        cam1RoiCtx.strokeStyle = '#3b82f6';
+        cam1RoiCtx.lineWidth = 2;
+        cam1RoiCtx.stroke();
+    }
+
+    for (let i = 0; i < cam1RoiPoints.length; i++) {
+        const px = cam1RoiPoints[i].x / 100 * w;
+        const py = cam1RoiPoints[i].y / 100 * h;
+        cam1RoiCtx.beginPath();
+        cam1RoiCtx.arc(px, py, 5, 0, Math.PI * 2);
+        cam1RoiCtx.fillStyle = i === 0 ? '#3b82f6' : '#60a5fa';
+        cam1RoiCtx.fill();
+        cam1RoiCtx.strokeStyle = '#fff';
+        cam1RoiCtx.lineWidth = 1.5;
+        cam1RoiCtx.stroke();
+        cam1RoiCtx.fillStyle = '#fff';
+        cam1RoiCtx.font = '10px sans-serif';
+        cam1RoiCtx.fillText((i + 1).toString(), px + 7, py - 4);
+    }
+}
+
+function cam1RoiUpdateUI() {
+    document.getElementById('cam1RoiSaveBtn').disabled = cam1RoiPoints.length < 3;
+    const list = document.getElementById('cam1RoiPointsList');
+    if (cam1RoiPoints.length === 0) {
+        list.innerHTML = '<span class="text-gray-600">No points placed yet</span>';
+    } else {
+        list.innerHTML = cam1RoiPoints.map((p, i) =>
+            `<div>Point ${i + 1}: (${p.x.toFixed(1)}%, ${p.y.toFixed(1)}%)</div>`
+        ).join('');
+    }
+}
+
+function cam1RoiUndo() { cam1RoiPoints.pop(); cam1RoiDraw(); cam1RoiUpdateUI(); }
+function cam1RoiClear() { cam1RoiPoints = []; cam1RoiDraw(); cam1RoiUpdateUI(); }
+
+async function cam1RoiSave() {
+    if (cam1RoiPoints.length < 3) { showToast('Need at least 3 points', 'warn'); return; }
+    try {
+        const res = await fetch('/api/cameras/cam1-zone', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cam1RoiPoints),
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showToast('Cam1 face zone saved! Faces outside this area will be ignored.', 'unlock');
+            cam1RoiLoadStatus();
+        } else {
+            showToast('Error: ' + (data.message || 'Unknown'), 'deny');
+        }
+    } catch(e) { showToast('Save failed: ' + e.message, 'deny'); }
+}
+
+async function cam1RoiDelete() {
+    if (!confirm('Remove cam1 face zone? Face detection will use the full frame.')) return;
+    try {
+        const res = await fetch('/api/cameras/cam1-zone', { method: 'DELETE' });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            cam1RoiPoints = [];
+            cam1RoiDraw();
+            cam1RoiUpdateUI();
+            cam1RoiLoadStatus();
+            showToast('Cam1 face zone removed', 'warn');
+        }
+    } catch(e) { showToast('Delete failed: ' + e.message, 'deny'); }
+}
+
+async function cam1RoiLoadStatus() {
+    try {
+        const res = await fetch('/api/cameras/cam1-zone');
+        const data = await res.json();
+        const badge = document.getElementById('cam1RoiStatus');
+        if (data.active && data.zone) {
+            badge.className = 'badge badge-green text-xs';
+            badge.textContent = `Active — ${data.zone.length} points`;
+            if (cam1RoiPoints.length === 0) {
+                cam1RoiPoints = data.zone;
+                cam1RoiUpdateUI();
+                if (cam1RoiImageLoaded) cam1RoiDraw();
+            }
+        } else {
+            badge.className = 'badge badge-yellow text-xs';
+            badge.textContent = 'Not configured';
+        }
+    } catch(e) {
+        document.getElementById('cam1RoiStatus').textContent = 'Error';
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────
+cam1Preview.start();
+cam2Preview.start();
+// Sync cam2 toggle button to reflect auto-started state
+document.getElementById('cam2Toggle').textContent = 'Stop Live';
+document.getElementById('cam2Toggle').classList.remove('btn-outline');
+document.getElementById('cam2Toggle').classList.add('btn-success');
+refreshHardware();
+refreshFeed();
+refreshCamContext();
+setInterval(refreshFeed, 2000);
+setInterval(refreshHardware, 10000);
+setInterval(refreshCamContext, 5000);  // check camera context every 5s
+
+// ── Camera Context Auto-Recovery ─────────────────────────────────
+// Polls camera context status. If a registration page left the camera
+// borrowed (stale hold), force-releases it so face verification resumes.
+let lastCamContext = 'IDLE';
+async function refreshCamContext() {
+    try {
+        const res = await fetch('/api/camera-context/status');
+        const d = await res.json();
+        const ctx = d.context || 'IDLE';
+        const held = d.held_for_seconds || 0;
+
+        // If camera is held by a registration page for >35s (stale heartbeat), force release
+        if (ctx !== 'IDLE' && held > 35) {
+            await fetch('/api/camera-context/force-release', {method:'POST'});
+            showToast('Camera auto-recovered from stale registration hold', 'unlock');
+            refreshHardware();
+        }
+
+        // Notify if context changed back to IDLE (registration done)
+        if (lastCamContext !== 'IDLE' && ctx === 'IDLE') {
+            refreshHardware();
+            refreshCamSettings();
+        }
+        lastCamContext = ctx;
+    } catch(e) {}
+}
+
+// ── Cleanup: stop all camera activity on navigation ─────────────
+function stopAllCameraActivity() {
+    cam1Preview.stop();
+    cam2Preview.stop();
+    if (autoScanActive) {
+        clearInterval(autoScanTimer);
+        autoScanActive = false;
+    }
+}
+
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+        stopAllCameraActivity();
+        document.getElementById('cam2Toggle').textContent = 'Start Live';
+        document.getElementById('cam2Toggle').classList.remove('btn-success');
+        document.getElementById('cam2Toggle').classList.add('btn-outline');
+        document.getElementById('autoScanBtn').textContent = 'Auto Scan';
+        document.getElementById('autoScanBtn').classList.remove('btn-success');
+        document.getElementById('autoScanBtn').classList.add('btn-outline');
+    } else {
+        cam1Preview.start();
+        cam2Preview.start();
+        document.getElementById('cam2Toggle').textContent = 'Stop Live';
+        document.getElementById('cam2Toggle').classList.remove('btn-outline');
+        document.getElementById('cam2Toggle').classList.add('btn-success');
+        refreshHardware();
+        refreshFeed();
+    }
+});
+
+// Stop WS streams when navigating to registration so getUserMedia can access the hardware
+document.querySelectorAll('a[href*="/register"]').forEach(function(link) {
+    link.addEventListener('click', function() {
+        stopAllCameraActivity();
+    });
+});
+
+// Also stop on full page unload
+window.addEventListener('beforeunload', function() {
+    stopAllCameraActivity();
+});
+
+// ── Hardware PIN gate (admin password required) ───────────────────
+function openHardwareWithPin() {
+    const modal = document.getElementById('hwPinModal');
+    const input = document.getElementById('hwPinInput');
+    const err   = document.getElementById('hwPinError');
+    input.value = '';
+    err.classList.add('hidden');
+    modal.classList.remove('hidden');
+    setTimeout(() => input.focus(), 100);
+}
+function closeHwPinModal() {
+    document.getElementById('hwPinModal').classList.add('hidden');
+    document.getElementById('hwPinInput').value = '';
+    document.getElementById('hwPinError').classList.add('hidden');
+}
+async function verifyHwPin() {
+    const input  = document.getElementById('hwPinInput');
+    const err    = document.getElementById('hwPinError');
+    const btn    = document.getElementById('hwPinSubmit');
+    const pw     = input.value;
+    if (!pw) { input.focus(); return; }
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+        const res = await fetch('/api/admin/verify-password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: `password=${encodeURIComponent(pw)}`
+        });
+        const data = await res.json();
+        if (data.ok) {
+            closeHwPinModal();
+            openEsp32Panel();
+        } else {
+            err.classList.remove('hidden');
+            input.value = '';
+            input.focus();
+        }
+    } catch(e) {
+        err.textContent = 'Connection error';
+        err.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Unlock';
+    }
+}
+// Close PIN modal on backdrop click
+document.getElementById('hwPinModal').addEventListener('click', function(e) {
+    if (e.target === this) closeHwPinModal();
+});
+
+// ── ESP32 Hardware Panel ──────────────────────────────────────────
+function openEsp32Panel() {
+    document.getElementById('esp32Modal').classList.remove('hidden');
+    espRefreshStatus();
+    espRefreshPorts();
+}
+function closeEsp32Panel() {
+    document.getElementById('esp32Modal').classList.add('hidden');
+}
+document.getElementById('esp32Modal').addEventListener('click', function(e) {
+    if (e.target === this) closeEsp32Panel();
+});
+
+function espLog(msg, type) {
+    const log = document.getElementById('espLog');
+    const ts = new Date().toLocaleTimeString();
+    const colors = {ok:'#6ee7b7', err:'#fca5a5', cmd:'#a5b4fc', info:'#94a3b8'};
+    const div = document.createElement('div');
+    div.style.color = colors[type] || colors.info;
+    div.textContent = `[${ts}] ${msg}`;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+}
+
+async function espRefreshStatus() {
+    try {
+        const r = await fetch('/api/esp32/status');
+        const d = await r.json();
+        const dot = document.getElementById('espDot');
+        const txt = document.getElementById('espStatusText');
+        const port = document.getElementById('espPort');
+        if (d.connected) {
+            dot.style.background = '#22c55e';
+            txt.textContent = 'Connected';
+            txt.style.color = '#6ee7b7';
+        } else {
+            dot.style.background = '#ef4444';
+            txt.textContent = d.error || 'Disconnected';
+            txt.style.color = '#fca5a5';
+        }
+        port.textContent = d.port || '--';
+    } catch(e) {
+        espLog('Failed to get status: ' + e.message, 'err');
+    }
+}
+
+async function espRefreshPorts() {
+    try {
+        const r = await fetch('/api/esp32/ports');
+        const d = await r.json();
+        const sel = document.getElementById('espPortSelect');
+        const prev = sel.value;
+        sel.innerHTML = '<option value="">Auto-detect</option>';
+        (d.ports || []).forEach(function(p) {
+            const opt = document.createElement('option');
+            opt.value = p.port;
+            opt.textContent = p.port + ' — ' + p.desc;
+            sel.appendChild(opt);
+        });
+        sel.value = prev;
+        espLog('Found ' + d.ports.length + ' port(s)', 'info');
+    } catch(e) {
+        espLog('Port scan failed: ' + e.message, 'err');
+    }
+}
+
+async function espConnect() {
+    const port = document.getElementById('espPortSelect').value;
+    const btn = document.getElementById('espConnectBtn');
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    espLog('Connecting to ' + (port || 'auto-detect') + '...', 'cmd');
+    try {
+        const fd = new FormData();
+        fd.append('port', port);
+        const r = await fetch('/api/esp32/connect', {method:'POST', body:fd});
+        const d = await r.json();
+        if (d.ok) {
+            espLog('Connected on ' + d.port, 'ok');
+            showToast('ESP32 connected on ' + d.port, 'unlock');
+        } else {
+            espLog('Failed: ' + (d.error || 'unknown'), 'err');
+            showToast('ESP32 connection failed', 'deny');
+        }
+    } catch(e) {
+        espLog('Error: ' + e.message, 'err');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Connect';
+    espRefreshStatus();
+    refreshHardware();
+}
+
+async function espTest(cmd) {
+    espLog('Sending: ' + cmd.toUpperCase(), 'cmd');
+    try {
+        const r = await fetch('/api/esp32/test/' + cmd, {method:'POST'});
+        const d = await r.json();
+        if (d.ok) {
+            espLog('ACK: ' + (d.ack || 'OK'), 'ok');
+        } else {
+            espLog('No response — ' + (d.error || 'timeout'), 'err');
+        }
+    } catch(e) {
+        espLog('Error: ' + e.message, 'err');
+    }
+}
+
+// ── Serial Monitor ──────────────────────────────────────────────
+let monitorTimer = null;
+let monitorRunning = false;
+
+function toggleMonitor() {
+    if (monitorRunning) {
+        clearInterval(monitorTimer);
+        monitorTimer = null;
+        monitorRunning = false;
+        document.getElementById('monitorToggleBtn').textContent = 'Start';
+        document.getElementById('monitorToggleBtn').classList.remove('btn-success');
+        document.getElementById('monitorToggleBtn').classList.add('btn-outline');
+        document.getElementById('monitorStatus').textContent = 'Stopped';
+        document.getElementById('monitorStatus').style.color = '#6b7280';
+    } else {
+        monitorRunning = true;
+        document.getElementById('monitorToggleBtn').textContent = 'Stop';
+        document.getElementById('monitorToggleBtn').classList.remove('btn-outline');
+        document.getElementById('monitorToggleBtn').classList.add('btn-success');
+        document.getElementById('monitorStatus').textContent = 'Listening...';
+        document.getElementById('monitorStatus').style.color = '#22c55e';
+        pollMonitor();
+        monitorTimer = setInterval(pollMonitor, 500);
+    }
+}
+
+function clearMonitor() {
+    document.getElementById('serialMonitor').innerHTML = '';
+}
+
+function monitorLine(text) {
+    const el = document.getElementById('serialMonitor');
+    // Remove placeholder
+    if (el.children.length === 1 && el.children[0].style.color === 'rgb(75, 85, 99)') {
+        el.innerHTML = '';
+    }
+    const div = document.createElement('div');
+    const ts = new Date().toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:3});
+    // Color-code by content
+    let color = '#94a3b8';  // default gray
+    const t = text.toUpperCase();
+    if (t.startsWith('ACK:PONG'))       color = '#67e8f9'; // cyan
+    else if (t.startsWith('ACK:UNLOCK')) color = '#6ee7b7'; // green
+    else if (t.startsWith('ACK:LOCK'))   color = '#fbbf24'; // amber
+    else if (t.startsWith('ACK:BEEP'))   color = '#a78bfa'; // purple
+    else if (t.startsWith('ACK:DENY'))   color = '#fb923c'; // orange
+    else if (t.startsWith('ACK:RELOCK')) color = '#fbbf24'; // amber
+    else if (t.startsWith('ACK:STATUS')) color = '#67e8f9'; // cyan
+    else if (t.startsWith('ACK:LCD'))    color = '#a5b4fc'; // indigo
+    else if (t.startsWith('ACK:'))       color = '#6ee7b7'; // green
+    else if (t.startsWith('EXIT_RFID'))  color = '#fde047'; // yellow
+    else if (t === 'READY')              color = '#34d399'; // emerald
+    div.style.color = color;
+    div.innerHTML = '<span style="color:#4b5563;">' + ts + '</span> ' + text;
+    el.appendChild(div);
+    // Keep max 200 lines
+    while (el.children.length > 200) el.removeChild(el.firstChild);
+    el.scrollTop = el.scrollHeight;
+}
+
+async function pollMonitor() {
+    try {
+        const r = await fetch('/api/esp32/monitor');
+        const d = await r.json();
+        (d.lines || []).forEach(function(line) { monitorLine(line); });
+        // Update connection indicator
+        const st = document.getElementById('monitorStatus');
+        if (d.connected) {
+            st.textContent = 'Listening on ' + (d.port || '?');
+            st.style.color = '#22c55e';
+        } else {
+            st.textContent = 'Disconnected';
+            st.style.color = '#ef4444';
+        }
+    } catch(e) {}
+}
+
+async function sendRawCmd() {
+    const input = document.getElementById('rawCmdInput');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    monitorLine('>>> ' + cmd);
+    espLog('Raw send: ' + cmd, 'cmd');
+    input.value = '';
+    try {
+        const fd = new FormData();
+        fd.append('cmd', cmd);
+        const r = await fetch('/api/esp32/send', {method:'POST', body:fd});
+        const d = await r.json();
+        if (d.ok) {
+            espLog('ACK: ' + (d.ack || 'OK'), 'ok');
+        } else {
+            espLog('No response — ' + (d.error || 'timeout'), 'err');
+        }
+    } catch(e) {
+        espLog('Error: ' + e.message, 'err');
+    }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,40 @@
+# === GymPOS .gitignore ===
+
+# Python venv
+.venv/
+
+# Data files / secrets
+gym.db
+gym.db-shm
+gym.db-wal
+.env
+backups/
+static/backups/
+
+# Face captures / privacy
+static/photos/
+static/clips/
+
+# Compiled caches
+__pycache__/
+*.pyc
+
+# Electron
+electron/node_modules/
+electron/GymPOS.exe.bak
+electron/node_modules/electron/dist/GymPOS_Data/
+
+# ESP32 build artifacts
+esp32/.pio/
+
+# Binaries
+GymPOS.exe
+
+# OS / editor junk
+Microsoft Edge.lnk
+0
+.opencode/
+opencode.bat
+opencode.cmd
+opencode.ps1
+opencode.json

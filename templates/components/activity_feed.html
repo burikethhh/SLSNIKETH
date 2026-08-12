@@ -1,0 +1,23 @@
+{% for ev in events %}
+<div class="alert-{{ ev.alert or 'green' }} flex items-center gap-3 text-sm">
+    {% if ev.photo %}
+    <img src="{{ photo_url(ev.photo) }}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">
+    {% else %}
+    <div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs text-gray-400">?</div>
+    {% endif %}
+    <div class="flex-1">
+        <span class="font-medium text-gray-200">{{ ev.member_name or 'Unknown' }}</span>
+        {% if ev.type == 'familiar' %}
+        <span class="badge badge-purple ml-1">Familiar</span>
+        {% endif %}
+        <span class="text-gray-500 ml-1">{{ ev.direction }}</span>
+        {% if ev.method %}
+        <span class="badge badge-blue ml-1">{{ ev.method }}</span>
+        {% endif %}
+    </div>
+    <span class="text-xs text-gray-500">{{ ev.time }}</span>
+</div>
+{% endfor %}
+{% if not events %}
+<div class="text-sm text-gray-500 text-center py-4">No events</div>
+{% endif %}

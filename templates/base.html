@@ -1,0 +1,379 @@
+﻿<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Solo Leveling Gym{% endblock %}</title>
+    <link rel="icon" href="/static/logo.jpg" type="image/jpeg">
+    <link href="/static/vendor/css/tailwind.min.css" rel="stylesheet">
+    <link href="/static/vendor/css/fonts.css" rel="stylesheet">
+    <script src="/static/vendor/js/htmx.min.js"></script>
+    {% block head %}{% endblock %}
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        html{background:#080b12;color-scheme:dark;}
+        body{background:#080b12;color:#c4cde0;font-family:Inter,system-ui,sans-serif;}
+        h1,h2,h3,.sidebar .brand-name{font-family:Rajdhani,Inter,system-ui,sans-serif;}
+
+        /* â”€â”€ Sidebar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        .sidebar{background:linear-gradient(180deg,#0d0f1a 0%,#0a0c15 100%);border-right:1px solid rgba(139,92,246,.12);}
+        .sidebar a{display:flex;align-items:center;gap:.6rem;padding:.55rem .9rem;border-radius:.4rem;font-size:.875rem;color:#7c849b;transition:all .2s ease}
+        .sidebar a:hover{background:rgba(139,92,246,.08);color:#c4b5fd;border-left:2px solid transparent;border-image:linear-gradient(180deg,#7c3aed,#a855f7) 1}
+        .sidebar a.active{background:rgba(139,92,246,.12);color:#c4b5fd;border-left:2px solid #7c3aed;box-shadow:0 0 12px rgba(139,92,246,.15)}
+        .nav-group-content{overflow:hidden;transition:max-height .25s ease}
+        .nav-group-content.collapsed{max-height:0!important}
+        .nav-group button .chevron{transition:transform .2s ease}
+        .nav-group button.collapsed .chevron{transform:rotate(180deg)}
+        .sidebar .section-label{font-size:.8rem;letter-spacing:.1em;text-transform:uppercase;color:rgba(139,92,246,.45);padding:.6rem .9rem .25rem;margin-top:.4rem;font-family:Rajdhani,system-ui,sans-serif;font-weight:600}
+
+        /* â”€â”€ Cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        .card{background:linear-gradient(135deg,rgba(15,17,30,.95),rgba(20,22,38,.9));border:1px solid rgba(139,92,246,.1);border-radius:.6rem;padding:1.25rem;backdrop-filter:blur(8px);transition:border-color .2s,box-shadow .2s;}
+        .card:hover{border-color:rgba(139,92,246,.25);box-shadow:0 0 20px rgba(139,92,246,.06)}
+
+        /* â”€â”€ Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        .btn{padding:.5rem 1rem;border-radius:.4rem;font-size:.875rem;font-weight:500;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:.35rem}
+        .btn-primary{background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;box-shadow:0 2px 12px rgba(124,58,237,.25)}.btn-primary:hover{background:linear-gradient(135deg,#8b5cf6,#7c3aed);box-shadow:0 4px 20px rgba(124,58,237,.4)}
+        .btn-success{background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;box-shadow:0 2px 12px rgba(34,197,94,.2)}.btn-success:hover{background:linear-gradient(135deg,#4ade80,#22c55e)}
+        .btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;box-shadow:0 2px 12px rgba(239,68,68,.2)}.btn-danger:hover{background:linear-gradient(135deg,#f87171,#ef4444)}
+        .btn-outline{border:1px solid rgba(139,92,246,.25);color:#c4b5fd}.btn-outline:hover{background:rgba(139,92,246,.1);border-color:rgba(139,92,246,.4)}
+        .btn-warn{background:linear-gradient(135deg,#f59e0b,#d97706);color:#000;box-shadow:0 2px 12px rgba(245,158,11,.2)}.btn-warn:hover{background:linear-gradient(135deg,#fbbf24,#f59e0b)}
+
+        /* â”€â”€ Forms â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        input,select,textarea{background:rgba(15,17,30,.8);border:1px solid rgba(139,92,246,.15);border-radius:.4rem;padding:.45rem .7rem;color:#e2e8f0;font-size:.875rem;}
+        input:focus,select:focus,textarea:focus{outline:none;border-color:#7c3aed;box-shadow:0 0 0 2px rgba(124,58,237,.2),0 0 15px rgba(124,58,237,.1);}
+
+        /* â”€â”€ Tables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        table{width:100%;border-collapse:collapse}
+        th{text-align:left;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;color:rgba(139,92,246,.5);padding:.5rem .75rem;border-bottom:1px solid rgba(139,92,246,.1);font-family:Rajdhani,system-ui,sans-serif;font-weight:600}
+        td{padding:.55rem .75rem;border-bottom:1px solid rgba(139,92,246,.06);font-size:.875rem}
+        tr:hover td{background:rgba(139,92,246,.04)}
+
+        /* â”€â”€ Badges â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        .badge{display:inline-block;padding:.15rem .55rem;border-radius:9999px;font-size:.7rem;font-weight:600}
+        .badge-green{background:rgba(34,197,94,.12);color:#4ade80;box-shadow:0 0 8px rgba(34,197,94,.1)}
+        .badge-red{background:rgba(239,68,68,.12);color:#f87171;box-shadow:0 0 8px rgba(239,68,68,.1)}
+        .badge-yellow{background:rgba(245,158,11,.12);color:#fbbf24}
+        .badge-blue{background:rgba(139,92,246,.12);color:#a78bfa;box-shadow:0 0 8px rgba(139,92,246,.1)}
+        .badge-purple{background:rgba(139,92,246,.15);color:#c4b5fd}
+
+        /* â”€â”€ Alerts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        .alert-green{border-left:3px solid #22c55e;background:rgba(34,197,94,.06);padding:.75rem 1rem;border-radius:0 .35rem .35rem 0}
+        .alert-yellow{border-left:3px solid #f59e0b;background:rgba(245,158,11,.06);padding:.75rem 1rem;border-radius:0 .35rem .35rem 0}
+        .alert-red{border-left:3px solid #ef4444;background:rgba(239,68,68,.06);padding:.75rem 1rem;border-radius:0 .35rem .35rem 0}
+
+        /* â”€â”€ Page background effects â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        main{position:relative;}
+        main::before{content:'';position:absolute;top:0;right:0;width:40%;height:40%;background:radial-gradient(ellipse at top right,rgba(124,58,237,.06) 0%,transparent 70%);pointer-events:none;z-index:0;}
+        main>div{position:relative;z-index:1;}
+    </style>
+</head>
+<body class="h-full flex">
+    <!-- Sidebar -->
+    <nav class="sidebar w-56 flex-shrink-0 h-screen sticky top-0 overflow-y-auto flex flex-col">
+        <!-- Logo & Brand -->
+        <div class="px-4 py-4">
+            <div class="flex items-center gap-2.5">
+                <img src="/static/logo.jpg" alt="Solo Leveling" class="w-9 h-9 rounded-lg" style="box-shadow:0 0 12px rgba(139,92,246,.3);">
+                <div>
+                    <div class="brand-name text-purple-300 font-bold text-lg tracking-tight" style="line-height:1.1;">Solo Leveling</div>
+                    <div class="text-xs font-medium" style="color:rgba(139,92,246,.45);letter-spacing:.04em;">Fitness & Gym</div>
+                </div>
+            </div>
+        </div>
+        <div class="mx-3 mb-2" style="height:1px;background:linear-gradient(90deg,transparent,rgba(139,92,246,.2),transparent);"></div>
+
+        <div class="flex-1 px-2 space-y-0.5">
+            {% if request.session.get('role') == 'admin' %}
+            <!-- â”€â”€ Admin Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+            <div class="nav-group">
+                <button onclick="toggleNavGroup(this)" class="section-label w-full text-left flex items-center justify-between cursor-pointer hover:text-purple-300 transition-colors">
+                    <span>Overview</span>
+                    <svg class="w-3 h-3 chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="nav-group-content">
+                    <a href="/admin/dashboard" class="{% if request.url.path == '/admin/dashboard' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                        Dashboard
+                    </a>
+                    <a href="/admin/gym-analytics" class="{% if '/gym-analytics' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+                        Gym Analytics
+                    </a>
+                    <a href="/admin/store-analytics" class="{% if '/store-analytics' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"/></svg>
+                        Store Analytics
+                    </a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <button onclick="toggleNavGroup(this)" class="section-label w-full text-left flex items-center justify-between cursor-pointer hover:text-purple-300 transition-colors">
+                    <span>Management</span>
+                    <svg class="w-3 h-3 chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="nav-group-content">
+                    <a href="/members" class="{% if '/members' in request.url.path and '/register' not in request.url.path and '/walkins' not in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        Members
+                    </a>
+                    <a href="/admin/staff" class="{% if '/admin/staff' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"/></svg>
+                        Staff Accounts
+                    </a>
+                    <a href="/admin/familiars" class="{% if '/admin/familiars' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
+                        Familiars
+                    </a>
+                    <a href="/coaches" class="{% if '/coaches' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                        Coaches
+                    </a>
+                    <a href="/admin/pricing" class="{% if '/pricing' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>
+                        Gym Plans
+                    </a>
+                    <a href="/admin/store" class="{% if '/admin/store' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
+                        Store Products
+                    </a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <button onclick="toggleNavGroup(this)" class="section-label w-full text-left flex items-center justify-between cursor-pointer hover:text-purple-300 transition-colors">
+                    <span>Sales &amp; Store</span>
+                    <svg class="w-3 h-3 chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="nav-group-content">
+                    <a href="/store" class="{% if request.url.path == '/store' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                        Store POS
+                    </a>
+                    <a href="/store/history" class="{% if '/store/history' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        Store Sales
+                    </a>
+                    <a href="/members/walkins/list" class="{% if '/walkins' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+                        Walk-ins
+                    </a>
+                    <a href="/sales/history" class="{% if '/sales/history' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                        Gym Sales
+                    </a>
+                    <a href="/admin/store-reports" class="{% if '/store-reports' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Store Reports
+                    </a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <button onclick="toggleNavGroup(this)" class="section-label w-full text-left flex items-center justify-between cursor-pointer hover:text-purple-300 transition-colors">
+                    <span>Monitoring</span>
+                    <svg class="w-3 h-3 chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="nav-group-content">
+                    <a href="/attendance" class="{% if '/attendance' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        Attendance
+                    </a>
+                    <a href="/expenses" class="{% if '/expenses' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        Expenses
+                    </a>
+                    <a href="/sales/end-of-day" class="{% if '/end-of-day' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                        End of Day
+                    </a>
+                    <a href="/admin/cameras" class="{% if '/admin/cameras' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        Snapshots
+                    </a>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <button onclick="toggleNavGroup(this)" class="section-label w-full text-left flex items-center justify-between cursor-pointer hover:text-purple-300 transition-colors">
+                    <span>Reports &amp; Logs</span>
+                    <svg class="w-3 h-3 chevron" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                </button>
+                <div class="nav-group-content">
+                    <a href="/admin/reports" class="{% if '/admin/reports' in request.url.path and '/store' not in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Gym Reports
+                    </a>
+                    <a href="/admin/incidents" class="{% if '/incidents' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                        Incidents
+                    </a>
+                    <a href="/admin/overrides" class="{% if '/overrides' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                        Overrides
+                    </a>
+                    <a href="/admin/discrepancy" class="{% if '/discrepancy' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                        Discrepancy
+                    </a>
+                    <a href="/admin/activity" class="{% if '/activity' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        Activity Log
+                    </a>
+                    <a href="/admin/maintenance" class="{% if '/maintenance' in request.url.path %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        Maintenance
+                    </a>
+                </div>
+            </div>
+
+            {% else %}
+            <!-- â”€â”€ Staff Navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+            <div class="section-label">Quick Access</div>
+            <a href="/dashboard" style="color:#8B5CF6" class="{% if request.url.path == '/dashboard' %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                Dashboard
+            </a>
+            <a href="/members/register" style="color:#3B82F6" class="{% if '/register' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
+                Register
+            </a>
+            <a href="/store" style="color:#10B981" class="{% if request.url.path == '/store' %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                Store POS
+            </a>
+            <a href="/sales/walkin" style="color:#F59E0B" class="{% if request.url.path == '/sales/walkin' %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+                Walk-in Entry
+            </a>
+            <a href="/members/walkins/list" style="color:#EF4444" class="{% if '/walkins' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+                Walk-in Manage
+            </a>
+            <a href="/coaches" style="color:#EC4899" class="{% if '/coaches' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                Coaches
+            </a>
+
+            <div class="section-label">Operations</div>
+            <a href="/members" style="color:#6366F1" class="{% if '/members' in request.url.path and '/register' not in request.url.path and '/walkins' not in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                Members
+            </a>
+            <a href="/store/history" style="color:#14B8A6" class="{% if '/store/history' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                Store Sales
+            </a>
+            <a href="/attendance" style="color:#F97316" class="{% if '/attendance' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/></svg>
+                Attendance
+            </a>
+            <a href="/sales/history" style="color:#22C55E" class="{% if '/sales/history' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                Gym Sales
+            </a>
+            <a href="/expenses" style="color:#A855F7" class="{% if '/expenses' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Expenses
+            </a>
+            <a href="/sales/end-of-day" style="color:#06B6D4" class="{% if '/end-of-day' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+                End of Day
+            </a>
+            <a href="/rfid-lookup" style="color:#EAB308" class="{% if '/rfid-lookup' in request.url.path %}active{% endif %}">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/></svg>
+                RFID Lookup
+            </a>
+            {% endif %}
+        </div>
+        <div class="mx-3 mt-auto" style="height:1px;background:linear-gradient(90deg,transparent,rgba(139,92,246,.2),transparent);"></div>
+        <div class="px-3 py-3">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <div class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold" style="background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;">
+                        {{ request.session.get('display_name', 'S')[0] | upper }}
+                    </div>
+                    <div>
+                        <div class="text-sm font-medium text-gray-300">{{ request.session.get('display_name', 'Staff') }}</div>
+                        <div class="text-xs" style="color:rgba(139,92,246,.5);">{{ request.session.get('role', 'staff') | title }}</div>
+                    </div>
+                </div>
+                <a href="/logout" class="text-gray-600 hover:text-red-400 text-xs transition-colors">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="flex-1 overflow-y-auto min-h-screen">
+        <!-- Live clock bar -->
+        <div class="flex justify-end items-center px-6 pt-3 pb-0">
+            <div class="flex items-center gap-2 text-xs text-gray-500">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span id="liveClock">--:--:--</span>
+                <span class="text-gray-700">|</span>
+                <span id="liveDate">---</span>
+            </div>
+        </div>
+        <div class="max-w-7xl mx-auto px-6 py-4">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <script src="/static/js/app.js?v=2"></script>
+    <script>
+function toggleNavGroup(btn) {
+    var content = btn.nextElementSibling;
+    if (!content) return;
+    var key = 'nav_' + btn.querySelector('span').textContent.trim().toLowerCase().replace(/\s+/g, '_');
+    if (content.classList.contains('collapsed')) {
+        content.style.maxHeight = content.scrollHeight + 'px';
+        content.classList.remove('collapsed');
+        btn.classList.remove('collapsed');
+        localStorage.setItem(key, 'open');
+    } else {
+        content.style.maxHeight = content.scrollHeight + 'px';
+        requestAnimationFrame(function() {
+            content.classList.add('collapsed');
+            content.style.maxHeight = '0';
+            btn.classList.add('collapsed');
+            localStorage.setItem(key, 'collapsed');
+        });
+    }
+}
+// Init: restore nav group state from localStorage (default: open)
+(function(){
+    var groups = document.querySelectorAll('.nav-group');
+    for (var i = 0; i < groups.length; i++) {
+        var btn = groups[i].querySelector('button');
+        var content = groups[i].querySelector('.nav-group-content');
+        if (!btn || !content) continue;
+        var key = 'nav_' + btn.querySelector('span').textContent.trim().toLowerCase().replace(/\s+/g, '_');
+        var saved = localStorage.getItem(key);
+        if (saved === 'collapsed') {
+            content.style.maxHeight = content.scrollHeight + 'px';
+            content.classList.add('collapsed');
+            content.style.maxHeight = '0';
+            btn.classList.add('collapsed');
+        } else {
+            content.style.maxHeight = content.scrollHeight + 'px';
+            content.classList.remove('collapsed');
+            btn.classList.remove('collapsed');
+        }
+    }
+})();
+    (function(){
+        function tick(){
+            const now = new Date();
+            const t = now.toLocaleTimeString('en-PH', {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});
+            const d = now.toLocaleDateString('en-PH', {weekday:'short',year:'numeric',month:'short',day:'numeric'});
+            const ce = document.getElementById('liveClock');
+            const de = document.getElementById('liveDate');
+            if(ce) ce.textContent = t;
+            if(de) de.textContent = d;
+        }
+        tick();
+        setInterval(tick, 1000);
+    })();
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

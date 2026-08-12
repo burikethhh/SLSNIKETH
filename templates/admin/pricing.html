@@ -1,0 +1,318 @@
+{% extends "base.html" %}
+{% block title %}Pricing — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Pricing Plans</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Walk-in default: ₱{{ walkin_rate }} · Student discount: {{ student_discount_pct }}%</p>
+    </div>
+</div>
+
+<!-- Coaching Plans Section -->
+<h2 class="text-lg font-semibold mb-3" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Coaching Plans</h2>
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Duration</th><th>Price (₱)</th><th>Commission %</th><th>Active</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for cp in coaching_plans %}
+            <tr id="cp-row-{{ cp.id }}">
+                <td>
+                    <input type="text" value="{{ cp.name }}" class="w-full text-sm"
+                           onchange="updateCoachingPlan({{ cp.id }}, 'name', this.value)">
+                </td>
+                <td>
+                    <input type="number" value="{{ cp.duration_days }}" class="w-20 text-sm" min="1"
+                           onchange="updateCoachingPlan({{ cp.id }}, 'duration_days', this.value)">
+                </td>
+                <td>
+                    <input type="number" value="{{ cp.price }}" step="0.01" class="w-24 text-sm"
+                           onchange="updateCoachingPlan({{ cp.id }}, 'price', this.value)">
+                </td>
+                <td>
+                    <input type="number" value="{{ cp.commission_pct }}" step="0.1" min="0" max="100" class="w-20 text-sm"
+                           onchange="updateCoachingPlan({{ cp.id }}, 'commission_pct', this.value)">
+                </td>
+                <td class="text-center">
+                    <input type="checkbox" {% if cp.is_active %}checked{% endif %}
+                           onchange="updateCoachingPlan({{ cp.id }}, 'is_active', this.checked)">
+                </td>
+                <td>
+                    <form method="POST" action="/admin/coaching-plans/{{ cp.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete this coaching plan?')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Del</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not coaching_plans %}
+            <tr><td colspan="6" class="text-center text-gray-500 py-4">No coaching plans configured</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Add New Coaching Plan -->
+<div class="card mb-6">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add New Coaching Plan</h3>
+    <form method="POST" action="/admin/coaching-plans" class="grid grid-cols-6 gap-3 items-end">
+        <div>
+            <label class="text-xs text-gray-500">Name</label>
+            <input type="text" name="name" required class="w-full mt-1" placeholder="e.g. 10 Sessions">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Duration (days)</label>
+            <input type="number" name="duration_days" required class="w-full mt-1" placeholder="30" min="1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Price (₱)</label>
+            <input type="number" name="price" required step="0.01" class="w-full mt-1" placeholder="500">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Commission %</label>
+            <input type="number" name="commission_pct" step="0.1" min="0" max="100" class="w-full mt-1" placeholder="20" value="0">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Active</label>
+            <div class="flex items-center mt-2">
+                <input type="checkbox" name="is_active" value="1" checked>
+            </div>
+        </div>
+        <div>
+            <button type="submit" class="btn btn-primary w-full">Add Plan</button>
+        </div>
+    </form>
+</div>
+
+<!-- Coaching Session Settings -->
+<h2 class="text-lg font-semibold mb-3" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Coaching Session Revenue</h2>
+<div class="card mb-6">
+    <form method="POST" action="/admin/pricing/settings" class="flex gap-4 items-end">
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Default Session Price (₱)</label>
+            <input type="number" name="coaching_session_price" value="{{ coaching_session_price|int }}" step="1" min="0" class="w-32">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-400 mb-1">Gym Share Type</label>
+            <select name="coaching_gym_share_type" id="gym-share-type" class="w-40" onchange="toggleGymShare(this.value)">
+                <option value="pct" {% if coaching_gym_share_type != 'peso' %}selected{% endif %}>Percentage (%)</option>
+                <option value="peso" {% if coaching_gym_share_type == 'peso' %}selected{% endif %}>Fixed Price (₱)</option>
+            </select>
+        </div>
+        <div id="gym-share-pct-field" {% if coaching_gym_share_type == 'peso' %}style="display:none"{% endif %}>
+            <label class="block text-xs text-gray-400 mb-1">Gym Share (%)</label>
+            <input type="number" name="coaching_gym_ratio" value="{{ coaching_gym_ratio|int }}" step="1" min="0" max="100" class="w-24">
+        </div>
+        <div id="gym-share-peso-field" {% if coaching_gym_share_type != 'peso' %}style="display:none"{% endif %}>
+            <label class="block text-xs text-gray-400 mb-1">Gym Share (₱)</label>
+            <input type="number" name="coaching_gym_share_peso" value="{{ coaching_gym_share_peso|int }}" step="1" min="0" class="w-24">
+        </div>
+        <button type="submit" class="btn btn-primary text-sm">Save</button>
+        {% if request.query_params.get('settings_updated') == '1' %}
+        <span class="text-xs text-green-400">Saved.</span>
+        {% endif %}
+    </form>
+    <p class="text-xs text-gray-500 mt-2" id="gym-share-help-pct" {% if coaching_gym_share_type == 'peso' %}style="display:none"{% endif %}>
+        When a coaching session is recorded, a gym sale is created for <strong>Session Price × Gym Share%</strong>.
+        The coach receives the remaining <strong>{{ (100 - coaching_gym_ratio)|int }}%</strong>.
+    </p>
+    <p class="text-xs text-gray-500 mt-2" id="gym-share-help-peso" {% if coaching_gym_share_type != 'peso' %}style="display:none"{% endif %}>
+        When a coaching session is recorded, a gym sale is created for the fixed <strong>Gym Share amount (₱{{ coaching_gym_share_peso|int }})</strong> per session.
+        The coach receives the session price minus the gym share.
+    </p>
+</div>
+
+<script>
+function toggleGymShare(type) {
+    var isPeso = (type === 'peso');
+    document.getElementById('gym-share-pct-field').style.display  = isPeso ? 'none' : '';
+    document.getElementById('gym-share-peso-field').style.display = isPeso ? '' : 'none';
+    document.getElementById('gym-share-help-pct').style.display   = isPeso ? 'none' : '';
+    document.getElementById('gym-share-help-peso').style.display  = isPeso ? '' : 'none';
+}
+</script>
+
+<!-- Subscription Plans Section -->
+<h2 class="text-lg font-semibold mb-3" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Subscription Plans</h2>
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Days</th><th>Regular (₱)</th><th>Student (₱)</th><th>Coach %</th><th>Active</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for p in plans %}
+            {% if not p.walkin_price or p.duration_days > 1 %}
+            <tr>
+                <form method="POST" action="/admin/pricing/{{ p.id }}/update">
+                <td><input type="text" name="name" value="{{ p.name }}" class="w-full text-sm"></td>
+                <td><input type="number" name="duration_days" value="{{ p.duration_days }}" class="w-20 text-sm"></td>
+                <td><input type="number" name="regular_price" value="{{ p.regular_price }}" step="0.01" class="w-24 text-sm"></td>
+                <td><input type="number" name="student_price" value="{{ p.student_price }}" step="0.01" class="w-24 text-sm"></td>
+                <td><input type="number" name="commission_pct" value="{{ p.commission_pct }}" step="1" min="0" max="100" class="w-20 text-sm" placeholder="0"></td>
+                <input type="hidden" name="walkin_price" value="{{ p.walkin_price or 0 }}">
+                <td class="text-center">
+                    <input type="checkbox" name="is_active" value="1" {% if p.is_active %}checked{% endif %}>
+                </td>
+                <td><button type="submit" class="btn btn-outline text-xs">Save</button></td>
+                </form>
+                <td>
+                    <form method="POST" action="/admin/pricing/{{ p.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete this plan?')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Del</button>
+                    </form>
+                </td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Walk-in Pricing Section -->
+<h2 class="text-lg font-semibold mb-3" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Walk-in / Day Pass Pricing</h2>
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Name</th><th>Days</th><th>Regular (₱)</th><th>Student (₱)</th><th>Coach %</th><th>Walk-in (₱)</th><th>Active</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for p in plans %}
+            {% if p.walkin_price and p.duration_days <= 1 %}
+            <tr>
+                <form method="POST" action="/admin/pricing/{{ p.id }}/update">
+                <td><input type="text" name="name" value="{{ p.name }}" class="w-full text-sm"></td>
+                <td><input type="number" name="duration_days" value="{{ p.duration_days }}" class="w-20 text-sm"></td>
+                <td><input type="number" name="regular_price" value="{{ p.regular_price }}" step="0.01" class="w-24 text-sm"></td>
+                <td><input type="number" name="student_price" value="{{ p.student_price }}" step="0.01" class="w-24 text-sm"></td>
+                <td><input type="number" name="commission_pct" value="{{ p.commission_pct }}" step="1" min="0" max="100" class="w-20 text-sm" placeholder="0"></td>
+                <td><input type="number" name="walkin_price" value="{{ p.walkin_price or 0 }}" step="0.01" class="w-24 text-sm"></td>
+                <td class="text-center">
+                    <input type="checkbox" name="is_active" value="1" {% if p.is_active %}checked{% endif %}>
+                </td>
+                <td><button type="submit" class="btn btn-outline text-xs">Save</button></td>
+                </form>
+            </tr>
+            {% endif %}
+            {% endfor %}
+            {% set walkins = [] %}
+            {% for p in plans %}{% if p.walkin_price and p.duration_days <= 1 %}{% if walkins.append(p) %}{% endif %}{% endif %}{% endfor %}
+            {% if not walkins %}
+            <tr><td colspan="7" class="text-center text-gray-500 py-4">No walk-in plans configured</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Add New Plan -->
+<div class="card">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add New Plan</h3>
+    <form method="POST" action="/admin/pricing" class="grid grid-cols-7 gap-3 items-end">
+        <div>
+            <label class="text-xs text-gray-500">Name</label>
+            <input type="text" name="name" required class="w-full mt-1" placeholder="e.g. 2 Months">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Days</label>
+            <input type="number" name="duration_days" required class="w-full mt-1" placeholder="60">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Regular (₱)</label>
+            <input type="number" name="regular_price" required step="0.01" class="w-full mt-1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Student (₱)</label>
+            <input type="number" name="student_price" required step="0.01" class="w-full mt-1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Coach %</label>
+            <input type="number" name="commission_pct" step="1" min="0" max="100" class="w-full mt-1" value="0">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Walk-in (₱)</label>
+            <input type="number" name="walkin_price" step="0.01" class="w-full mt-1" value="0">
+        </div>
+        <div>
+            <button type="submit" class="btn btn-primary w-full">Add Plan</button>
+        </div>
+    </form>
+</div>
+
+<!-- Vouchers Section -->
+<h2 class="text-lg font-semibold mb-3 mt-6" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Vouchers</h2>
+<div class="card mb-6 overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Title</th><th>Codes</th><th>Count</th><th>Used</th><th>Remaining</th><th>Active</th><th>Actions</th></tr>
+        </thead>
+        <tbody>
+            {% for v in vouchers %}
+            <tr>
+                <td class="font-medium text-gray-200">{{ v.title }}</td>
+                <td class="font-mono text-xs">{{ v.code_from }}{% if v.code_from != v.code_to %} … {{ v.code_to }}{% endif %}</td>
+                <td>{{ v.count }}</td>
+                <td>{{ v.total_used }}</td>
+                <td>{{ v.count - v.total_used }}</td>
+                <td>
+                    <form method="POST" action="/admin/vouchers/toggle" style="display:inline">
+                        <input type="hidden" name="title" value="{{ v.title }}">
+                        <button type="submit" class="text-xs px-2 py-1 rounded {% if v.all_active %}badge-green{% else %}badge-red{% endif %}" style="border:none;cursor:pointer;">
+                            {{ 'Active' if v.all_active else 'Inactive' }}
+                        </button>
+                    </form>
+                </td>
+                <td>
+                    <form method="POST" action="/admin/vouchers/delete-batch" style="display:inline"
+                          onsubmit="return confirm('Delete all {{ v.count }} vouchers for "{{ v.title }}" and all usage records?')">
+                        <input type="hidden" name="title" value="{{ v.title }}">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete All</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not vouchers %}
+            <tr><td colspan="7" class="text-center text-gray-500 py-4">No vouchers configured</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Add New Voucher -->
+<div class="card mb-6">
+    <h3 class="text-sm font-semibold text-gray-300 mb-3">Add New Voucher</h3>
+    <form method="POST" action="/admin/vouchers/create" class="grid grid-cols-3 gap-3 items-end">
+        <input type="hidden" name="code" value="">
+        <div>
+            <label class="text-xs text-gray-500">Title</label>
+            <input type="text" name="title" required class="w-full mt-1" placeholder="e.g. New Year Promo">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">Quantity <span class="text-gray-600">(0 = unlimited)</span></label>
+            <input type="number" name="quantity" min="0" class="w-full mt-1" value="0">
+        </div>
+        <div>
+            <button type="submit" class="btn btn-primary w-full">Add Voucher</button>
+        </div>
+    </form>
+    {% set voucher_created = request.query_params.get('voucher_created') %}
+    {% if voucher_created %}<p class="text-xs text-green-400 mt-2">Voucher created.</p>{% endif %}
+    {% set voucher_error = request.query_params.get('voucher_error') %}
+    {% if voucher_error == 'duplicate_code' %}<p class="text-xs text-red-400 mt-2">Code already exists.</p>{% endif %}
+    {% if voucher_error == 'missing_fields' %}<p class="text-xs text-red-400 mt-2">Title and code required.</p>{% endif %}
+    {% if request.query_params.get('voucher_toggled') %}<p class="text-xs text-green-400 mt-2">Voucher status toggled.</p>{% endif %}
+    {% if request.query_params.get('voucher_deleted') %}<p class="text-xs text-red-400 mt-2">Voucher deleted.</p>{% endif %}
+</div>
+
+<script>
+async function updateCoachingPlan(id, field, value) {
+    const fd = new FormData();
+    fd.append('field', field);
+    fd.append('value', value);
+    try {
+        await fetch(`/admin/coaching-plans/${id}/update`, { method: 'POST', body: fd });
+    } catch(e) {
+        console.error('Failed to update coaching plan:', e);
+    }
+}
+</script>
+{% endblock %}

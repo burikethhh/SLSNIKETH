@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+{% block title %}Store Analytics{% endblock %}
+{% block head %}<script src="/static/vendor/js/chart.umd.min.js"></script>{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Store Analytics</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Product performance &middot; Revenue &middot; Stock health</p>
+    </div>
+    <div class="flex gap-2">
+        <a href="/admin/store" class="btn btn-outline text-xs">Manage Products</a>
+        <a href="/admin/store-reports" class="btn btn-outline text-xs">Reports</a>
+    </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="grid grid-cols-4 gap-4 mb-6">
+    <div class="card aura-glow">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(34,197,94,.5);font-family:Rajdhani,sans-serif;">Today</div>
+        <div class="text-2xl font-bold text-green-400 mt-1">₱{{ "{:,.2f}".format(revenue_today) }}</div>
+        <div class="text-xs text-gray-500 mt-1">{{ txn_today }} sale{{ 's' if txn_today != 1 }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(139,92,246,.5);font-family:Rajdhani,sans-serif;">This Week</div>
+        <div class="text-2xl font-bold mt-1" style="color:#a78bfa;">₱{{ "{:,.2f}".format(revenue_week) }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(168,85,247,.5);font-family:Rajdhani,sans-serif;">30-Day Total</div>
+        <div class="text-2xl font-bold mt-1" style="color:#c084fc;">₱{{ "{:,.2f}".format(revenue_month) }}</div>
+    </div>
+    <div class="card">
+        <div class="text-xs uppercase tracking-wider font-semibold" style="color:rgba(245,158,11,.5);font-family:Rajdhani,sans-serif;">Active Products</div>
+        <div class="text-2xl font-bold text-yellow-400 mt-1">{{ total_products }}</div>
+        {% if low_stock_count > 0 %}
+        <div class="text-xs text-red-400 mt-1">⚠ {{ low_stock_count }} low-stock</div>{% endif %}
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid grid-cols-2 gap-4 mb-6">
+    <div class="card">
+        <h2 class="text-sm font-semibold text-gray-300 mb-3">Daily Store Revenue (30 days)</h2>
+        <canvas id="storeRevenueChart" height="220"></canvas>
+    </div>
+    <div class="card">
+        <h2 class="text-sm font-semibold text-gray-300 mb-3">Top Products by Revenue (30 days)</h2>
+        <canvas id="topProductsChart" height="220"></canvas>
+    </div>
+</div>
+
+<!-- Bottom Row -->
+<div class="grid grid-cols-2 gap-4">
+    <!-- Category Breakdown -->
+    <div class="card">
+        <h2 class="text-sm font-semibold text-gray-300 mb-3">Sales by Category (30 days)</h2>
+        {% if category_data %}
+        <canvas id="categoryChart" height="200"></canvas>
+        {% else %}
+        <div class="text-gray-500 text-xs text-center py-8">No sales yet</div>{% endif %}
+    </div>
+
+    <!-- Low Stock Alerts -->
+    <div class="card">
+        <h2 class="text-sm font-semibold text-gray-300 mb-3">Stock Status</h2>
+        {% if low_stock_items %}
+        <div class="space-y-2">
+            {% for p in low_stock_items %}
+            <div class="flex items-center justify-between p-2 rounded" style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);">
+                <div>
+                    <span class="text-sm font-medium text-gray-200">{{ p.name }}</span>
+                    <span class="badge badge-blue ml-2 text-xs">{{ p.category }}</span>
+                </div>
+                <div class="text-right">
+                    <span class="{% if p.stock == 0 %}text-red-400 font-bold{% else %}text-yellow-400{% endif %} text-sm">{{ p.stock }} left</span>
+                    <div class="text-xs text-gray-500">alert at {{ p.low_stock_threshold }}</div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="text-gray-500 text-xs text-center py-8">✓ All products have healthy stock levels</div>{% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+Chart.defaults.color = '#7c849b';
+
+new Chart(document.getElementById('storeRevenueChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ chart_labels | tojson }},
+        datasets: [{ label: 'Store Revenue (₱)', data: {{ chart_values | tojson }},
+            backgroundColor: 'rgba(34,197,94,.45)', borderColor: '#22c55e',
+            borderWidth: 1, borderRadius: 3 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } },
+        scales: { x: { grid: { color: 'rgba(139,92,246,.06)' }, ticks: { maxRotation: 45, font: { size: 9 } } },
+                  y: { grid: { color: 'rgba(139,92,246,.06)' }, beginAtZero: true } } }
+});
+
+{% if top_products %}
+new Chart(document.getElementById('topProductsChart'), {
+    type: 'bar',
+    data: {
+        labels: {{ top_product_labels | tojson }},
+        datasets: [{ label: 'Revenue (₱)', data: {{ top_product_values | tojson }},
+            backgroundColor: 'rgba(124,58,237,.5)', borderColor: '#7c3aed',
+            borderWidth: 1, borderRadius: 3 }]
+    },
+    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } },
+        scales: { x: { grid: { color: 'rgba(139,92,246,.06)' } },
+                  y: { grid: { display: false }, ticks: { font: { size: 10 } } } } }
+});
+{% else %}
+document.getElementById('topProductsChart').parentElement.innerHTML += '<div class="text-gray-500 text-xs text-center py-4">No sales yet</div>';
+{% endif %}
+
+{% if category_data %}
+new Chart(document.getElementById('categoryChart'), {
+    type: 'doughnut',
+    data: {
+        labels: {{ category_labels | tojson }},
+        datasets: [{ data: {{ category_values | tojson }},
+            backgroundColor: ['#7c3aed','#22c55e','#f59e0b','#ef4444','#06b6d4','#8b5cf6','#ec4899'] }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'right', labels: { padding: 12, font: { size: 11 } } } } }
+});
+{% endif %}
+</script>
+{% endblock %}

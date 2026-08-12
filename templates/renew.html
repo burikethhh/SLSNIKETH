@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title %}Renew — {{ member.name }}{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto">
+    <a href="/members/{{ member.id }}" class="text-sm hover:text-gray-300" style="color:rgba(139,92,246,.5);">← Back to profile</a>
+    {% if error %}
+    <div class="alert-red mb-4 mt-4 text-sm">{{ error }}</div>
+    {% endif %}
+    <div class="card mt-4">
+        <h2 class="text-lg font-semibold mb-1">Quick Renewal</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">{{ member.name }} — Current expiry: {{ member.expiry_date or 'N/A' }}</p>
+
+        <form method="POST" action="/sales/renew/{{ member.id }}" enctype="multipart/form-data" class="space-y-4">
+            <input type="hidden" name="remove_discount_photo" id="removeDiscountPhotoField" value="">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Plan</label>
+                <select name="plan_id" required class="w-full" onchange="updatePrice(this)">
+                    {% for p in plans %}
+                    <option value="{{ p.id }}" data-regular="{{ p.regular_price }}" data-student="{{ p.student_price }}">
+                        {{ p.name }} — {{ p.duration_days }}d — ₱{{ p.student_price if member.discount_type else p.regular_price }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Amount (₱) <span id="priceLabel">{% if member.discount_type %}<span class="text-green-400">[{% if member.discount_type == "pwd" %}PWD Discount{% else %}{{ member.discount_type|capitalize }} Discount{% endif %}]</span>{% else %}<span class="text-gray-500">Regular</span>{% endif %}</span></label>
+                <input type="number" name="amount" id="amountField" step="0.01" required class="w-full text-lg"
+                       value="{{ plans[0].student_price if (plans and member.discount_type) else (plans[0].regular_price if plans else 0) }}"
+                       readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+            </div>
+
+            {# Discount section #}
+            {% if member.discount_type and member.student_id_photo %}
+            <div id="existingDiscountSection" class="card" style="background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.2);">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-green-400 font-semibold">★ {% if member.discount_type == "pwd" %}PWD Discount{% else %}{{ member.discount_type|capitalize }} Discount{% endif %} Active</span>
+                    <button type="button" onclick="removeDiscountPhoto()"
+                            class="text-xs px-3 py-1 rounded"
+                            style="background:#dc2626;color:#fff;border:none;cursor:pointer;">
+                        Remove {% if member.discount_type == "pwd" %}PWD{% else %}{{ member.discount_type|capitalize }}{% endif %} ID
+                    </button>
+                </div>
+                <img id="existingDiscountPhoto" src="{{ photo_url(member.student_id_photo) }}"
+                     class="max-h-28 rounded mx-auto" style="border:1px solid #2d2d44;" onerror="this.style.display='none'">
+                <p class="text-xs text-gray-500 mt-2 text-center">Current {% if member.discount_type == "pwd" %}PWD{% else %}{{ member.discount_type|capitalize }}{% endif %} ID photo</p>
+            </div>
+            {% endif %}
+
+            <div id="discountSection" class="card" style="background:rgba(34,197,94,.05);border:1px solid rgba(34,197,94,.2);">
+                <label class="block text-xs text-gray-400 mb-1">Discount Type</label>
+                <select name="discount_type" id="discountType" class="w-full" onchange="onDiscountChange(this.value)">
+                    <option value="">None</option>
+                    <option value="student" {% if member.discount_type == "student" %}selected{% endif %}>Student</option>
+                    <option value="senior" {% if member.discount_type == "senior" %}selected{% endif %}>Senior Citizen</option>
+                    <option value="pwd" {% if member.discount_type == "pwd" %}selected{% endif %}>PWD</option>
+                    <option value="voucher" {% if member.discount_type == "voucher" %}selected{% endif %}>Voucher</option>
+                </select>
+                <div id="discountIdSection" class="mt-2 {% if member.discount_type not in ('student', 'senior', 'pwd') %}hidden{% endif %}">
+                    <label class="block text-xs text-gray-400 mb-1" id="discountIdLabel">{% if member.discount_type == "senior" %}Senior Citizen{% elif member.discount_type == "pwd" %}PWD{% else %}Student{% endif %} ID Number (optional)</label>
+                    <input type="text" name="discount_id_number" class="w-full text-sm mb-2"
+                           placeholder="Enter ID number…">
+                    <label class="block text-xs text-gray-400 mb-1 mt-2" id="discountPhotoLabel">{% if member.discount_type == "senior" %}Senior Citizen{% elif member.discount_type == "pwd" %}PWD{% else %}Student{% endif %} ID Photo</label>
+                    <input type="file" name="discount_id_file" id="discountIdFileInput" accept="image/*" class="w-full text-sm"
+                           onchange="onDiscountFileSelect(this)">
+                    <p id="filePreview" class="text-xs text-gray-500 mt-1 hidden"></p>
+                </div>
+                <div id="voucherSection" class="mt-2 {% if member.discount_type != 'voucher' %}hidden{% endif %}">
+                    <label class="block text-xs text-gray-400 mb-1">Voucher Type</label>
+                    <select name="voucher_title" class="w-full text-sm">
+                        <option value="">-- Select Voucher Type --</option>
+                        {% for t in voucher_titles %}
+                        <option value="{{ t }}">{{ t }}</option>
+                        {% endfor %}
+                    </select>
+                    {% if not voucher_titles %}
+                    <p class="text-xs text-red-400 mt-1">No voucher types configured.</p>
+                    {% endif %}
+                    <label class="block text-xs text-gray-400 mb-1 mt-2">Voucher Photo (optional)</label>
+                    <input type="file" name="voucher_id_file" id="voucherIdFileInput" accept="image/*" class="w-full text-sm"
+                           onchange="onDiscountFileSelect(this)">
+                </div>
+            </div>
+
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Payment Method</label>
+                <select name="method" class="w-full">
+                    <option value="cash">Cash</option>
+                    <option value="gcash">GCash</option>
+                    <option value="bank">Bank Transfer</option>
+                </select>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Membership Start Date</label>
+                    <input type="date" name="start_date" id="startDate" class="w-full"
+                           value="{{ member.expiry_date or today }}">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1">Membership End Date (auto-calculated)</label>
+                    <input type="date" name="end_date" id="endDate" class="w-full"
+                           readonly style="background:rgba(139,92,246,.05);cursor:not-allowed;">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-success w-full">Process Renewal</button>
+        </form>
+    </div>
+</div>
+<script>
+const initialDiscountType = "{{ member.discount_type or '' }}";
+const currentExpiry = "{{ member.expiry_date or '' }}";
+const today = "{{ today }}";
+const plans = [
+    {% for p in plans %}
+    { id: {{ p.id }}, regular: {{ p.regular_price }}, student: {{ p.student_price }} },
+    {% endfor %}
+];
+
+function removeDiscountPhoto() {
+    if (!confirm('Remove discount ID photo and revert to regular price?')) return;
+    document.getElementById('removeDiscountPhotoField').value = '1';
+    document.getElementById('existingDiscountSection').classList.add('hidden');
+    document.getElementById('existingDiscountSection').style.display = 'none';
+    document.getElementById('discountType').value = '';
+    onDiscountChange('');
+}
+
+function onDiscountFileSelect(input) {
+    if (input.files && input.files[0]) {
+        document.getElementById('filePreview').textContent = 'Selected: ' + input.files[0].name;
+        document.getElementById('filePreview').classList.remove('hidden');
+    }
+}
+
+function onDiscountChange(value) {
+    const isStudent = value === 'student';
+    const isSenior = value === 'senior';
+    const isPwd = value === 'pwd';
+    const needsId = isStudent || isSenior || isPwd;
+    const isVoucher = value === 'voucher';
+    document.getElementById('discountIdSection').classList.toggle('hidden', !needsId);
+    document.getElementById('voucherSection').classList.toggle('hidden', !isVoucher);
+    const discountInput = document.getElementById('discountIdFileInput');
+    if (discountInput) discountInput.required = needsId;
+    const voucherInput = document.getElementById('voucherIdFileInput');
+    if (voucherInput) voucherInput.required = false;
+    const idLabel = document.getElementById('discountIdLabel');
+    const photoLabel = document.getElementById('discountPhotoLabel');
+    if (isStudent) {
+        idLabel.textContent = 'Student ID Number (optional)';
+        photoLabel.textContent = 'Student ID Photo';
+    } else if (isSenior) {
+        idLabel.textContent = 'Senior Citizen ID Number (optional)';
+        photoLabel.textContent = 'Senior Citizen ID Photo';
+    } else if (isPwd) {
+        idLabel.textContent = 'PWD ID Number (optional)';
+        photoLabel.textContent = 'PWD ID Photo';
+    }
+    updatePrice();
+}
+
+function updatePrice(sel) {
+    const planId = sel ? parseInt(sel.value) : parseInt(document.querySelector('select[name="plan_id"]').value);
+    const plan = plans.find(p => p.id === planId);
+    if (!plan) return;
+    const discountType = document.getElementById('discountType').value;
+    const hasDiscount = discountType === 'student' || discountType === 'senior' || discountType === 'pwd' || discountType === 'voucher';
+    const price = hasDiscount ? plan.student : plan.regular;
+    document.getElementById('amountField').value = price.toFixed(2);
+
+    const label = document.getElementById('priceLabel');
+    if (hasDiscount) {
+        const cap = discountType === 'pwd' ? 'PWD' : discountType.charAt(0).toUpperCase() + discountType.slice(1);
+        label.innerHTML = '<span class="text-green-400">[' + cap + ' Discount]</span>';
+    } else {
+        label.innerHTML = '<span class="text-gray-500">Regular</span>';
+    }
+    calculateEndDate();
+}
+
+function calculateEndDate() {
+    const planSel = document.querySelector('select[name="plan_id"]');
+    const opt = planSel.options[planSel.selectedIndex];
+    const durationDays = parseInt(opt.textContent.match(/(\d+)d/)?.[1] || 30);
+
+    let startDate = document.getElementById('startDate').value || today;
+    if (!startDate) startDate = today;
+
+    const start = new Date(startDate);
+    const end = new Date(start);
+    end.setDate(end.getDate() + durationDays);
+
+    const endDateStr = end.toISOString().split('T')[0];
+    document.getElementById('endDate').value = endDateStr;
+}
+
+document.getElementById('startDate').addEventListener('change', calculateEndDate);
+
+// Initialize on load
+calculateEndDate();
+if (initialDiscountType) onDiscountChange(initialDiscountType);
+</script>
+{% endblock %}

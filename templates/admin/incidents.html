@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Security Incidents — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Security Incidents</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ total }} incident{{ 's' if total != 1 }} · Monitor &amp; review security events</p>
+    </div>
+    <form method="GET" class="flex gap-2 items-end">
+        <div>
+            <label class="text-xs text-gray-500 block">Type</label>
+            <select name="type" class="text-sm" onchange="this.form.submit()">
+                <option value="">All Types</option>
+                {% for t in incident_types %}
+                <option value="{{ t }}" {% if filter_type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-gray-500 block">Date</label>
+            <input type="date" name="date" value="{{ filter_date or '' }}" class="text-sm" onchange="this.form.submit()">
+        </div>
+    </form>
+</div>
+
+<!-- Stats Summary -->
+<div class="grid grid-cols-4 gap-3 mb-6">
+    <div class="card text-center">
+        <div class="text-xs uppercase text-gray-500 font-semibold" style="font-family:Rajdhani,sans-serif;">Total</div>
+        <div class="text-xl font-bold" style="color:#a78bfa;">{{ total }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs uppercase text-gray-500 font-semibold" style="font-family:Rajdhani,sans-serif;">Tailgating</div>
+        <div class="text-xl font-bold text-red-400">{{ tailgate_count }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs uppercase text-gray-500 font-semibold" style="font-family:Rajdhani,sans-serif;">Overrides</div>
+        <div class="text-xl font-bold text-yellow-400">{{ override_count }}</div>
+    </div>
+    <div class="card text-center">
+        <div class="text-xs uppercase text-gray-500 font-semibold" style="font-family:Rajdhani,sans-serif;">Other</div>
+        <div class="text-xl font-bold text-blue-400">{{ other_count }}</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-3 gap-4">
+    {% for inc in incidents %}
+    <div class="card">
+        {% if inc.clip_path %}
+        <video src="/static/clips/{{ inc.clip_path.split('/')[-1] if '/' in inc.clip_path else inc.clip_path.split('\\')[-1] }}"
+               class="w-full rounded mb-2" style="max-height:180px;object-fit:cover;" controls muted></video>
+        {% elif inc.photo_path %}
+        <img src="{{ photo_url(inc.photo_path) }}"
+             class="w-full rounded mb-2" style="max-height:180px;object-fit:cover;" onerror="this.style.display='none'">
+        {% else %}
+        <div class="w-full rounded mb-2 flex items-center justify-center text-gray-600 bg-gray-800 bg-opacity-50" style="height:100px;">No media</div>
+        {% endif %}
+
+        <div class="flex items-center justify-between mb-1">
+            <span class="badge {% if inc.incident_type.value in ('tailgate', 'tailgating', 'tailgate_attempt') %}badge-red{% elif inc.incident_type.value == 'unauthorized' %}badge-yellow{% else %}badge-blue{% endif %}">
+                {{ inc.incident_type.value }}
+            </span>
+            <span class="text-xs text-gray-500">{{ inc.timestamp | to_local if inc.timestamp else '' }}</span>
+        </div>
+        <p class="text-sm text-gray-400">{{ inc.description or '' }}</p>
+        {% if inc.reason_code %}
+        <div class="text-xs text-gray-500 mt-1">Reason: {{ inc.reason_code }}</div>
+        {% endif %}
+        <form method="POST" action="/admin/incidents/{{ inc.id }}/delete" class="mt-2"
+              onsubmit="return confirm('Delete this incident?')">
+            <button type="submit" class="text-xs text-red-400 hover:text-red-300">Delete</button>
+        </form>
+    </div>
+    {% endfor %}
+</div>
+
+{% if not incidents %}
+<div class="card text-center py-12 text-gray-500">No incidents recorded</div>
+{% endif %}
+
+<!-- Pagination -->
+{% if pages > 1 %}
+<div class="flex justify-center gap-2 mt-6">
+    {% for p in range(1, pages + 1) %}
+    <a href="?page={{ p }}&type={{ filter_type }}"
+       class="px-3 py-1 rounded text-sm {% if p == page %}text-white{% else %}bg-gray-800 text-gray-400 hover:bg-gray-700{% endif %}" style="{% if p == page %}background:#7c3aed;{% endif %}">{{ p }}</a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

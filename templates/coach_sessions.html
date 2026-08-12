@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Coaching Sessions{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Coaching Sessions</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">{{ sessions|length }} session{{ 's' if sessions|length != 1 }}</p>
+    </div>
+    <button onclick="document.getElementById('addModal').classList.remove('hidden')" class="btn btn-primary">+ New Session</button>
+</div>
+
+{% if error %}
+<div class="alert-red mb-4 text-sm">{{ error }}</div>
+{% elif request.query_params.get('created') == '1' %}
+<div class="alert-green mb-4 text-sm">Session recorded.</div>
+{% elif request.query_params.get('deleted') == '1' %}
+<div class="alert-green mb-4 text-sm">Session deleted.</div>
+{% endif %}
+
+<!-- Add Session Modal -->
+<div id="addModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 hidden">
+    <div class="card w-96">
+        <h3 class="text-lg font-semibold mb-3" style="color:#c4b5fd;">New Coaching Session</h3>
+        <form method="post" action="/coach/sessions/add" class="space-y-3">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Coach *</label>
+                <select name="coach_id" required class="w-full">
+                    <option value="">— Select Coach —</option>
+                    {% for c in coaches %}
+                    <option value="{{ c.id }}">{{ c.display_name or c.username }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Member / Client Name *</label>
+                <input type="text" name="member_name" required class="w-full" placeholder="e.g. Juan Dela Cruz">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Notes</label>
+                <input type="text" name="notes" class="w-full" placeholder="Optional">
+            </div>
+            <p class="text-xs text-gray-500">Session date is auto-set to today. Gym share (percent or fixed price) is set in Admin → Gym Plans.</p>
+            <div class="flex gap-2 pt-2">
+                <button type="submit" class="btn btn-primary flex-1">Record Session</button>
+                <button type="button" onclick="document.getElementById('addModal').classList.add('hidden')" class="btn btn-outline flex-1">Cancel</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Sessions Table -->
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Coach</th>
+                <th>Member</th>
+                <th>Notes</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in sessions %}
+            <tr>
+                <td class="text-sm whitespace-nowrap">{{ s.session_date }}</td>
+                <td class="font-medium text-gray-200">{{ s.coach_name }}</td>
+                <td>{{ s.member_name }}</td>
+                <td class="text-sm text-gray-400 max-w-xs truncate">{{ s.notes or '' }}</td>
+                <td>
+                    <form method="post" action="/coach/sessions/{{ s.id }}/delete" style="display:inline"
+                          onsubmit="return confirm('Delete this session?')">
+                        <button type="submit" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not sessions %}
+            <tr><td colspan="5" class="text-center text-gray-500 py-8">No coaching sessions recorded</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

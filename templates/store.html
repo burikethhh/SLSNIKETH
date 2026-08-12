@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Store POS — Sell{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Store</h1>
+        <p class="text-sm" style="color:rgba(139,92,246,.4);">Search a product and record the sale</p>
+    </div>
+    <a href="/store/history" class="btn btn-outline text-xs">Sales Log</a>
+</div>
+
+{% if request.query_params.get('sold')=='1' %}
+<div class="alert-green mb-4" id="saleSuccess">Sale recorded successfully.</div>
+{% elif request.query_params.get('error')=='stock' %}
+<div class="alert-red mb-4">Not enough stock available.</div>
+{% elif request.query_params.get('error')=='inactive' %}
+<div class="alert-red mb-4">That product is no longer active.</div>{% endif %}
+
+<div class="grid grid-cols-2 gap-6">
+    <!-- Search Panel -->
+    <div class="card">
+        <h3 class="text-sm font-semibold text-gray-300 mb-3">Search Products</h3>
+        <input type="text" id="productSearch" placeholder="Type product name..." class="w-full mb-3" oninput="searchProducts()" autocomplete="off">
+        <div id="searchResults" class="space-y-2 max-h-80 overflow-y-auto">
+            <div class="text-xs text-gray-500 py-4 text-center">Start typing to search products...</div>
+        </div>
+    </div>
+
+    <!-- Cart / Sell Panel -->
+    <div class="card" id="sellPanel" style="display:none;">
+        <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-lg flex items-center justify-center text-xl" style="background:rgba(139,92,246,.15);">🛒</div>
+            <div>
+                <div class="font-semibold text-gray-100" id="spName">—</div>
+                <div class="text-xs text-gray-400"><span class="badge badge-blue" id="spCategory">—</span>&nbsp;Stock: <span id="spStock">—</span></div>
+            </div>
+        </div>
+        <div class="text-2xl font-bold text-green-400 mb-4">₱<span id="spPrice">0.00</span>
+            <span class="text-sm text-gray-500 font-normal ml-1">/ unit</span>
+        </div>
+        <form method="POST" action="/store/sell" id="sellForm" class="space-y-4">
+            <input type="hidden" name="product_id" id="spProductId">
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="text-xs text-gray-500">Quantity</label>
+                    <input type="number" name="quantity" id="spQty" min="1" value="1" class="w-full mt-1" oninput="updateTotal()">
+                </div>
+                <div>
+                    <label class="text-xs text-gray-500">Payment</label>
+                    <select name="payment_method" class="w-full mt-1">
+                        <option value="cash">Cash</option>
+                        <option value="gcash">GCash</option>
+                    </select>
+                </div>
+            </div>
+            <div>
+                <label class="text-xs text-gray-500">Notes (optional)</label>
+                <input type="text" name="notes" class="w-full mt-1" placeholder="e.g. member name, table number">
+            </div>
+            <div class="pt-3 border-t border-gray-800">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-sm text-gray-400">Total Amount</span>
+                    <span class="text-2xl font-bold text-green-400">₱<span id="spTotal">0.00</span></span>
+                </div>
+                <button type="submit" class="btn btn-success w-full text-sm font-semibold">
+                    ✓ Record Sale
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Empty state for sell panel -->
+    <div class="card flex items-center justify-center" id="sellPanelEmpty" style="min-height:200px;">
+        <div class="text-center text-gray-600">
+            <div class="text-4xl mb-2">🛍️</div>
+            <div class="text-sm">Select a product to sell</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allProducts = [];
+let selectedPrice = 0;
+
+// Load all products on page open (so search is instant)
+async function loadProducts() {
+    try {
+        const r = await fetch('/api/store/products');
+        allProducts = await r.json();
+        renderSearch(allProducts);
+    } catch(e) { console.error(e); }
+}
+
+function searchProducts() {
+    const q = document.getElementById('productSearch').value.toLowerCase().trim();
+    if (!q) { renderSearch(allProducts); return; }
+    const filtered = allProducts.filter(p =>
+        p.name.toLowerCase().includes(q) ||
+        (p.category || '').toLowerCase().includes(q) ||
+        (p.description || '').toLowerCase().includes(q)
+    );
+    renderSearch(filtered);
+}
+
+function renderSearch(products) {
+    const el = document.getElementById('searchResults');
+    if (!products.length) {
+        el.innerHTML = '<div class="text-xs text-gray-500 py-4 text-center">No products found.</div>';
+        return;
+    }
+    el.innerHTML = products.map(p => `
+        <div onclick="selectProduct(${p.id},'${p.name.replace(/'/g,"\\'")}','${p.category||'General'}',${p.price},${p.stock})"
+             class="flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all hover:border-purple-500"
+             style="background:rgba(15,17,30,.8);border:1px solid rgba(139,92,246,.12);">
+            <div>
+                <div class="font-medium text-gray-100 text-sm">${p.name}</div>
+                <div class="text-xs text-gray-500">${p.category||'General'}${p.description ? ' · '+p.description : ''}</div>
+            </div>
+            <div class="text-right flex-shrink-0 ml-3">
+                <div class="text-green-400 font-bold text-sm">₱${parseFloat(p.price).toFixed(2)}</div>
+                <div class="text-xs ${p.stock <= 5 ? 'text-red-400' : 'text-gray-500'}">${p.stock} in stock</div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function selectProduct(id, name, category, price, stock) {
+    selectedPrice = price;
+    document.getElementById('spProductId').value = id;
+    document.getElementById('spName').textContent = name;
+    document.getElementById('spCategory').textContent = category;
+    document.getElementById('spStock').textContent = stock;
+    document.getElementById('spPrice').textContent = parseFloat(price).toFixed(2);
+    document.getElementById('spQty').value = 1;
+    document.getElementById('spQty').max = stock;
+    updateTotal();
+    document.getElementById('sellPanel').style.display = '';
+    document.getElementById('sellPanelEmpty').style.display = 'none';
+    // Highlight selection
+    document.querySelectorAll('#searchResults > div').forEach(el => {
+        el.style.borderColor = 'rgba(139,92,246,.12)';
+    });
+    event.currentTarget.style.borderColor = '#7c3aed';
+}
+
+function updateTotal() {
+    const qty = parseInt(document.getElementById('spQty').value) || 1;
+    const total = (selectedPrice * qty).toFixed(2);
+    document.getElementById('spTotal').textContent = total;
+}
+
+loadProducts();
+</script>
+{% endblock %}

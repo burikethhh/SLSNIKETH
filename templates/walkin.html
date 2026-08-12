@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Walk-in Entry{% endblock %}
+{% block content %}
+<div class="max-w-lg mx-auto">
+    <div class="card">
+        <h2 class="text-lg font-semibold mb-1">Walk-in Entry</h2>
+        <p class="text-sm mb-4" style="color:rgba(139,92,246,.4);">Quick 3-step process: Amount → Payment → Gate Unlocks</p>
+
+        <form method="POST" action="/sales/walkin" class="space-y-4" id="walkinForm">
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Amount (₱)</label>
+                <input type="number" name="amount" step="0.01" required class="w-full text-2xl text-center"
+                       value="{{ default_rate }}" min="0">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Payment Method</label>
+                <div class="grid grid-cols-3 gap-2">
+                    <label class="card text-center cursor-pointer hover:border-green-500 transition" style="padding:.75rem">
+                        <input type="radio" name="payment_method" value="Cash" checked class="hidden">
+                        <div class="flex justify-center"><svg class="w-6 h-6 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg></div>
+                        <div class="text-xs text-gray-400 mt-1">Cash</div>
+                    </label>
+                    <label class="card text-center cursor-pointer hover:border-blue-500 transition" style="padding:.75rem">
+                        <input type="radio" name="payment_method" value="GCash" class="hidden">
+                        <div class="flex justify-center"><svg class="w-6 h-6 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg></div>
+                        <div class="text-xs text-gray-400 mt-1">GCash</div>
+                    </label>
+                    <label class="card text-center cursor-pointer hover:border-purple-500 transition" style="padding:.75rem">
+                        <input type="radio" name="payment_method" value="Bank" class="hidden">
+                        <div class="flex justify-center"><svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg></div>
+                        <div class="text-xs text-gray-400 mt-1">Bank</div>
+                    </label>
+                </div>
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Note (optional)</label>
+                <input type="text" name="note" class="w-full" placeholder="e.g. Guest of Juan">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-400 mb-1">Assign RFID Card (optional — expires in 8 hours)</label>
+                <div class="flex gap-2">
+                    <input type="text" name="rfid_uid" id="walkinRfid" class="w-full font-mono"
+                           placeholder="Scan RFID card or type UID..."
+                           onkeydown="if(event.key==='Enter'){event.preventDefault();}">
+                    <button type="button" onclick="listenWalkinRfid()" id="walkinRfidBtn"
+                            class="btn btn-outline text-xs whitespace-nowrap">Scan</button>
+                </div>
+                <p class="text-xs mt-1" style="color:#4b5563;">Card will auto-expire 8h after assignment so it can be reused</p>
+            </div>
+            <button type="submit" class="btn btn-success w-full text-lg py-3">
+                Pay &amp; Unlock Gate
+            </button>
+        </form>
+
+        <div class="mt-4 pt-3 border-t border-gray-800 text-center text-xs text-gray-500">
+            Gate will unlock automatically after payment is confirmed
+        </div>
+
+        {% if request.query_params.get('error') == 'rfid_taken' %}
+        <div class="mt-4 p-3 text-sm" style="color:#ef4444;background:rgba(239,68,68,.1);border-radius:.5rem;">
+            RFID card is already assigned to another person.
+        </div>
+        {% elif request.query_params.get('error') == 'server_error' %}
+        <div class="mt-4 p-3 text-sm" style="color:#ef4444;background:rgba(239,68,68,.1);border-radius:.5rem;">
+            Server error occurred. Please try again or contact support.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+// Suppress global RFID door-trigger on this page.
+// RFID scans here should only fill the input field,
+// NOT trigger /api/rfid-scan (which would open the door).
+// The door opens only when staff clicks "Pay & Unlock Gate".
+window._rfidSuppressDoor = true;
+
+// Highlight selected payment method
+document.querySelectorAll('input[name="payment_method"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+        document.querySelectorAll('input[name="payment_method"]').forEach(r => {
+            r.closest('label').style.borderColor = r.checked ? '#22c55e' : '#1e2235';
+        });
+    });
+});
+// Init highlight
+const checkedRadio = document.querySelector('input[name="payment_method"]:checked');
+if (checkedRadio) {
+    const lbl = checkedRadio.closest('label');
+    if (lbl) lbl.style.borderColor = '#22c55e';
+}
+
+// RFID scan listener for walk-in
+let _walkinRfidPoll = null;
+function listenWalkinRfid() {
+    const btn = document.getElementById('walkinRfidBtn');
+    const input = document.getElementById('walkinRfid');
+    if (_walkinRfidPoll) {
+        clearInterval(_walkinRfidPoll);
+        _walkinRfidPoll = null;
+        btn.textContent = 'Scan';
+        btn.classList.remove('animate-pulse');
+        return;
+    }
+    btn.textContent = 'Scanning…';
+    btn.classList.add('animate-pulse');
+    _walkinRfidPoll = setInterval(async () => {
+        try {
+            const r = await fetch('/api/rfid-latest');
+            const d = await r.json();
+            if (d.uid) {
+                input.value = d.uid;
+                clearInterval(_walkinRfidPoll);
+                _walkinRfidPoll = null;
+                btn.textContent = 'Scan';
+                btn.classList.remove('animate-pulse');
+            }
+        } catch(e) {}
+    }, 500);
+    // Auto-stop after 15s
+    setTimeout(() => {
+        if (_walkinRfidPoll) {
+            clearInterval(_walkinRfidPoll);
+            _walkinRfidPoll = null;
+            btn.textContent = 'Scan';
+            btn.classList.remove('animate-pulse');
+        }
+    }, 15000);
+}
+
+// Prevent Enter key from submitting the form — only button click should register
+document.getElementById('walkinForm').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') e.preventDefault();
+});
+</script>
+{% endblock %}
