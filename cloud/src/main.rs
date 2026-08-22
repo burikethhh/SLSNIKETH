@@ -44,7 +44,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let dashboard_service = ServeDir::new("dashboard")
+    let dashboard_dir = if std::path::Path::new("cloud/dashboard").exists() {
+        "cloud/dashboard"
+    } else {
+        "dashboard"
+    };
+    let dashboard_service = ServeDir::new(dashboard_dir)
         .append_index_html_on_directories(true);
 
     let app = Router::new()

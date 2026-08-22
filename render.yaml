@@ -1,8 +1,9 @@
 services:
   - type: web
     name: gympos-cloud
-    env: docker
-    dockerfilePath: Dockerfile
+    env: rust
+    buildCommand: cargo build --release --package gympos-cloud
+    startCommand: ./target/release/gympos-cloud
     plan: free
     region: oregon
     healthCheckPath: /api/v1/health
