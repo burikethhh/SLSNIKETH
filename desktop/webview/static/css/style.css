@@ -1,0 +1,94 @@
+/* GymPOS SaaS — Clean Modern White-Label Design System */
+
+:root {
+    --brand-primary: #2563eb;
+    --brand-primary-rgb: 37, 99, 235;
+    --brand-gradient: linear-gradient(135deg, #2563eb, #1d4ed8);
+    --brand-glow: rgba(37, 99, 235, 0.35);
+    --brand-border: rgba(37, 99, 235, 0.25);
+    --bg-base: #090d16;
+    --bg-panel: rgba(15, 23, 42, 0.85);
+    --bg-card: rgba(30, 41, 59, 0.5);
+    --border-subtle: rgba(51, 65, 85, 0.5);
+}
+
+/* ── Smooth custom scrollbars ───────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.4); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.7); }
+
+/* ── Glass Panel & Modern Containers ────────────────── */
+.glass-panel {
+    background: var(--bg-panel);
+    backdrop-filter: blur(16px);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0.75rem;
+}
+
+.brand-btn {
+    background: var(--brand-gradient);
+    box-shadow: 0 4px 14px var(--brand-glow);
+    color: #ffffff;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+.brand-btn:hover {
+    box-shadow: 0 6px 20px var(--brand-glow);
+    transform: translateY(-1px);
+    filter: brightness(1.08);
+}
+
+.brand-badge {
+    background: rgba(var(--brand-primary-rgb), 0.15);
+    border: 1px solid var(--brand-border);
+    color: var(--brand-primary);
+}
+
+.brand-text {
+    color: var(--brand-primary);
+}
+
+.card {
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card:hover {
+    transform: translateY(-2px);
+    border-color: var(--brand-border);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Tailgate Emergency Siren Flash ─────────────────── */
+@keyframes siren-strobe {
+    0%, 100% {
+        background-color: rgba(220, 38, 38, 0.25);
+        border-color: rgba(239, 68, 68, 0.8);
+        box-shadow: 0 0 30px rgba(239, 68, 68, 0.4);
+    }
+    50% {
+        background-color: rgba(220, 38, 38, 0.05);
+        border-color: rgba(239, 68, 68, 0.3);
+        box-shadow: 0 0 10px rgba(239, 68, 68, 0.1);
+    }
+}
+.siren-active {
+    animation: siren-strobe 0.8s infinite ease-in-out;
+}
+
+/* ── Color Swatch Selection ─────────────────────────── */
+.color-swatch {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    border: 2px solid transparent;
+}
+.color-swatch:hover {
+    transform: scale(1.1);
+}
+.color-swatch.active {
+    border-color: #ffffff;
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.5);
+    transform: scale(1.15);
+}

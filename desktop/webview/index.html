@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title id="html-title">GymPOS — SaaS Management & Biometric Access</title>
+    <link rel="icon" id="app-favicon" href="static/logo.jpg" type="image/jpeg">
+    <link href="static/vendor/css/tailwind.min.css" rel="stylesheet">
+    <link href="static/vendor/css/fonts.css" rel="stylesheet">
+    <link href="static/css/style.css" rel="stylesheet">
+    <style>
+        html { background: #090d16; color-scheme: dark; }
+        body {
+            background: #090d16;
+            color: #e2e8f0;
+            font-family: Inter, system-ui, sans-serif;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        h1, h2, h3, .brand { font-family: Rajdhani, system-ui, sans-serif; }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at 20% 20%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.08) 0%, transparent 45%),
+                        radial-gradient(ellipse at 80% 80%, rgba(var(--brand-primary-rgb, 37, 99, 235), 0.05) 0%, transparent 45%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.65rem 1rem;
+            border-radius: 0.5rem;
+            color: #94a3b8;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        .nav-item:hover, .nav-item.active {
+            background: rgba(var(--brand-primary-rgb, 37, 99, 235), 0.15);
+            color: #ffffff;
+            border-left: 3px solid var(--brand-primary, #2563eb);
+        }
+        .nav-item svg {
+            transition: transform 0.2s ease;
+        }
+        .nav-item:hover svg, .nav-item.active svg {
+            transform: scale(1.1);
+            color: var(--brand-primary, #2563eb);
+        }
+
+        .btn-unlock {
+            background: linear-gradient(135deg, #059669, #047857);
+            box-shadow: 0 4px 14px rgba(5, 150, 105, 0.3);
+        }
+        .btn-unlock:hover {
+            box-shadow: 0 6px 20px rgba(5, 150, 105, 0.45);
+            transform: translateY(-1px);
+        }
+
+        .input-dark {
+            background: rgba(15, 23, 42, 0.85);
+            border: 1px solid rgba(71, 85, 105, 0.4);
+            border-radius: 0.5rem;
+            padding: 0.55rem 0.75rem;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+            width: 100%;
+        }
+        .input-dark:focus {
+            outline: none;
+            border-color: var(--brand-primary, #2563eb);
+            box-shadow: 0 0 0 2px rgba(var(--brand-primary-rgb, 37, 99, 235), 0.25);
+        }
+
+        .icon-box {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen select-none">
+
+    <!-- Top Emergency Siren Banner (Hidden until triggered) -->
+    <div id="tailgate-siren-banner" class="hidden siren-active mx-4 mt-2 p-3 rounded-lg border border-red-500 flex items-center justify-between z-50 text-red-100">
+        <div class="flex items-center gap-3">
+            <svg class="w-6 h-6 text-red-400 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+            <div>
+                <div class="font-bold text-sm text-red-200 uppercase tracking-wider">Security Alert: Tailgating Violation Detected</div>
+                <div id="tailgate-siren-msg" class="text-xs text-red-300/80">Turnstile ROI multi-occupancy triggered. Hardware buzzer active.</div>
+            </div>
+        </div>
+        <button onclick="dismissSiren()" class="px-3 py-1 bg-red-950/80 hover:bg-red-900 border border-red-500/40 rounded text-xs font-semibold">
+            Dismiss Alarm
+        </button>
+    </div>
+
+    <!-- Top Navigation Bar (White-Label Customizable) -->
+    <header class="glass-panel mx-4 mt-3 px-4 py-2.5 flex items-center justify-between z-10 shrink-0">
+        <div class="flex items-center gap-3">
+            <img id="app-header-logo" src="static/logo.jpg" alt="Logo" class="w-9 h-9 rounded-lg shadow-lg border border-slate-700 object-cover">
+            <div>
+                <div id="app-gym-name" class="brand text-lg font-bold tracking-wide text-white">Titan Fitness & Performance</div>
+                <div id="app-sub-heading" class="text-[10px] text-slate-400 uppercase tracking-widest">SaaS Access Control & POS</div>
+            </div>
+        </div>
+
+        <!-- System Status, Walk-In Pass & Quick Actions -->
+        <div class="flex items-center gap-3">
+            <!-- Hardware Lock Status -->
+            <div id="hw-status-badge" class="flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800/80 border border-slate-700 text-slate-300">
+                <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path>
+                </svg>
+                <span id="hw-status-text">ESP32: Scanning...</span>
+            </div>
+
+            <!-- License Status Badge -->
+            <div id="license-badge" class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800/80 border border-slate-700 text-slate-300">
+                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                </svg>
+                <span id="license-tier-text">Checking License...</span>
+            </div>
+
+            <!-- Quick Walk-In Button -->
+            <button onclick="openWalkInModal()" class="brand-btn px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"></path>
+                </svg>
+                <span>+ Walk-In Pass</span>
+            </button>
+
+            <!-- Quick Unlock Button -->
+            <button id="btn-quick-unlock" onclick="quickUnlockDoor()" class="btn-unlock px-3 py-1.5 rounded-lg text-xs font-bold text-white flex items-center gap-1.5 transition">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"></path>
+                </svg>
+                <span>Unlock Gate</span>
+            </button>
+
+            <!-- License Modal Button -->
+            <button onclick="openLicenseModal()" class="px-2.5 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path>
+                </svg>
+                <span>License</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Workspace Area -->
+    <div class="flex flex-1 mx-4 my-3 gap-4 overflow-hidden z-10">
+
+        <!-- Sidebar Navigation -->
+        <aside class="glass-panel w-56 p-3 flex flex-col justify-between shrink-0">
+            <nav class="space-y-1">
+                <div class="nav-item active" onclick="switchView('dashboard')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path>
+                    </svg>
+                    <span>Dashboard</span>
+                </div>
+                <div class="nav-item" onclick="switchView('attendance')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+                    </svg>
+                    <span>Live Gate / Kiosk</span>
+                </div>
+                <div class="nav-item" onclick="switchView('members')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                    </svg>
+                    <span>Members</span>
+                </div>
+                <div class="nav-item" onclick="switchView('walkins')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"></path>
+                    </svg>
+                    <span>Walk-In Day Passes</span>
+                </div>
+                <div class="nav-item" onclick="switchView('pos')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                    </svg>
+                    <span>Store POS</span>
+                </div>
+                <div class="nav-item" onclick="switchView('coaches')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                    <span>Coaches</span>
+                </div>
+                <div class="nav-item" onclick="switchView('branding')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path>
+                    </svg>
+                    <span>Brand & Colors</span>
+                </div>
+                <div class="nav-item" onclick="switchView('hardware')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    <span>Hardware Settings</span>
+                </div>
+            </nav>
+
+            <div class="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <div class="flex justify-between items-center">
+                    <span class="flex items-center gap-1.5">
+                        <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <span>Offline Engine:</span>
+                    </span>
+                    <span class="text-emerald-400 font-semibold">Active</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="flex items-center gap-1.5">
+                        <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        <span>Face Vectors:</span>
+                    </span>
+                    <span id="sidebar-vector-count" class="text-slate-200 font-bold">0 loaded</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Viewport -->
+        <main id="viewport" class="glass-panel flex-1 p-6 overflow-y-auto">
+            
+            <!-- 1. DASHBOARD VIEW -->
+            <div id="view-dashboard" class="space-y-6">
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-100">Gym Operation Overview</h2>
+                    <p class="text-xs text-slate-400">Real-time attendance, gate access, and subscription status</p>
+                </div>
+
+                <!-- Stats Grid -->
+                <div class="grid grid-cols-4 gap-4">
+                    <div class="glass-panel p-4 border border-slate-700/60 card flex items-center gap-4">
+                        <div class="icon-box bg-blue-950/80 border border-blue-500/30 text-blue-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-400 font-medium">Active Members</div>
+                            <div id="stat-active-members" class="text-2xl font-bold mt-0.5 text-slate-100 brand">0 / --</div>
+                            <div id="stat-tier-badge" class="text-[10px] text-slate-400">Tier: Unlicensed</div>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel p-4 border border-emerald-500/20 card flex items-center gap-4">
+                        <div class="icon-box bg-emerald-950/80 border border-emerald-500/30 text-emerald-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        </div>
+                        <div>
+                            <div class="text-xs text-emerald-400 font-medium">Today's Check-ins</div>
+                            <div id="stat-checkins" class="text-2xl font-bold mt-0.5 text-emerald-300 brand">0</div>
+                            <div class="text-[10px] text-emerald-400/60">Biometric & Walk-ins</div>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel p-4 border border-amber-500/20 card flex items-center gap-4">
+                        <div class="icon-box bg-amber-950/80 border border-amber-500/30 text-amber-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                        </div>
+                        <div>
+                            <div class="text-xs text-amber-400 font-medium">Anti-Tailgate Flags</div>
+                            <div id="stat-tailgates" class="text-2xl font-bold mt-0.5 text-amber-300 brand">0</div>
+                            <div class="text-[10px] text-amber-400/60">YOLOv8 + ROI Active</div>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel p-4 border border-slate-700/60 card flex items-center gap-4">
+                        <div class="icon-box bg-slate-800 border border-slate-600 text-slate-300">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                        </div>
+                        <div>
+                            <div class="text-xs text-slate-400 font-medium">License Status</div>
+                            <div id="stat-license-state" class="text-lg font-bold mt-0.5 text-slate-200 brand">UNLICENSED</div>
+                            <div id="stat-license-detail" class="text-[10px] text-slate-400">Enter a valid key</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Live Camera Feeds & Tailgate Status -->
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="glass-panel p-4 border border-slate-800">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                <span class="text-sm font-semibold text-slate-200">Entrance Biometrics (YuNet + SFace)</span>
+                            </div>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">ONLINE</span>
+                        </div>
+                        <div class="h-44 rounded-lg bg-black/60 border border-slate-800 flex flex-col items-center justify-center text-slate-500 text-xs relative overflow-hidden">
+                            <svg class="w-8 h-8 mb-2 opacity-40 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            <span>Entrance Live Biometric Stream</span>
+                        </div>
+                    </div>
+
+                    <div class="glass-panel p-4 border border-slate-800">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span class="text-sm font-semibold text-slate-200">Turnstile ROI & Tailgate Radar (YOLOv8)</span>
+                            </div>
+                            <span class="px-2 py-0.5 rounded text-[10px] bg-blue-950 text-blue-300 border border-blue-800 font-semibold">ARMED</span>
+                        </div>
+                        <div class="h-44 rounded-lg bg-black/60 border border-slate-800 flex flex-col items-center justify-center text-slate-500 text-xs relative">
+                            <!-- Simulated ROI box -->
+                            <div class="w-3/5 h-4/5 border-2 border-dashed border-emerald-500/50 rounded flex items-center justify-center text-[10px] text-emerald-400/80">
+                                <span>ROI Zone: 1 Person Max Allowed</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. LIVE GATE / ATTENDANCE VIEW -->
+            <div id="view-attendance" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Live Access Gate & Attendance Kiosk</h2>
+                        <p class="text-xs text-slate-400">Automated face recognition, gate triggering, and anti-tailgate detection</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="openWalkInModal()" class="brand-btn px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"></path></svg>
+                            <span>+ Walk-In Pass</span>
+                        </button>
+                        <button onclick="simulateFaceScan('in')" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>
+                            <span>Member (In)</span>
+                        </button>
+                        <button onclick="simulateFaceScan('out')" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                            <span>Member (Out)</span>
+                        </button>
+                        <button onclick="simulateWalkInScan('in')" class="px-3 py-1.5 rounded-lg text-xs bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-700 font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span>Walk-In (In)</span>
+                        </button>
+                        <button onclick="simulateWalkInScan('out')" class="px-3 py-1.5 rounded-lg text-xs bg-blue-950/70 hover:bg-blue-900 text-blue-300 border border-blue-700 font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span>Walk-In (Out)</span>
+                        </button>
+                        <button onclick="triggerTailgateSecurityAlarm()" class="px-3 py-1.5 rounded-lg text-xs bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-500/40 font-semibold transition flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                            <span>Alarm</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Real-time Gate Log Table -->
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">Log ID</th>
+                                <th class="p-3">Person / Guest</th>
+                                <th class="p-3">Direction</th>
+                                <th class="p-3">Confidence</th>
+                                <th class="p-3">Security Flag</th>
+                                <th class="p-3">Timestamp</th>
+                            </tr>
+                        </thead>
+                        <tbody id="attendance-log-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="6" class="p-4 text-center text-slate-500">No recent gate activity</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 3. MEMBERS MANAGEMENT VIEW -->
+            <div id="view-members" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Member Directory & Enrollment</h2>
+                        <p class="text-xs text-slate-400">Manage gym memberships and 3-angle facial biometrics</p>
+                    </div>
+                    <button onclick="openEnrollModal()" class="brand-btn px-4 py-2 rounded-lg text-xs flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+                        <span>Enroll New Member</span>
+                    </button>
+                </div>
+
+                <!-- Member Table -->
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">ID</th>
+                                <th class="p-3">Name</th>
+                                <th class="p-3">Membership</th>
+                                <th class="p-3">Phone</th>
+                                <th class="p-3">Face Vector</th>
+                                <th class="p-3">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="members-list-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="6" class="p-4 text-center text-slate-500">Loading members...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 4. WALK-IN DAY PASS VIEW -->
+            <div id="view-walkins" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Walk-In & Day Pass Guests</h2>
+                        <p class="text-xs text-slate-400">Manage non-member day passes, temporary passes, and walk-in revenues</p>
+                    </div>
+                    <button onclick="openWalkInModal()" class="brand-btn px-4 py-2 rounded-lg text-xs flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"></path></svg>
+                        <span>Issue Walk-In Pass</span>
+                    </button>
+                </div>
+
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr>
+                                <th class="p-3">Pass ID</th>
+                                <th class="p-3">Guest Name</th>
+                                <th class="p-3">Phone</th>
+                                <th class="p-3">Amount Paid</th>
+                                <th class="p-3">Payment</th>
+                                <th class="p-3">Expires At</th>
+                            </tr>
+                        </thead>
+                        <tbody id="walkins-list-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="6" class="p-4 text-center text-slate-500">No walk-in passes issued today</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 5. STORE POS VIEW -->
+            <div id="view-pos" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Gym Store & Point of Sale</h2>
+                        <p class="text-xs text-slate-400">Supplements, merchandise, beverages, and sales processing</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-3 gap-6">
+                    <!-- Product Catalog (2 Cols) -->
+                    <div class="col-span-2 space-y-4">
+                        <div id="pos-products-grid" class="grid grid-cols-2 gap-3">
+                            <!-- Products dynamically inserted -->
+                        </div>
+                    </div>
+
+                    <!-- Cart & Checkout (1 Col) -->
+                    <div class="glass-panel p-4 flex flex-col justify-between border border-slate-800 h-[480px]">
+                        <div>
+                            <div class="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+                                <h3 class="text-sm font-bold text-slate-200 flex items-center gap-1.5">
+                                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
+                                    <span>Current Cart</span>
+                                </h3>
+                            </div>
+                            <div id="pos-cart-items" class="space-y-2 overflow-y-auto max-h-56 pr-1 text-xs">
+                                <div class="text-center text-slate-500 py-6">Cart is empty</div>
+                            </div>
+                        </div>
+
+                        <div class="border-t border-slate-800 pt-3 space-y-3">
+                            <div class="flex justify-between items-center text-sm">
+                                <span class="text-slate-400 font-medium">Total Amount:</span>
+                                <span id="pos-cart-total" class="text-xl font-bold text-slate-100 brand">$0.00</span>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="checkoutCart('cash')" class="brand-btn flex-1 py-2 rounded-lg text-xs flex items-center justify-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                                    <span>Cash</span>
+                                </button>
+                                <button onclick="checkoutCart('card')" class="px-3 py-2 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>
+                                    <span>Card</span>
+                                </button>
+                                <button onclick="checkoutCart('gcash')" class="px-3 py-2 rounded-lg text-xs bg-blue-900/50 hover:bg-blue-800 text-blue-200 border border-blue-500/30 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                                    <span>GCash</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 6. COACHES VIEW -->
+            <div id="view-coaches" class="hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-100">Coaches & Training Sessions</h2>
+                    <p class="text-xs text-slate-400">Manage gym personal trainers and scheduled client sessions</p>
+                </div>
+                <div id="coaches-grid" class="grid grid-cols-3 gap-4">
+                    <!-- Coaches dynamically inserted -->
+                </div>
+            </div>
+
+            <!-- 7. BRAND & THEME CUSTOMIZATION VIEW -->
+            <div id="view-branding" class="hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-100">Brand Identity & Theme Settings</h2>
+                    <p class="text-xs text-slate-400">Customize your gym name, logo, accent colors, and walk-in rates</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-6 max-w-4xl">
+                    <!-- Brand info & Logo -->
+                    <div class="glass-panel p-5 space-y-4 border border-slate-800">
+                        <h3 class="text-sm font-bold text-slate-200">Gym Name & Logo</h3>
+                        <div>
+                            <label class="block text-xs text-slate-300 mb-1">Gym Name (Displayed on Header & Receipts)</label>
+                            <input type="text" id="setting-gym-name" class="input-dark" placeholder="e.g. Apex Performance Center">
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-300 mb-1">Upload Gym Logo</label>
+                            <div class="flex items-center gap-4">
+                                <img id="setting-logo-preview" src="static/logo.jpg" class="w-14 h-14 rounded-lg object-cover border border-slate-700 bg-slate-900">
+                                <div class="space-y-1.5 flex-1">
+                                    <input type="file" id="setting-logo-file" accept="image/*" class="text-xs text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded file:border-0 file:text-xs file:bg-slate-800 file:text-slate-200 hover:file:bg-slate-700">
+                                    <button onclick="resetDefaultLogo()" class="text-[11px] text-slate-400 hover:text-white block">Reset to Default Logo</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label class="block text-xs text-slate-300 mb-1">Default Walk-In / Day Pass Fee ($)</label>
+                            <input type="number" step="0.5" id="setting-walkin-rate" class="input-dark" value="10.00">
+                        </div>
+                    </div>
+
+                    <!-- Theme Accent Palette -->
+                    <div class="glass-panel p-5 space-y-4 border border-slate-800">
+                        <h3 class="text-sm font-bold text-slate-200">System Theme Accent Color</h3>
+                        <p class="text-xs text-slate-400">Select a brand color palette to apply instantly across the whole UI.</p>
+
+                        <div class="flex items-center gap-3 flex-wrap pt-2">
+                            <div class="color-swatch bg-blue-600 active" data-color="#2563eb" title="Electric Blue" onclick="selectThemeColor('#2563eb', this)"></div>
+                            <div class="color-swatch bg-emerald-600" data-color="#059669" title="Emerald Matrix" onclick="selectThemeColor('#059669', this)"></div>
+                            <div class="color-swatch bg-red-600" data-color="#dc2626" title="Crimson Ruby" onclick="selectThemeColor('#dc2626', this)"></div>
+                            <div class="color-swatch bg-amber-600" data-color="#d97706" title="Sunset Amber" onclick="selectThemeColor('#d97706', this)"></div>
+                            <div class="color-swatch bg-purple-600" data-color="#7c3aed" title="Royal Purple" onclick="selectThemeColor('#7c3aed', this)"></div>
+                            <div class="color-swatch bg-cyan-600" data-color="#0891b2" title="Cyber Cyan" onclick="selectThemeColor('#0891b2', this)"></div>
+                            <div class="color-swatch bg-slate-600" data-color="#475569" title="Stealth Slate" onclick="selectThemeColor('#475569', this)"></div>
+                        </div>
+
+                        <div class="pt-3 border-t border-slate-800">
+                            <label class="block text-xs text-slate-300 mb-1">Or Choose Custom Hex Color</label>
+                            <div class="flex items-center gap-2">
+                                <input type="color" id="setting-custom-color" value="#2563eb" class="h-9 w-14 bg-transparent cursor-pointer rounded border border-slate-700" onchange="selectThemeColor(this.value)">
+                                <input type="text" id="setting-custom-hex" value="#2563eb" class="input-dark font-mono text-xs" onchange="selectThemeColor(this.value)">
+                            </div>
+                        </div>
+
+                        <button onclick="saveBrandingSettings()" class="brand-btn w-full py-2.5 rounded-lg text-xs font-bold mt-4 flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <span>Save & Apply Brand Changes</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 8. HARDWARE VIEW -->
+            <div id="view-hardware" class="hidden space-y-6">
+                <h2 class="text-2xl font-bold text-slate-100">ESP32 & Hardware Configuration</h2>
+                <div class="glass-panel p-5 max-w-xl space-y-4">
+                    <div>
+                        <label class="block text-xs font-medium text-slate-300 mb-1.5">Select Serial COM Port</label>
+                        <div class="flex gap-2">
+                            <select id="com-port-select" class="input-dark">
+                                <option value="">-- No Ports Detected --</option>
+                            </select>
+                            <button onclick="refreshComPorts()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 flex items-center gap-1.5">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+                    </div>
+                    <button onclick="connectSelectedPort()" class="brand-btn w-full py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                        <span>Connect to ESP32</span>
+                    </button>
+                    <div id="hw-connect-msg" class="text-xs text-slate-400"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- WALK-IN / DAY PASS MODAL -->
+    <div id="walkin-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50">
+        <div class="glass-panel w-full max-w-md p-6 space-y-4 border border-slate-700 shadow-2xl">
+            <div class="flex items-center justify-between">
+                <h3 class="text-xl font-bold text-slate-100 brand flex items-center gap-2">
+                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z"></path></svg>
+                    <span>Issue Walk-In Day Pass</span>
+                </h3>
+                <button onclick="closeWalkInModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Guest Full Name</label>
+                    <input type="text" id="walkin-name" class="input-dark" placeholder="e.g. Alexander Drake">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Phone Number</label>
+                    <input type="text" id="walkin-phone" class="input-dark" placeholder="0917-000-0000">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] text-slate-300 mb-1">Day Pass Fee ($)</label>
+                        <input type="number" step="0.5" id="walkin-fee" class="input-dark" value="10.00">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-300 mb-1">Payment Method</label>
+                        <select id="walkin-payment" class="input-dark">
+                            <option value="cash">Cash</option>
+                            <option value="card">Credit/Debit Card</option>
+                            <option value="gcash">GCash / Digital</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 8-Hour Biometric Capture Box -->
+                <div class="p-3 rounded-lg bg-slate-900/80 border border-slate-700 space-y-2">
+                    <div class="flex items-center justify-between text-xs">
+                        <span class="font-bold text-slate-200 flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span>Biometric Face Registration (8-Hour Limit)</span>
+                        </span>
+                        <span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">READY</span>
+                    </div>
+                    <p class="text-[11px] text-slate-400">
+                        Camera captures guest facial vector linked to this cash transaction. Guest can scan <b>IN and OUT</b> freely for exactly 8 hours. Auto-expires afterwards to prevent pass sharing and staff abuse.
+                    </p>
+                </div>
+            </div>
+
+            <div id="walkin-error-msg" class="text-xs text-red-400"></div>
+
+            <div class="flex gap-2 pt-2">
+                <button onclick="submitWalkInPass()" class="brand-btn flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    <span>Capture Face, Collect Fee & Unlock</span>
+                </button>
+                <button onclick="closeWalkInModal()" class="px-4 py-2.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ENROLL MEMBER MODAL (3-ANGLE FACE CAPTURE) -->
+    <div id="enroll-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50">
+        <div class="glass-panel w-full max-w-lg p-6 space-y-4 border border-slate-700 shadow-2xl">
+            <div class="flex items-center justify-between">
+                <h3 class="text-xl font-bold text-slate-100 brand flex items-center gap-2">
+                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+                    <span>Member Enrollment & Face Registration</span>
+                </h3>
+                <button onclick="closeEnrollModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">First Name</label>
+                    <input type="text" id="mem-first-name" class="input-dark" placeholder="e.g. Marcus">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Last Name</label>
+                    <input type="text" id="mem-last-name" class="input-dark" placeholder="e.g. Stone">
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Phone Number</label>
+                    <input type="text" id="mem-phone" class="input-dark" placeholder="0917-000-0000">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Membership Plan</label>
+                    <select id="mem-plan" class="input-dark">
+                        <option value="regular">Regular Monthly</option>
+                        <option value="vip">Premium VIP</option>
+                        <option value="student">Student Pass</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- 3-Angle Face Capture Simulation -->
+            <div>
+                <label class="block text-[11px] text-slate-300 mb-2 font-semibold flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path></svg>
+                    <span>3-Angle Face Biometrics (SFace 128-d)</span>
+                </label>
+                <div class="grid grid-cols-3 gap-2 text-center text-[10px]">
+                    <div class="p-2.5 rounded-lg bg-black/60 border border-slate-800 flex flex-col items-center">
+                        <svg class="w-5 h-5 text-emerald-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                        <div class="text-slate-300 font-bold">Front Angle</div>
+                        <div class="text-emerald-400 font-semibold mt-0.5">Captured (128-d)</div>
+                    </div>
+                    <div class="p-2.5 rounded-lg bg-black/60 border border-slate-800 flex flex-col items-center">
+                        <svg class="w-5 h-5 text-emerald-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                        <div class="text-slate-300 font-bold">Left Angle</div>
+                        <div class="text-emerald-400 font-semibold mt-0.5">Captured (128-d)</div>
+                    </div>
+                    <div class="p-2.5 rounded-lg bg-black/60 border border-slate-800 flex flex-col items-center">
+                        <svg class="w-5 h-5 text-emerald-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                        <div class="text-slate-300 font-bold">Right Angle</div>
+                        <div class="text-emerald-400 font-semibold mt-0.5">Captured (128-d)</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="enroll-error-msg" class="text-xs text-red-400"></div>
+
+            <div class="flex gap-2 pt-2">
+                <button onclick="submitEnrollMember()" class="brand-btn flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    <span>Enroll Member & Store Vectors</span>
+                </button>
+                <button onclick="closeEnrollModal()" class="px-4 py-2.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LICENSE MODAL -->
+    <div id="license-modal" class="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center hidden z-50">
+        <div class="glass-panel w-full max-w-md p-6 space-y-4 border border-slate-700 shadow-2xl">
+            <div class="flex items-center justify-between">
+                <h3 class="text-xl font-bold text-slate-100 brand flex items-center gap-2">
+                    <svg class="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                    <span>Activate Gym License</span>
+                </h3>
+                <button onclick="closeLicenseModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <p class="text-xs text-slate-400">
+                Paste the cryptographically signed RSA license key generated from the GymPOS Cloud CEO Dashboard.
+            </p>
+            <textarea id="license-key-input" rows="4" class="input-dark text-xs font-mono" placeholder="GPOS-eyJsaWNlbnNlX2lk..."></textarea>
+            <div id="license-modal-status" class="text-xs"></div>
+            <div class="flex gap-2">
+                <button onclick="submitLicenseKey()" class="brand-btn flex-1 py-2 rounded-lg text-sm flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                    <span>Activate License</span>
+                </button>
+                <button onclick="closeLicenseModal()" class="px-4 py-2 rounded-lg text-sm bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

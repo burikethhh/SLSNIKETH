@@ -1,0 +1,20 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db
+
+# Temporary logs and caches
+*.log
+.DS_Store
+Thumbs.db
+
+# Node dependencies (if any)
+node_modules/
+dist/
+
+# Local build artifacts
+bin/

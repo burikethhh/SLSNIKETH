@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GymPOS SaaS — CEO Cloud Command Center</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+    <style>
+        html { background: #07090e; color-scheme: dark; }
+        body {
+            background: #07090e;
+            color: #e2e8f0;
+            font-family: Inter, system-ui, sans-serif;
+            min-height: 100vh;
+        }
+        h1, h2, h3, .brand { font-family: Rajdhani, system-ui, sans-serif; }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at 20% 20%, rgba(124, 58, 237, 0.09) 0%, transparent 45%),
+                        radial-gradient(ellipse at 80% 80%, rgba(139, 92, 246, 0.06) 0%, transparent 45%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .glass-panel {
+            background: rgba(13, 15, 26, 0.85);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(139, 92, 246, 0.18);
+            border-radius: 0.75rem;
+        }
+
+        .btn-purple {
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+            color: #fff;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+        .btn-purple:hover {
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.45);
+            transform: translateY(-1px);
+        }
+
+        .input-dark {
+            background: rgba(15, 17, 30, 0.85);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 0.5rem;
+            padding: 0.6rem 0.75rem;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+            width: 100%;
+        }
+        .input-dark:focus {
+            outline: none;
+            border-color: #7c3aed;
+            box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.25);
+        }
+
+        .icon-box {
+            width: 38px;
+            height: 38px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body class="p-6">
+    <div class="max-w-7xl mx-auto space-y-6 relative z-10">
+
+        <!-- Top Header -->
+        <header class="glass-panel p-5 flex items-center justify-between border-b border-purple-900/30">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-purple-950/80 border border-purple-500/40 flex items-center justify-center text-purple-200 font-bold brand text-xl shadow-lg">
+                    <svg class="w-6 h-6 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand text-2xl font-bold tracking-wide text-purple-200">GYMPOS CLOUD — CEO COMMAND CENTER</h1>
+                    <p class="text-xs text-purple-400/60 uppercase tracking-widest">Multi-Tenant SaaS Licensing & Remote Fleet Management</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                    <span>Axum Engine: Online</span>
+                </div>
+                <button onclick="fetchGyms()" class="px-3 py-1.5 rounded-lg text-xs bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/20 transition flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    <span>Refresh Fleet</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Metric Cards -->
+        <div class="grid grid-cols-4 gap-4">
+            <div class="glass-panel p-4 border border-purple-500/20 flex items-center gap-4">
+                <div class="icon-box bg-purple-950/80 border border-purple-500/30 text-purple-300">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                </div>
+                <div>
+                    <div class="text-xs text-purple-400 font-medium">Onboarded Gyms</div>
+                    <div id="stat-total-gyms" class="text-2xl font-bold mt-0.5 text-purple-100 brand">0</div>
+                    <div class="text-[10px] text-purple-400/60">Live SaaS Installations</div>
+                </div>
+            </div>
+
+            <div class="glass-panel p-4 border border-emerald-500/20 flex items-center gap-4">
+                <div class="icon-box bg-emerald-950/80 border border-emerald-500/30 text-emerald-300">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </div>
+                <div>
+                    <div class="text-xs text-emerald-400 font-medium">Estimated Monthly ARR</div>
+                    <div id="stat-mrr" class="text-2xl font-bold mt-0.5 text-emerald-300 brand">$0.00</div>
+                    <div class="text-[10px] text-emerald-400/60">Recurring Subscriptions</div>
+                </div>
+            </div>
+
+            <div class="glass-panel p-4 border border-blue-500/20 flex items-center gap-4">
+                <div class="icon-box bg-blue-950/80 border border-blue-500/30 text-blue-300">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                </div>
+                <div>
+                    <div class="text-xs text-blue-400 font-medium">RSA Security Engine</div>
+                    <div class="text-base font-bold mt-0.5 text-blue-300 brand">RSA-2048 / PSS</div>
+                    <div class="text-[10px] text-blue-400/60">Cryptographic Tamper-Proof</div>
+                </div>
+            </div>
+
+            <div class="glass-panel p-4 border border-amber-500/20 flex items-center gap-4">
+                <div class="icon-box bg-amber-950/80 border border-amber-500/30 text-amber-300">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path></svg>
+                </div>
+                <div>
+                    <div class="text-xs text-amber-400 font-medium">Remote Kill Switch</div>
+                    <div id="stat-disabled-count" class="text-base font-bold mt-0.5 text-amber-300 brand">0 Revoked</div>
+                    <div class="text-[10px] text-amber-400/60">Instant Lockout Control</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-3 gap-6">
+            <!-- 1. Register Gym & Issue License Form (1 Col) -->
+            <div class="glass-panel p-5 space-y-4 border border-purple-900/40">
+                <div class="flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                    <div>
+                        <h2 class="text-lg font-bold text-purple-100 brand">Onboard Gym & Generate License</h2>
+                        <p class="text-xs text-purple-400/60">Create a signed RSA license key for a gym owner</p>
+                    </div>
+                </div>
+
+                <div class="space-y-3">
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Gym Name</label>
+                        <input type="text" id="gym-name" class="input-dark" placeholder="e.g. Iron Fortress Gym">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Owner Email</label>
+                        <input type="email" id="gym-email" class="input-dark" placeholder="owner@ironfortress.com">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
+                        <select id="gym-tier" class="input-dark">
+                            <option value="basic">Basic Tier — $99/mo (Max 200 Members)</option>
+                            <option value="pro" selected>Pro Tier — $199/mo (Max 500 Members, Multi-Loc)</option>
+                            <option value="ultra">Ultra Tier — $349/mo (Max 1000 Members, Full API)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Duration (Days)</label>
+                        <input type="number" id="gym-duration" class="input-dark" value="30">
+                    </div>
+
+                    <button onclick="submitRegisterGym()" class="btn-purple w-full py-2.5 rounded-lg text-sm mt-2 flex items-center justify-center gap-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                        <span>Generate & Issue RSA License</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. Registered Gym Fleet Table (2 Cols) -->
+            <div class="col-span-2 glass-panel p-5 space-y-4 border border-purple-900/40 flex flex-col justify-between">
+                <div>
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center gap-2">
+                            <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                            <h2 class="text-lg font-bold text-purple-100 brand">Active Gym Installations</h2>
+                        </div>
+                        <span class="text-xs text-purple-400/60">Fleet subscriptions & remote kill switch</span>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-purple-950/40 text-purple-300 uppercase tracking-wider font-semibold border-b border-purple-900/40">
+                                <tr>
+                                    <th class="p-2.5">Gym Name</th>
+                                    <th class="p-2.5">Owner Email</th>
+                                    <th class="p-2.5">Tier</th>
+                                    <th class="p-2.5">Status</th>
+                                    <th class="p-2.5 text-right">Kill Switch Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="gyms-tbody" class="divide-y divide-purple-950/30 text-slate-300">
+                                <tr>
+                                    <td colspan="5" class="p-4 text-center text-slate-500">No gym installations registered yet. Use the form on the left to issue your first license.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="p-3 rounded-lg bg-purple-950/20 border border-purple-900/30 flex items-center justify-between text-xs text-purple-300/80">
+                    <span class="flex items-center gap-2">
+                        <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <span><b>SaaS Policy:</b> Revoking a license instantly cuts off gate access and halts desktop operations upon next sync cycle.</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- License Output Modal -->
+    <div id="license-output-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50">
+        <div class="glass-panel w-full max-w-lg p-6 space-y-4 border border-purple-500/40 shadow-2xl">
+            <div class="flex items-center justify-between">
+                <h3 class="text-xl font-bold text-purple-100 brand flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                    <span>RSA License Key Issued</span>
+                </h3>
+                <button onclick="closeOutputModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <p class="text-xs text-purple-300/80">
+                Send this cryptographically signed license key to the gym owner. They will paste it into their GymPOS Desktop client.
+            </p>
+            <textarea id="output-license-key" rows="5" readonly class="input-dark text-xs font-mono"></textarea>
+            <div class="flex gap-2">
+                <button onclick="copyLicenseKey()" class="btn-purple flex-1 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3"></path></svg>
+                    <span>Copy License Key to Clipboard</span>
+                </button>
+                <button onclick="closeOutputModal()" class="px-4 py-2 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let registeredGyms = [];
+        let disabledGymIds = new Set();
+
+        async function fetchGyms() {
+            try {
+                const res = await fetch('/api/v1/gyms');
+                if (res.ok) {
+                    registeredGyms = await res.json();
+                    renderGyms();
+                }
+            } catch (e) {
+                console.error("Failed to fetch gyms:", e);
+            }
+        }
+
+        function renderGyms() {
+            const tbody = document.getElementById('gyms-tbody');
+            const totalEl = document.getElementById('stat-total-gyms');
+            const mrrEl = document.getElementById('stat-mrr');
+            const disabledEl = document.getElementById('stat-disabled-count');
+
+            if (totalEl) totalEl.innerText = registeredGyms.length;
+            if (disabledEl) disabledEl.innerText = `${disabledGymIds.size} Revoked`;
+
+            let mrr = 0;
+            registeredGyms.forEach(g => {
+                if (g.tier === 'basic') mrr += 99;
+                else if (g.tier === 'pro') mrr += 199;
+                else if (g.tier === 'ultra') mrr += 349;
+            });
+            if (mrrEl) mrrEl.innerText = `$${mrr.toLocaleString()}.00`;
+
+            if (registeredGyms.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-slate-500">No gym installations registered yet.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = registeredGyms.map(g => {
+                const isDisabled = disabledGymIds.has(g.id);
+                return `
+                    <tr class="hover:bg-purple-950/20 transition">
+                        <td class="p-2.5 font-semibold text-purple-200">${g.name}</td>
+                        <td class="p-2.5 text-slate-400 font-mono">${g.owner_email}</td>
+                        <td class="p-2.5 uppercase font-bold text-amber-300 text-[10px]">${g.tier}</td>
+                        <td class="p-2.5">
+                            ${isDisabled 
+                                ? '<span class="px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold">REVOKED / LOCKED</span>'
+                                : '<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">ACTIVE</span>'}
+                        </td>
+                        <td class="p-2.5 text-right">
+                            <button onclick="toggleKillSwitch('${g.id}', ${!isDisabled})" class="px-2.5 py-1 rounded text-[11px] font-semibold transition ${isDisabled ? 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/30' : 'bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-500/30'}">
+                                ${isDisabled ? 'Re-Enable Access' : 'Revoke / Kill Switch'}
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function submitRegisterGym() {
+            const name = document.getElementById('gym-name').value.trim();
+            const email = document.getElementById('gym-email').value.trim();
+            const tier = document.getElementById('gym-tier').value;
+            const duration = parseInt(document.getElementById('gym-duration').value) || 30;
+
+            if (!name || !email) {
+                alert("Please fill in gym name and owner email");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/v1/gyms/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, owner_email: email, tier, duration_days: duration })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('output-license-key').value = data.license_key;
+                    document.getElementById('license-output-modal').classList.remove('hidden');
+                    await fetchGyms();
+                } else {
+                    alert("Registration failed: " + res.statusText);
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function toggleKillSwitch(gymId, disable) {
+            try {
+                const res = await fetch('/api/v1/remote/disable', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ gym_id: gymId, disable: disable, reason: disable ? "Revoked by CEO" : null })
+                });
+
+                if (res.ok) {
+                    if (disable) disabledGymIds.add(gymId);
+                    else disabledGymIds.delete(gymId);
+                    renderGyms();
+                }
+            } catch (e) {
+                alert("Kill switch toggle error: " + e);
+            }
+        }
+
+        function closeOutputModal() {
+            document.getElementById('license-output-modal').classList.add('hidden');
+        }
+
+        function copyLicenseKey() {
+            const txt = document.getElementById('output-license-key');
+            txt.select();
+            navigator.clipboard.writeText(txt.value);
+            alert("License key copied to clipboard!");
+        }
+
+        document.addEventListener('DOMContentLoaded', fetchGyms);
+    </script>
+</body>
+</html>
