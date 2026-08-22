@@ -3,16 +3,23 @@ FROM rust:1.80-slim as builder
 
 WORKDIR /usr/src/gympos
 
-# Install build essentials
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+# Install build essentials and SSL development headers
+RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Copy only shared domain models and cloud service
+# Copy domain shared crate and cloud service crate
 COPY shared ./shared
 COPY cloud ./cloud
 
-# Build cloud binary directly
-WORKDIR /usr/src/gympos/cloud
-RUN cargo build --release --manifest-path Cargo.toml
+# Define Linux workspace manifest
+RUN echo '[workspace]' > Cargo.toml && \
+    echo 'members = [' >> Cargo.toml && \
+    echo '    "shared",' >> Cargo.toml && \
+    echo '    "cloud",' >> Cargo.toml && \
+    echo ']' >> Cargo.toml && \
+    echo 'resolver = "2"' >> Cargo.toml
+
+# Build release binary for gympos-cloud
+RUN cargo build --release --package gympos-cloud
 
 # Final minimal runtime image
 FROM debian:bookworm-slim
@@ -21,11 +28,10 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
-# Copy binary and dashboard from builder
-COPY --from=builder /usr/src/gympos/cloud/target/release/gympos-cloud /app/gympos-cloud
+# Copy compiled binary and static CEO dashboard
+COPY --from=builder /usr/src/gympos/target/release/gympos-cloud /app/gympos-cloud
 COPY --from=builder /usr/src/gympos/cloud/dashboard /app/dashboard
 
-# Default cloud configuration environment variables
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV RUST_LOG=info
