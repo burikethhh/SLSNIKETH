@@ -49,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = Router::new()
         .route("/health", get(routes::health_check))
+        .route("/api/v1/health", get(routes::health_check))
         .route("/api/v1/licenses/public-key", get(routes::get_public_key))
         .route("/api/v1/licenses/generate", post(routes::generate_license))
         .route("/api/v1/licenses/verify", post(routes::verify_license))
