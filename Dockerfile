@@ -6,8 +6,8 @@ WORKDIR /usr/src/app
 # Install build dependencies
 RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Copy clean workspace files
-COPY Cargo.toml ./
+# Copy workspace manifests and source code
+COPY Cargo.toml Cargo.lock ./
 COPY shared ./shared
 COPY cloud ./cloud
 
