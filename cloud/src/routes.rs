@@ -105,6 +105,41 @@ pub async fn list_gyms(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     (StatusCode::OK, Json(json!(list)))
 }
 
+pub async fn update_gym(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<gympos_shared::UpdateGymRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut gyms = state.gyms.write();
+    if let Some(gym) = gyms.get_mut(&payload.id) {
+        gym.name = payload.name.clone();
+        gym.owner_email = payload.contact_email.clone();
+        gym.tier = payload.tier;
+        Ok((StatusCode::OK, Json(json!(gym))))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Gym not found" })),
+        ))
+    }
+}
+
+pub async fn delete_gym(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(gym_id): axum::extract::Path<Uuid>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let mut gyms = state.gyms.write();
+    let mut disabled = state.disabled_gyms.write();
+    if gyms.remove(&gym_id).is_some() {
+        disabled.remove(&gym_id);
+        Ok((StatusCode::OK, Json(json!({ "status": "deleted", "gym_id": gym_id }))))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Gym not found" })),
+        ))
+    }
+}
+
 pub async fn generate_license(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<GenerateLicenseRequest>,

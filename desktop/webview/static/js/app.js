@@ -169,6 +169,7 @@ async function initApp() {
     await loadAttendanceLogs();
     await loadProducts();
     await loadCoaches();
+    await loadCoachSessions();
     await refreshComPorts();
 
     // Auto refresh every 8 seconds
@@ -397,7 +398,7 @@ async function refreshDashboard() {
     }
 }
 
-// --- Walk-In / Day Pass Subsystem ---
+/// --- Walk-In / Day Pass Subsystem ---
 
 function openWalkInModal() {
     document.getElementById('walkin-modal').classList.remove('hidden');
@@ -421,7 +422,6 @@ async function submitWalkInPass() {
         return;
     }
 
-    // Generate single 128-d temporary face vector for the day pass
     const seed = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const tempVector = [];
     for (let i = 0; i < 128; i++) {
@@ -454,6 +454,29 @@ async function submitWalkInPass() {
     }
 }
 
+async function extendWalkIn(id, extraHours) {
+    try {
+        const updated = await invokeTauri('extend_walk_in', { id: id, extraHours: extraHours });
+        await loadWalkIns();
+        alert(`Pass ${id} extended by +${extraHours} hours! New Expiration: ${new Date(updated.expires_at).toLocaleTimeString()}`);
+    } catch (e) {
+        alert("Extend Pass Error: " + e);
+    }
+}
+
+async function voidWalkIn(id, name) {
+    if (!confirm(`Are you sure you want to REVOKE pass ${id} for ${name}? Biometric turnstile access will be immediately terminated.`)) {
+        return;
+    }
+    try {
+        await invokeTauri('void_walk_in', { id: id });
+        await loadWalkIns();
+        alert(`Pass ${id} revoked. Guest cannot scan through gate.`);
+    } catch (e) {
+        alert("Void Pass Error: " + e);
+    }
+}
+
 async function loadWalkIns() {
     try {
         const walkins = await invokeTauri('list_walk_ins');
@@ -462,7 +485,7 @@ async function loadWalkIns() {
         if (!tbody) return;
 
         if (walkins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No walk-in passes issued today</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No walk-in passes issued today</td></tr>';
             return;
         }
 
@@ -490,6 +513,11 @@ async function loadWalkIns() {
                     <td class="p-3 font-bold text-emerald-400">$${w.amount_paid.toFixed(2)}</td>
                     <td class="p-3 uppercase text-[10px] font-bold text-slate-300">${w.payment_method}</td>
                     <td class="p-3">${statusBadge}</td>
+                    <td class="p-3 text-right space-x-1">
+                        <button onclick="extendWalkIn('${w.id}', 4)" title="Extend +4 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-blue-950 hover:bg-blue-900 text-blue-300 border border-blue-800 transition">+4h</button>
+                        <button onclick="extendWalkIn('${w.id}', 8)" title="Extend +8 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 transition">+8h</button>
+                        <button onclick="voidWalkIn('${w.id}', '${w.guest_name.replace(/'/g, "\\'")}')" title="Revoke Pass" class="px-2 py-1 rounded text-[10px] font-bold bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 transition">Void</button>
+                    </td>
                 </tr>
             `;
         }).join('');
@@ -498,46 +526,69 @@ async function loadWalkIns() {
     }
 }
 
-// --- Member Management ---
+// --- Member Management (Full CRUD) ---
 
 async function loadMembers() {
     try {
         const members = await invokeTauri('list_members');
         cachedMembers = members;
-        const tbody = document.getElementById('members-list-tbody');
         const vectorCountEl = document.getElementById('sidebar-vector-count');
-
         if (vectorCountEl) vectorCountEl.innerText = `${members.length} loaded`;
-        if (!tbody) return;
-
-        if (members.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No members registered yet</td></tr>';
-            return;
-        }
-
-        tbody.innerHTML = members.map(m => `
-            <tr class="hover:bg-slate-800/30 transition">
-                <td class="p-3 font-mono text-blue-300">${m.id}</td>
-                <td class="p-3 font-semibold text-slate-200">${m.first_name} ${m.last_name}</td>
-                <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${m.membership_type}</td>
-                <td class="p-3 text-slate-400 font-mono">${m.phone || '--'}</td>
-                <td class="p-3">
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
-                        <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
-                        <span>${m.face_vectors.length} Angles</span>
-                    </span>
-                </td>
-                <td class="p-3">
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">
-                        <svg class="w-2.5 h-2.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                        <span>${m.status.toUpperCase()}</span>
-                    </span>
-                </td>
-            </tr>
-        `).join('');
+        filterMembersList();
     } catch (e) {
         console.error("Load members error:", e);
     }
+}
+
+function filterMembersList() {
+    const search = (document.getElementById('member-search-input')?.value || '').toLowerCase().trim();
+    const tier = document.getElementById('member-tier-filter')?.value || 'all';
+    const tbody = document.getElementById('members-list-tbody');
+    if (!tbody) return;
+
+    const filtered = cachedMembers.filter(m => {
+        const fullName = `${m.first_name} ${m.last_name}`.toLowerCase();
+        const matchesSearch = !search || fullName.includes(search) || (m.phone && m.phone.toLowerCase().includes(search)) || m.id.toLowerCase().includes(search);
+        const matchesTier = tier === 'all' || m.membership_type.toLowerCase() === tier;
+        return matchesSearch && matchesTier;
+    });
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = filtered.map(m => {
+        const isSuspended = m.status === 'suspended';
+        const isExpired = m.status === 'expired';
+        let statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">ACTIVE</span>`;
+        if (isSuspended) {
+            statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800 font-semibold">SUSPENDED</span>`;
+        } else if (isExpired) {
+            statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-semibold">EXPIRED</span>`;
+        }
+
+        return `
+            <tr class="hover:bg-slate-800/30 transition ${isSuspended || isExpired ? 'opacity-70' : ''}">
+                <td class="p-3 font-mono text-blue-300">${m.id}</td>
+                <td class="p-3">
+                    <div class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</div>
+                    <div class="text-[10px] text-slate-500">${m.email || '--'}</div>
+                </td>
+                <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${m.membership_type}</td>
+                <td class="p-3 text-slate-400 font-mono">${m.phone || '--'}</td>
+                <td class="p-3">${statusBadge}</td>
+                <td class="p-3 text-right space-x-1.5">
+                    <button onclick="openEditMemberModal('${m.id}')" title="Edit Profile" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700 font-medium transition">
+                        Edit
+                    </button>
+                    <button onclick="deleteMember('${m.id}', '${m.first_name.replace(/'/g, "\\'")} ${m.last_name.replace(/'/g, "\\'")}')" title="Delete Member" class="px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 text-xs text-red-300 border border-red-800/50 font-medium transition">
+                        Delete
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
 }
 
 function openEnrollModal() {
@@ -591,6 +642,571 @@ async function submitEnrollMember() {
     } catch (e) {
         errorEl.innerText = "Enrollment Error: " + e;
         errorEl.className = "text-xs text-red-400";
+    }
+}
+
+function openEditMemberModal(id) {
+    const m = cachedMembers.find(item => item.id === id);
+    if (!m) return;
+
+    document.getElementById('edit-mem-id').value = m.id;
+    document.getElementById('edit-mem-first-name').value = m.first_name;
+    document.getElementById('edit-mem-last-name').value = m.last_name;
+    document.getElementById('edit-mem-phone').value = m.phone || '';
+    document.getElementById('edit-mem-email').value = m.email || '';
+    document.getElementById('edit-mem-plan').value = m.membership_type.toLowerCase();
+    document.getElementById('edit-mem-status').value = m.status.toLowerCase();
+    document.getElementById('edit-mem-error-msg').innerText = '';
+
+    document.getElementById('edit-member-modal').classList.remove('hidden');
+}
+
+function closeEditMemberModal() {
+    document.getElementById('edit-member-modal').classList.add('hidden');
+}
+
+async function submitUpdateMember() {
+    const id = document.getElementById('edit-mem-id').value;
+    const firstName = document.getElementById('edit-mem-first-name').value.trim();
+    const lastName = document.getElementById('edit-mem-last-name').value.trim();
+    const phone = document.getElementById('edit-mem-phone').value.trim();
+    const email = document.getElementById('edit-mem-email').value.trim();
+    const plan = document.getElementById('edit-mem-plan').value;
+    const status = document.getElementById('edit-mem-status').value;
+    const errorEl = document.getElementById('edit-mem-error-msg');
+
+    if (!firstName || !lastName) {
+        errorEl.innerText = "First and last name are required";
+        return;
+    }
+
+    try {
+        await invokeTauri('update_member', {
+            req: {
+                id: id,
+                first_name: firstName,
+                last_name: lastName,
+                phone: phone,
+                email: email,
+                membership_type: plan,
+                status: status
+            }
+        });
+
+        closeEditMemberModal();
+        await loadMembers();
+        await refreshDashboard();
+        alert(`Member ${firstName} ${lastName} updated successfully!`);
+    } catch (e) {
+        errorEl.innerText = "Update Error: " + e;
+    }
+}
+
+async function deleteMember(id, name) {
+    if (!confirm(`Are you sure you want to permanently DELETE member ${name} (${id})? All facial biometrics will be deleted immediately.`)) {
+        return;
+    }
+    try {
+        await invokeTauri('delete_member', { id: id });
+        await loadMembers();
+        await refreshDashboard();
+        alert(`Member ${name} deleted.`);
+    } catch (e) {
+        alert("Delete Member Error: " + e);
+    }
+}
+
+// --- Store POS & Inventory (Full CRUD) ---
+
+let currentPosCategory = 'all';
+let cachedProducts = [];
+
+function getProductIcon(category) {
+    if (category === 'supplements') {
+        return `<svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>`;
+    } else if (category === 'beverages') {
+        return `<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"></path></svg>`;
+    } else if (category === 'gear') {
+        return `<svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>`;
+    }
+    return `<svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>`;
+}
+
+function filterPosCategory(category) {
+    currentPosCategory = category;
+    document.querySelectorAll('.pos-cat-pill').forEach(btn => {
+        if (btn.innerText.toLowerCase().includes(category) || (category === 'all' && btn.innerText.includes('All'))) {
+            btn.className = 'pos-cat-pill active px-3 py-1 rounded-full text-xs font-semibold bg-blue-600 text-white transition';
+        } else {
+            btn.className = 'pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition';
+        }
+    });
+    renderProductsGrid();
+}
+
+async function loadProducts() {
+    try {
+        const products = await invokeTauri('list_products');
+        cachedProducts = products;
+        renderProductsGrid();
+    } catch (e) {
+        console.error("Load products error:", e);
+    }
+}
+
+function renderProductsGrid() {
+    const grid = document.getElementById('pos-products-grid');
+    if (!grid) return;
+
+    const filtered = cachedProducts.filter(p => {
+        if (currentPosCategory === 'all') return true;
+        return p.category.toLowerCase() === currentPosCategory;
+    });
+
+    if (filtered.length === 0) {
+        grid.innerHTML = '<div class="col-span-2 text-center text-slate-500 py-10">No items found in this category</div>';
+        return;
+    }
+
+    grid.innerHTML = filtered.map(p => `
+        <div class="glass-panel p-3.5 border border-slate-800 flex flex-col justify-between card hover:border-slate-700 transition">
+            <div>
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">${p.category}</span>
+                    <div class="flex items-center gap-1.5">
+                        <button onclick="openEditProductModal('${p.id}')" title="Edit Product" class="text-slate-400 hover:text-blue-300 text-xs p-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                        </button>
+                        <button onclick="deleteProduct('${p.id}', '${p.name.replace(/'/g, "\\'")}')" title="Delete Product" class="text-slate-400 hover:text-red-400 text-xs p-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="text-xs font-bold text-slate-200 mt-1">${p.name}</div>
+                <div class="flex items-center justify-between mt-1 text-[11px] text-slate-400">
+                    <span>Stock: <b class="${p.stock < 5 ? 'text-red-400' : 'text-emerald-400'}">${p.stock}</b></span>
+                    <button onclick="quickRestockProduct('${p.id}', 10)" class="text-[10px] font-bold text-blue-400 hover:text-blue-300">+10 Stock</button>
+                </div>
+            </div>
+            <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800">
+                <span class="text-base font-bold text-slate-100 brand">$${p.price.toFixed(2)}</span>
+                <button onclick="addToCart('${p.id}', '${p.name.replace(/'/g, "\\'")}', ${p.price})" class="px-3 py-1.5 rounded-lg bg-blue-600/80 hover:bg-blue-600 text-xs font-bold text-white transition flex items-center gap-1 shadow">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                    <span>Add</span>
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function openAddProductModal() {
+    document.getElementById('add-prod-name').value = '';
+    document.getElementById('add-prod-price').value = '';
+    document.getElementById('add-prod-stock').value = '50';
+    document.getElementById('add-prod-error').innerText = '';
+    document.getElementById('add-product-modal').classList.remove('hidden');
+}
+
+function closeAddProductModal() {
+    document.getElementById('add-product-modal').classList.add('hidden');
+}
+
+async function submitCreateProduct() {
+    const name = document.getElementById('add-prod-name').value.trim();
+    const category = document.getElementById('add-prod-category').value;
+    const price = parseFloat(document.getElementById('add-prod-price').value);
+    const stock = parseInt(document.getElementById('add-prod-stock').value) || 0;
+    const errorEl = document.getElementById('add-prod-error');
+
+    if (!name || isNaN(price)) {
+        errorEl.innerText = "Valid product name and price are required";
+        return;
+    }
+
+    try {
+        await invokeTauri('create_product', {
+            req: { name, category, price, stock }
+        });
+        closeAddProductModal();
+        await loadProducts();
+        alert(`Product "${name}" added to store inventory!`);
+    } catch (e) {
+        errorEl.innerText = "Error: " + e;
+    }
+}
+
+function openEditProductModal(id) {
+    const p = cachedProducts.find(item => item.id === id);
+    if (!p) return;
+
+    document.getElementById('edit-prod-id').value = p.id;
+    document.getElementById('edit-prod-name').value = p.name;
+    document.getElementById('edit-prod-category').value = p.category;
+    document.getElementById('edit-prod-price').value = p.price.toFixed(2);
+    document.getElementById('edit-prod-stock').value = p.stock;
+    document.getElementById('edit-prod-error').innerText = '';
+    document.getElementById('edit-product-modal').classList.remove('hidden');
+}
+
+function closeEditProductModal() {
+    document.getElementById('edit-product-modal').classList.add('hidden');
+}
+
+async function submitUpdateProduct() {
+    const id = document.getElementById('edit-prod-id').value;
+    const name = document.getElementById('edit-prod-name').value.trim();
+    const category = document.getElementById('edit-prod-category').value;
+    const price = parseFloat(document.getElementById('edit-prod-price').value);
+    const stock = parseInt(document.getElementById('edit-prod-stock').value) || 0;
+    const errorEl = document.getElementById('edit-prod-error');
+
+    if (!name || isNaN(price)) {
+        errorEl.innerText = "Valid product name and price are required";
+        return;
+    }
+
+    try {
+        await invokeTauri('update_product', {
+            req: { id, name, category, price, stock }
+        });
+        closeEditProductModal();
+        await loadProducts();
+        alert(`Product "${name}" updated!`);
+    } catch (e) {
+        errorEl.innerText = "Error: " + e;
+    }
+}
+
+async function quickRestockProduct(id, delta) {
+    try {
+        const updated = await invokeTauri('adjust_product_stock', { id, delta });
+        await loadProducts();
+    } catch (e) {
+        alert("Restock Error: " + e);
+    }
+}
+
+async function deleteProduct(id, name) {
+    if (!confirm(`Delete product "${name}" from store inventory?`)) return;
+    try {
+        await invokeTauri('delete_product', { id });
+        await loadProducts();
+    } catch (e) {
+        alert("Delete Product Error: " + e);
+    }
+}
+
+function clearCart() {
+    cart = [];
+    renderCart();
+}
+
+function addToCart(id, name, price) {
+    const existing = cart.find(i => i.product_id === id);
+    if (existing) {
+        existing.quantity += 1;
+    } else {
+        cart.push({ product_id: id, product_name: name, unit_price: price, quantity: 1 });
+    }
+    renderCart();
+}
+
+function renderCart() {
+    const container = document.getElementById('pos-cart-items');
+    const totalEl = document.getElementById('pos-cart-total');
+    if (!container) return;
+
+    if (cart.length === 0) {
+        container.innerHTML = '<div class="text-center text-slate-500 py-6">Cart is empty</div>';
+        if (totalEl) totalEl.innerText = '$0.00';
+        return;
+    }
+
+    let total = 0;
+    container.innerHTML = cart.map((item, idx) => {
+        const itemTotal = item.unit_price * item.quantity;
+        total += itemTotal;
+        return `
+            <div class="flex justify-between items-center bg-slate-800/40 p-2 rounded border border-slate-700">
+                <div>
+                    <div class="font-semibold text-slate-200">${item.product_name}</div>
+                    <div class="text-[10px] text-slate-400">$${item.unit_price.toFixed(2)} &times; ${item.quantity}</div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="font-bold text-slate-200">$${itemTotal.toFixed(2)}</span>
+                    <button onclick="removeFromCart(${idx})" class="text-red-400 hover:text-red-300 text-xs p-1">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    if (totalEl) totalEl.innerText = `$${total.toFixed(2)}`;
+}
+
+function removeFromCart(idx) {
+    cart.splice(idx, 1);
+    renderCart();
+}
+
+async function checkoutCart(paymentMethod) {
+    if (cart.length === 0) {
+        alert("Cart is empty");
+        return;
+    }
+
+    try {
+        const tx = await invokeTauri('checkout_pos_sale', {
+            memberId: null,
+            items: cart,
+            paymentMethod: paymentMethod
+        });
+
+        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
+        cart = [];
+        renderCart();
+        await loadProducts();
+    } catch (e) {
+        alert("Checkout Failed: " + e);
+    }
+}
+
+// --- Coaches & Sessions Management (Full CRUD) ---
+
+let cachedCoaches = [];
+
+async function loadCoaches() {
+    try {
+        const coaches = await invokeTauri('list_coaches');
+        cachedCoaches = coaches;
+        const grid = document.getElementById('coaches-grid');
+        if (!grid) return;
+
+        if (coaches.length === 0) {
+            grid.innerHTML = '<div class="col-span-3 text-center text-slate-500 py-10">No personal trainers registered</div>';
+            return;
+        }
+
+        grid.innerHTML = coaches.map(c => `
+            <div class="glass-panel p-4 border border-slate-800 card">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-200 font-bold brand text-base shadow-md">
+                            ${c.name.charAt(0)}
+                        </div>
+                        <div>
+                            <div class="text-sm font-bold text-slate-200">${c.name}</div>
+                            <div class="text-[11px] text-slate-400">${c.specialty}</div>
+                            <div class="text-[10px] text-slate-500 font-mono">${c.phone || '--'}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1">
+                        <button onclick="openEditCoachModal('${c.id}')" title="Edit Profile" class="text-slate-400 hover:text-blue-300 p-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                        </button>
+                        <button onclick="deleteCoach('${c.id}', '${c.name.replace(/'/g, "\\'")}')" title="Delete Trainer" class="text-slate-400 hover:text-red-400 p-1">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center text-xs">
+                    <span class="text-slate-400">Active Students: <b class="text-slate-200">${c.active_students}</b></span>
+                    <button onclick="openBookSessionModal('${c.id}', '${c.name.replace(/'/g, "\\'")}')" class="px-3 py-1.5 rounded-lg brand-btn text-[11px] font-bold flex items-center gap-1.5">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        <span>Book Session</span>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    } catch (e) {
+        console.error("Load coaches error:", e);
+    }
+}
+
+function openAddCoachModal() {
+    document.getElementById('add-coach-name').value = '';
+    document.getElementById('add-coach-specialty').value = '';
+    document.getElementById('add-coach-phone').value = '';
+    document.getElementById('add-coach-error').innerText = '';
+    document.getElementById('add-coach-modal').classList.remove('hidden');
+}
+
+function closeAddCoachModal() {
+    document.getElementById('add-coach-modal').classList.add('hidden');
+}
+
+async function submitCreateCoach() {
+    const name = document.getElementById('add-coach-name').value.trim();
+    const specialty = document.getElementById('add-coach-specialty').value.trim();
+    const phone = document.getElementById('add-coach-phone').value.trim();
+    const errorEl = document.getElementById('add-coach-error');
+
+    if (!name || !specialty) {
+        errorEl.innerText = "Trainer name and specialty are required";
+        return;
+    }
+
+    try {
+        await invokeTauri('create_coach', {
+            req: { name, specialty, phone }
+        });
+        closeAddCoachModal();
+        await loadCoaches();
+        alert(`Trainer "${name}" added!`);
+    } catch (e) {
+        errorEl.innerText = "Error: " + e;
+    }
+}
+
+function openEditCoachModal(id) {
+    const c = cachedCoaches.find(item => item.id === id);
+    if (!c) return;
+
+    document.getElementById('edit-coach-id').value = c.id;
+    document.getElementById('edit-coach-name').value = c.name;
+    document.getElementById('edit-coach-specialty').value = c.specialty;
+    document.getElementById('edit-coach-phone').value = c.phone || '';
+    document.getElementById('edit-coach-error').innerText = '';
+    document.getElementById('edit-coach-modal').classList.remove('hidden');
+}
+
+function closeEditCoachModal() {
+    document.getElementById('edit-coach-modal').classList.add('hidden');
+}
+
+async function submitUpdateCoach() {
+    const id = document.getElementById('edit-coach-id').value;
+    const name = document.getElementById('edit-coach-name').value.trim();
+    const specialty = document.getElementById('edit-coach-specialty').value.trim();
+    const phone = document.getElementById('edit-coach-phone').value.trim();
+    const errorEl = document.getElementById('edit-coach-error');
+
+    if (!name || !specialty) {
+        errorEl.innerText = "Trainer name and specialty are required";
+        return;
+    }
+
+    try {
+        await invokeTauri('update_coach', {
+            req: { id, name, specialty, phone }
+        });
+        closeEditCoachModal();
+        await loadCoaches();
+        alert(`Trainer "${name}" updated!`);
+    } catch (e) {
+        errorEl.innerText = "Error: " + e;
+    }
+}
+
+async function deleteCoach(id, name) {
+    if (!confirm(`Delete trainer "${name}"?`)) return;
+    try {
+        await invokeTauri('delete_coach', { id });
+        await loadCoaches();
+    } catch (e) {
+        alert("Delete Coach Error: " + e);
+    }
+}
+
+function openBookSessionModal(coachId, coachName) {
+    document.getElementById('book-coach-id').value = coachId;
+    document.getElementById('book-coach-name').value = coachName;
+    document.getElementById('book-session-error').innerText = '';
+
+    // Populate members dropdown
+    const select = document.getElementById('book-member-select');
+    select.innerHTML = cachedMembers.map(m => `
+        <option value="${m.id}">${m.first_name} ${m.last_name} (${m.membership_type.toUpperCase()})</option>
+    `).join('');
+
+    // Pre-fill next hour datetime
+    const now = new Date();
+    now.setHours(now.getHours() + 1);
+    now.setMinutes(0);
+    const isoString = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    document.getElementById('book-session-date').value = isoString;
+
+    document.getElementById('book-session-modal').classList.remove('hidden');
+}
+
+function closeBookSessionModal() {
+    document.getElementById('book-session-modal').classList.add('hidden');
+}
+
+async function submitBookSession() {
+    const coachId = document.getElementById('book-coach-id').value;
+    const coachName = document.getElementById('book-coach-name').value;
+    const memberSelect = document.getElementById('book-member-select');
+    const memberId = memberSelect.value;
+    const memberName = memberSelect.options[memberSelect.selectedIndex]?.text?.split(' (')[0] || 'Member';
+    const date = document.getElementById('book-session-date').value;
+    const duration = parseInt(document.getElementById('book-session-duration').value) || 60;
+    const errorEl = document.getElementById('book-session-error');
+
+    if (!memberId || !date) {
+        errorEl.innerText = "Please select member and session date";
+        return;
+    }
+
+    try {
+        await invokeTauri('schedule_coach_session', {
+            coachId,
+            coachName,
+            memberId,
+            memberName,
+            date,
+            duration
+        });
+
+        closeBookSessionModal();
+        await loadCoaches();
+        await loadCoachSessions();
+        alert(`Session booked for ${memberName} with Coach ${coachName}!`);
+    } catch (e) {
+        errorEl.innerText = "Booking Error: " + e;
+    }
+}
+
+async function loadCoachSessions() {
+    try {
+        const sessions = await invokeTauri('list_coach_sessions');
+        const tbody = document.getElementById('coach-sessions-tbody');
+        if (!tbody) return;
+
+        if (!sessions || sessions.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No scheduled sessions found</td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = sessions.map(s => `
+            <tr class="hover:bg-slate-800/30 transition">
+                <td class="p-3 font-mono text-blue-300">${s.id}</td>
+                <td class="p-3 font-bold text-slate-200">${s.coach_name}</td>
+                <td class="p-3 text-slate-300">${s.member_name}</td>
+                <td class="p-3 font-mono text-slate-400">${s.scheduled_at}</td>
+                <td class="p-3 font-semibold text-emerald-400">${s.duration_minutes} Mins</td>
+                <td class="p-3 text-right">
+                    <button onclick="cancelCoachSession('${s.id}')" class="px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 text-xs text-red-300 border border-red-800/50 font-medium transition">
+                        Cancel Session
+                    </button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        console.error("Load sessions error:", e);
+    }
+}
+
+async function cancelCoachSession(sessionId) {
+    if (!confirm("Are you sure you want to cancel this coaching session?")) return;
+    try {
+        await invokeTauri('cancel_coach_session', { sessionId });
+        await loadCoaches();
+        await loadCoachSessions();
+        alert("Session cancelled.");
+    } catch (e) {
+        alert("Cancel Error: " + e);
     }
 }
 
@@ -741,175 +1357,6 @@ async function triggerTailgateSecurityAlarm() {
 function dismissSiren() {
     const banner = document.getElementById('tailgate-siren-banner');
     if (banner) banner.classList.add('hidden');
-}
-
-// --- Store POS ---
-
-function getProductIcon(category) {
-    if (category === 'supplements') {
-        return `<svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>`;
-    } else if (category === 'beverages') {
-        return `<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V5.5A2.5 2.5 0 109.5 8H12zm-7 4h14M5 12a2 2 0 110-4h14a2 2 0 110 4M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"></path></svg>`;
-    } else if (category === 'gear') {
-        return `<svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>`;
-    }
-    return `<svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>`;
-}
-
-async function loadProducts() {
-    try {
-        const products = await invokeTauri('list_products');
-        const grid = document.getElementById('pos-products-grid');
-        if (!grid) return;
-
-        grid.innerHTML = products.map(p => `
-            <div class="glass-panel p-3 border border-slate-800 flex flex-col justify-between card hover:border-slate-700 transition">
-                <div>
-                    <div class="flex items-center justify-between">
-                        <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">${p.category}</span>
-                        ${getProductIcon(p.category)}
-                    </div>
-                    <div class="text-xs font-bold text-slate-200 mt-1">${p.name}</div>
-                    <div class="text-[11px] text-slate-400 mt-1">Stock: <span class="${p.stock < 5 ? 'text-red-400 font-bold' : 'text-emerald-400'}">${p.stock}</span></div>
-                </div>
-                <div class="flex items-center justify-between mt-3 pt-2 border-t border-slate-800">
-                    <span class="text-sm font-bold text-slate-100 brand">$${p.price.toFixed(2)}</span>
-                    <button onclick="addToCart('${p.id}', '${p.name.replace(/'/g, "\\'")}', ${p.price})" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-700 flex items-center gap-1">
-                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
-                        <span>Add</span>
-                    </button>
-                </div>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error("Load products error:", e);
-    }
-}
-
-function addToCart(id, name, price) {
-    const existing = cart.find(i => i.product_id === id);
-    if (existing) {
-        existing.quantity += 1;
-    } else {
-        cart.push({ product_id: id, product_name: name, unit_price: price, quantity: 1 });
-    }
-    renderCart();
-}
-
-function renderCart() {
-    const container = document.getElementById('pos-cart-items');
-    const totalEl = document.getElementById('pos-cart-total');
-    if (!container) return;
-
-    if (cart.length === 0) {
-        container.innerHTML = '<div class="text-center text-slate-500 py-6">Cart is empty</div>';
-        if (totalEl) totalEl.innerText = '$0.00';
-        return;
-    }
-
-    let total = 0;
-    container.innerHTML = cart.map((item, idx) => {
-        const itemTotal = item.unit_price * item.quantity;
-        total += itemTotal;
-        return `
-            <div class="flex justify-between items-center bg-slate-800/40 p-2 rounded border border-slate-700">
-                <div>
-                    <div class="font-semibold text-slate-200">${item.product_name}</div>
-                    <div class="text-[10px] text-slate-400">$${item.unit_price.toFixed(2)} &times; ${item.quantity}</div>
-                </div>
-                <div class="flex items-center gap-2">
-                    <span class="font-bold text-slate-200">$${itemTotal.toFixed(2)}</span>
-                    <button onclick="removeFromCart(${idx})" class="text-red-400 hover:text-red-300 text-xs p-1">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                    </button>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    if (totalEl) totalEl.innerText = `$${total.toFixed(2)}`;
-}
-
-function removeFromCart(idx) {
-    cart.splice(idx, 1);
-    renderCart();
-}
-
-async function checkoutCart(paymentMethod) {
-    if (cart.length === 0) {
-        alert("Cart is empty");
-        return;
-    }
-
-    try {
-        const tx = await invokeTauri('checkout_pos_sale', {
-            memberId: null,
-            items: cart,
-            paymentMethod: paymentMethod
-        });
-
-        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
-        cart = [];
-        renderCart();
-        await loadProducts();
-    } catch (e) {
-        alert("Checkout Failed: " + e);
-    }
-}
-
-// --- Coaches ---
-
-async function loadCoaches() {
-    try {
-        const coaches = await invokeTauri('list_coaches');
-        const grid = document.getElementById('coaches-grid');
-        if (!grid) return;
-
-        grid.innerHTML = coaches.map(c => `
-            <div class="glass-panel p-4 border border-slate-800 card">
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-200 font-bold brand text-base shadow-md">
-                        ${c.name.charAt(0)}
-                    </div>
-                    <div>
-                        <div class="text-sm font-bold text-slate-200">${c.name}</div>
-                        <div class="text-[11px] text-slate-400">${c.specialty}</div>
-                    </div>
-                </div>
-                <div class="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center text-xs">
-                    <span class="text-slate-400">Active Students: <b class="text-slate-200">${c.active_students}</b></span>
-                    <button onclick="bookCoachSession('${c.id}', '${c.name}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-white border border-slate-700 flex items-center gap-1.5">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                        <span>Book Session</span>
-                    </button>
-                </div>
-            </div>
-        `).join('');
-    } catch (e) {
-        console.error("Load coaches error:", e);
-    }
-}
-
-async function bookCoachSession(coachId, coachName) {
-    if (cachedMembers.length === 0) {
-        alert("Please enroll a member first before scheduling a coaching session");
-        return;
-    }
-    const member = cachedMembers[0];
-    try {
-        const session = await invokeTauri('schedule_coach_session', {
-            coachId,
-            coachName,
-            memberId: member.id,
-            memberName: `${member.first_name} ${member.last_name}`,
-            date: new Date().toISOString().split('T')[0],
-            duration: 60
-        });
-
-        alert(`Training session booked for ${session.member_name} with Coach ${session.coach_name}!`);
-    } catch (e) {
-        alert("Booking Error: " + e);
-    }
 }
 
 // --- Quick Hardware & License ---

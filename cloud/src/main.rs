@@ -60,6 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/licenses/verify", post(routes::verify_license))
         .route("/api/v1/gyms/register", post(routes::register_gym))
         .route("/api/v1/gyms", get(routes::list_gyms))
+        .route("/api/v1/gyms/update", post(routes::update_gym))
+        .route("/api/v1/gyms/:id", axum::routing::delete(routes::delete_gym))
         .route("/api/v1/sync/push", post(routes::sync_push))
         .route("/api/v1/sync/vectors", post(routes::sync_vectors))
         .route("/api/v1/remote/disable", post(routes::remote_disable))

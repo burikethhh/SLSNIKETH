@@ -1,6 +1,7 @@
 use gympos_shared::{
-    AppSettings, CartItem, Coach, CoachSession, CreateMemberRequest, CreateWalkInRequest, LicenseStatus, Member,
-    ProductItem, SaleTransaction, WalkInRecord,
+    AppSettings, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest, CreateProductRequest,
+    CreateWalkInRequest, LicenseStatus, Member, ProductItem, SaleTransaction, UpdateCoachRequest, UpdateMemberRequest,
+    UpdateProductRequest, WalkInRecord,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -170,6 +171,28 @@ pub fn register_member(req: CreateMemberRequest, state: State<'_, AppContext>) -
     Ok(member)
 }
 
+#[tauri::command]
+pub fn update_member(req: UpdateMemberRequest, state: State<'_, AppContext>) -> Result<Member, String> {
+    check_license_active(&state)?;
+    let member = state.db.update_member(&req).map_err(|e| e.to_string())?;
+
+    // Update in-memory biometric display name if member exists in face store
+    let full_name = format!("{} {}", member.first_name, member.last_name);
+    if !member.face_vectors.is_empty() {
+        state.face_store.upsert(member.id.clone(), full_name, member.face_vectors.clone());
+    }
+
+    Ok(member)
+}
+
+#[tauri::command]
+pub fn delete_member(id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.delete_member(&id).map_err(|e| e.to_string())?;
+    state.face_store.remove(&id);
+    Ok(())
+}
+
 // --- Walk-In / Day Pass Commands ---
 
 #[tauri::command]
@@ -317,6 +340,30 @@ pub fn list_products(state: State<'_, AppContext>) -> Result<Vec<ProductItem>, S
 }
 
 #[tauri::command]
+pub fn create_product(req: CreateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
+    check_license_active(&state)?;
+    state.db.create_product(&req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_product(req: UpdateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
+    check_license_active(&state)?;
+    state.db.update_product(&req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn adjust_product_stock(id: String, delta: i32, state: State<'_, AppContext>) -> Result<ProductItem, String> {
+    check_license_active(&state)?;
+    state.db.adjust_product_stock(&id, delta).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_product(id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.delete_product(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn checkout_pos_sale(
     member_id: Option<String>,
     items: Vec<CartItem>,
@@ -339,6 +386,24 @@ pub fn list_coaches(state: State<'_, AppContext>) -> Result<Vec<Coach>, String> 
 }
 
 #[tauri::command]
+pub fn create_coach(req: CreateCoachRequest, state: State<'_, AppContext>) -> Result<Coach, String> {
+    check_license_active(&state)?;
+    state.db.create_coach(&req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_coach(req: UpdateCoachRequest, state: State<'_, AppContext>) -> Result<Coach, String> {
+    check_license_active(&state)?;
+    state.db.update_coach(&req).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_coach(id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.delete_coach(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn schedule_coach_session(
     coach_id: String,
     coach_name: String,
@@ -354,4 +419,41 @@ pub fn schedule_coach_session(
         .db
         .schedule_session(&coach_id, &coach_name, &member_id, &member_name, &date, duration)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_coach_sessions(state: State<'_, AppContext>) -> Result<Vec<CoachSession>, String> {
+    state.db.list_coach_sessions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn cancel_coach_session(session_id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.cancel_coach_session(&session_id).map_err(|e| e.to_string())
+}
+
+// --- Walk-In Extend & Void Commands ---
+
+#[tauri::command]
+pub fn extend_walk_in(id: String, extra_hours: i64, state: State<'_, AppContext>) -> Result<WalkInRecord, String> {
+    check_license_active(&state)?;
+    let record = state.db.extend_walk_in(&id, extra_hours).map_err(|e| e.to_string())?;
+
+    // Update in-memory biometric expiry if present
+    let temp_id = format!("WALKIN-{}", record.id);
+    if let Some(mut entry) = state.face_store.get_entry(&temp_id) {
+        entry.expires_at = Some(record.expires_at);
+        state.face_store.upsert_with_expiry(entry.member_id, entry.member_name, entry.vectors, entry.expires_at);
+    }
+
+    Ok(record)
+}
+
+#[tauri::command]
+pub fn void_walk_in(id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.void_walk_in(&id).map_err(|e| e.to_string())?;
+    let temp_id = format!("WALKIN-{}", id);
+    state.face_store.remove(&temp_id);
+    Ok(())
 }

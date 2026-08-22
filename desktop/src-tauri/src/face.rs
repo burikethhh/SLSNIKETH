@@ -58,6 +58,12 @@ impl FaceVectorStore {
         );
     }
 
+    /// Get a cloned entry by member_id
+    pub fn get_entry(&self, member_id: &str) -> Option<FaceEntry> {
+        let store = self.entries.read();
+        store.get(member_id).cloned()
+    }
+
     /// Remove a member's face vectors from memory
     pub fn remove(&self, member_id: &str) {
         let mut store = self.entries.write();

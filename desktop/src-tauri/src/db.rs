@@ -1,7 +1,8 @@
 use chrono::{Duration, Utc};
 use gympos_shared::{
-    AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateMemberRequest, CreateWalkInRequest, Member,
-    ProductItem, SaleTransaction, WalkInRecord,
+    AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest,
+    CreateProductRequest, CreateWalkInRequest, Member, ProductItem, SaleTransaction, UpdateCoachRequest,
+    UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
 };
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -447,6 +448,43 @@ impl Database {
         }
     }
 
+    pub fn update_member(&self, req: &UpdateMemberRequest) -> Result<Member> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        conn.execute(
+            "UPDATE members SET 
+                first_name = ?1,
+                last_name = ?2,
+                email = ?3,
+                phone = ?4,
+                membership_type = ?5,
+                status = ?6,
+                updated_at = ?7
+             WHERE id = ?8",
+            params![
+                req.first_name,
+                req.last_name,
+                req.email,
+                req.phone,
+                req.membership_type,
+                req.status,
+                now.to_rfc3339(),
+                req.id
+            ],
+        )?;
+
+        // Fetch and return updated member
+        drop(conn);
+        self.get_member_by_id(&req.id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn delete_member(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM members WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     // --- Attendance & Gate Logs ---
 
     pub fn log_attendance(
@@ -563,6 +601,75 @@ impl Database {
         Ok(products)
     }
 
+    pub fn get_product_by_id(&self, id: &str) -> Result<Option<ProductItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, name, price, stock, category FROM products WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], |row| {
+            Ok(ProductItem {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                price: row.get(2)?,
+                stock: row.get(3)?,
+                category: row.get(4)?,
+            })
+        })?;
+
+        if let Some(p) = rows.next() {
+            Ok(Some(p?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn create_product(&self, req: &CreateProductRequest) -> Result<ProductItem> {
+        let conn = self.conn.lock().unwrap();
+        let id = format!("prod-{}", Uuid::new_v4().to_string()[..8].to_lowercase());
+        conn.execute(
+            "INSERT INTO products (id, name, price, stock, category) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, req.name, req.price, req.stock, req.category],
+        )?;
+
+        Ok(ProductItem {
+            id,
+            name: req.name.clone(),
+            price: req.price,
+            stock: req.stock,
+            category: req.category.clone(),
+        })
+    }
+
+    pub fn update_product(&self, req: &UpdateProductRequest) -> Result<ProductItem> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE products SET name = ?1, price = ?2, stock = ?3, category = ?4 WHERE id = ?5",
+            params![req.name, req.price, req.stock, req.category, req.id],
+        )?;
+
+        Ok(ProductItem {
+            id: req.id.clone(),
+            name: req.name.clone(),
+            price: req.price,
+            stock: req.stock,
+            category: req.category.clone(),
+        })
+    }
+
+    pub fn adjust_product_stock(&self, id: &str, delta: i32) -> Result<ProductItem> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE products SET stock = MAX(0, stock + ?1) WHERE id = ?2",
+            params![delta, id],
+        )?;
+        drop(conn);
+        self.get_product_by_id(id)?.ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn delete_product(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM products WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn process_sale(&self, member_id: Option<&str>, items: &[CartItem], payment_method: &str) -> Result<SaleTransaction> {
         let conn = self.conn.lock().unwrap();
         let tx_id = format!("TX-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
@@ -596,7 +703,7 @@ impl Database {
         })
     }
 
-    // --- Coaches Operations ---
+    // --- Coaches CRUD Operations ---
 
     pub fn list_coaches(&self) -> Result<Vec<Coach>> {
         let conn = self.conn.lock().unwrap();
@@ -619,6 +726,47 @@ impl Database {
         Ok(coaches)
     }
 
+    pub fn create_coach(&self, req: &CreateCoachRequest) -> Result<Coach> {
+        let conn = self.conn.lock().unwrap();
+        let id = format!("coach-{}", Uuid::new_v4().to_string()[..8].to_lowercase());
+        conn.execute(
+            "INSERT INTO coaches (id, name, specialty, phone, active_students) VALUES (?1, ?2, ?3, ?4, 0)",
+            params![id, req.name, req.specialty, req.phone],
+        )?;
+
+        Ok(Coach {
+            id,
+            name: req.name.clone(),
+            specialty: req.specialty.clone(),
+            phone: req.phone.clone(),
+            active_students: 0,
+        })
+    }
+
+    pub fn update_coach(&self, req: &UpdateCoachRequest) -> Result<Coach> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE coaches SET name = ?1, specialty = ?2, phone = ?3 WHERE id = ?4",
+            params![req.name, req.specialty, req.phone, req.id],
+        )?;
+
+        let students: i32 = conn.query_row("SELECT active_students FROM coaches WHERE id = ?1", params![req.id], |r| r.get(0)).unwrap_or(0);
+
+        Ok(Coach {
+            id: req.id.clone(),
+            name: req.name.clone(),
+            specialty: req.specialty.clone(),
+            phone: req.phone.clone(),
+            active_students: students as usize,
+        })
+    }
+
+    pub fn delete_coach(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM coaches WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
     pub fn schedule_session(&self, coach_id: &str, coach_name: &str, member_id: &str, member_name: &str, date: &str, duration: u32) -> Result<CoachSession> {
         let conn = self.conn.lock().unwrap();
         let id = format!("SES-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
@@ -629,6 +777,9 @@ impl Database {
             params![id, coach_id, coach_name, member_id, member_name, date, duration],
         )?;
 
+        // Increment coach active students
+        let _ = conn.execute("UPDATE coaches SET active_students = active_students + 1 WHERE id = ?1", params![coach_id]);
+
         Ok(CoachSession {
             id,
             coach_id: coach_id.to_string(),
@@ -638,5 +789,62 @@ impl Database {
             scheduled_at: date.to_string(),
             duration_minutes: duration,
         })
+    }
+
+    pub fn list_coach_sessions(&self) -> Result<Vec<CoachSession>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT id, coach_id, coach_name, member_id, member_name, session_date, duration_minutes FROM coach_sessions WHERE status != 'cancelled' ORDER BY session_date DESC")?;
+        let rows = stmt.query_map([], |row| {
+            let dur: i32 = row.get(6)?;
+            Ok(CoachSession {
+                id: row.get(0)?,
+                coach_id: row.get(1)?,
+                coach_name: row.get(2)?,
+                member_id: row.get(3)?,
+                member_name: row.get(4)?,
+                scheduled_at: row.get(5)?,
+                duration_minutes: dur as u32,
+            })
+        })?;
+
+        let mut sessions = Vec::new();
+        for s in rows {
+            sessions.push(s?);
+        }
+        Ok(sessions)
+    }
+
+    pub fn cancel_coach_session(&self, session_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let coach_id: Option<String> = conn.query_row("SELECT coach_id FROM coach_sessions WHERE id = ?1", params![session_id], |r| r.get(0)).ok();
+        conn.execute("UPDATE coach_sessions SET status = 'cancelled' WHERE id = ?1", params![session_id])?;
+        if let Some(cid) = coach_id {
+            let _ = conn.execute("UPDATE coaches SET active_students = MAX(0, active_students - 1) WHERE id = ?1", params![cid]);
+        }
+        Ok(())
+    }
+
+    // --- Walk-In Extend & Void ---
+
+    pub fn extend_walk_in(&self, id: &str, extra_hours: i64) -> Result<WalkInRecord> {
+        let conn = self.conn.lock().unwrap();
+        let cur_expires: String = conn.query_row("SELECT expires_at FROM walk_ins WHERE id = ?1", params![id], |r| r.get(0))?;
+        let cur_dt = chrono::DateTime::parse_from_rfc3339(&cur_expires)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let new_dt = cur_dt + Duration::hours(extra_hours);
+
+        conn.execute("UPDATE walk_ins SET expires_at = ?1 WHERE id = ?2", params![new_dt.to_rfc3339(), id])?;
+        drop(conn);
+
+        let walkins = self.list_walk_ins()?;
+        walkins.into_iter().find(|w| w.id == id).ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    pub fn void_walk_in(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now() - Duration::hours(1);
+        conn.execute("UPDATE walk_ins SET expires_at = ?1 WHERE id = ?2", params![now.to_rfc3339(), id])?;
+        Ok(())
     }
 }

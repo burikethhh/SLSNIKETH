@@ -126,6 +126,59 @@ pub struct CreateMemberRequest {
     pub face_vectors: Vec<Vec<f32>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateMemberRequest {
+    pub id: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub phone: String,
+    pub membership_type: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateProductRequest {
+    pub name: String,
+    pub price: f64,
+    pub stock: i32,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProductRequest {
+    pub id: String,
+    pub name: String,
+    pub price: f64,
+    pub stock: i32,
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateCoachRequest {
+    pub name: String,
+    pub specialty: String,
+    pub phone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCoachRequest {
+    pub id: String,
+    pub name: String,
+    pub specialty: String,
+    pub phone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateGymRequest {
+    pub id: Uuid,
+    pub name: String,
+    pub tier: LicenseTier,
+    pub max_members: u32,
+    pub hardware_lock_enabled: bool,
+    pub contact_email: String,
+}
+
 // --- Walk-In / Day Pass Models ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

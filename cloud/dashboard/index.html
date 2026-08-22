@@ -229,6 +229,50 @@
         </div>
     </div>
 
+    <!-- Edit Gym Modal -->
+    <div id="edit-gym-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50">
+        <div class="glass-panel w-full max-w-md p-6 space-y-4 border border-purple-500/40 shadow-2xl">
+            <div class="flex items-center justify-between">
+                <h3 class="text-xl font-bold text-purple-100 brand flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                    <span>Edit Gym Subscription</span>
+                </h3>
+                <button onclick="closeEditGymModal()" class="text-slate-400 hover:text-white p-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <input type="hidden" id="edit-gym-id">
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs text-purple-300 mb-1">Gym Name</label>
+                    <input type="text" id="edit-gym-name" class="input-dark">
+                </div>
+                <div>
+                    <label class="block text-xs text-purple-300 mb-1">Owner Email</label>
+                    <input type="email" id="edit-gym-email" class="input-dark">
+                </div>
+                <div>
+                    <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
+                    <select id="edit-gym-tier" class="input-dark">
+                        <option value="basic">Basic Tier — $99/mo (Max 200 Members)</option>
+                        <option value="pro">Pro Tier — $199/mo (Max 500 Members)</option>
+                        <option value="ultra">Ultra Tier — $349/mo (Max 1000 Members)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="flex gap-2 pt-2">
+                <button onclick="submitUpdateGym()" class="btn-purple flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                    <span>Save Gym Changes</span>
+                </button>
+                <button onclick="closeEditGymModal()" class="px-4 py-2.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- License Output Modal -->
     <div id="license-output-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center hidden z-50">
         <div class="glass-panel w-full max-w-lg p-6 space-y-4 border border-purple-500/40 shadow-2xl">
@@ -299,7 +343,10 @@
                 const isDisabled = disabledGymIds.has(g.id);
                 return `
                     <tr class="hover:bg-purple-950/20 transition">
-                        <td class="p-2.5 font-semibold text-purple-200">${g.name}</td>
+                        <td class="p-2.5 font-semibold text-purple-200">
+                            <div>${g.name}</div>
+                            <div class="text-[10px] text-purple-400/50 font-mono">${g.id}</div>
+                        </td>
                         <td class="p-2.5 text-slate-400 font-mono">${g.owner_email}</td>
                         <td class="p-2.5 uppercase font-bold text-amber-300 text-[10px]">${g.tier}</td>
                         <td class="p-2.5">
@@ -307,9 +354,18 @@
                                 ? '<span class="px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold">REVOKED / LOCKED</span>'
                                 : '<span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold">ACTIVE</span>'}
                         </td>
-                        <td class="p-2.5 text-right">
-                            <button onclick="toggleKillSwitch('${g.id}', ${!isDisabled})" class="px-2.5 py-1 rounded text-[11px] font-semibold transition ${isDisabled ? 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/30' : 'bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-500/30'}">
-                                ${isDisabled ? 'Re-Enable Access' : 'Revoke / Kill Switch'}
+                        <td class="p-2.5 text-right space-x-1">
+                            <button onclick="openEditGymModal('${g.id}')" title="Edit Gym Profile" class="px-2 py-1 rounded text-[11px] font-semibold bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/60 transition">
+                                Edit
+                            </button>
+                            <button onclick="renewGymLicense('${g.id}', '${g.name.replace(/'/g, "\\'")}', '${g.tier}')" title="Renew / Re-issue License Key" class="px-2 py-1 rounded text-[11px] font-semibold bg-blue-950/60 hover:bg-blue-900 text-blue-300 border border-blue-800/60 transition">
+                                Renew
+                            </button>
+                            <button onclick="toggleKillSwitch('${g.id}', ${!isDisabled})" title="Remote Kill Switch" class="px-2 py-1 rounded text-[11px] font-semibold transition ${isDisabled ? 'bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 border border-emerald-500/30' : 'bg-amber-900/60 hover:bg-amber-800 text-amber-200 border border-amber-500/30'}">
+                                ${isDisabled ? 'Re-Enable' : 'Kill Switch'}
+                            </button>
+                            <button onclick="deleteGym('${g.id}', '${g.name.replace(/'/g, "\\'")}')" title="Delete Gym" class="px-2 py-1 rounded text-[11px] font-semibold bg-red-950/60 hover:bg-red-900 text-red-300 border border-red-800/50 transition">
+                                Delete
                             </button>
                         </td>
                     </tr>
@@ -342,6 +398,101 @@
                     await fetchGyms();
                 } else {
                     alert("Registration failed: " + res.statusText);
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        function openEditGymModal(id) {
+            const g = registeredGyms.find(item => item.id === id);
+            if (!g) return;
+
+            document.getElementById('edit-gym-id').value = g.id;
+            document.getElementById('edit-gym-name').value = g.name;
+            document.getElementById('edit-gym-email').value = g.owner_email;
+            document.getElementById('edit-gym-tier').value = g.tier.toLowerCase();
+            document.getElementById('edit-gym-modal').classList.remove('hidden');
+        }
+
+        function closeEditGymModal() {
+            document.getElementById('edit-gym-modal').classList.add('hidden');
+        }
+
+        async function submitUpdateGym() {
+            const id = document.getElementById('edit-gym-id').value;
+            const name = document.getElementById('edit-gym-name').value.trim();
+            const email = document.getElementById('edit-gym-email').value.trim();
+            const tier = document.getElementById('edit-gym-tier').value;
+
+            if (!name || !email) {
+                alert("Please enter gym name and owner email");
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/v1/gyms/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id: id,
+                        name: name,
+                        contact_email: email,
+                        tier: tier,
+                        max_members: tier === 'basic' ? 200 : (tier === 'pro' ? 500 : 1000),
+                        hardware_lock_enabled: true
+                    })
+                });
+
+                if (res.ok) {
+                    closeEditGymModal();
+                    await fetchGyms();
+                    alert(`Gym "${name}" profile updated!`);
+                } else {
+                    alert("Update failed: " + res.statusText);
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function deleteGym(gymId, name) {
+            if (!confirm(`Are you sure you want to remove "${name}" from Cloud Fleet? All remote synchronizations will cease.`)) return;
+            try {
+                const res = await fetch(`/api/v1/gyms/${gymId}`, { method: 'DELETE' });
+                if (res.ok) {
+                    await fetchGyms();
+                    alert(`Gym "${name}" removed from SaaS registry.`);
+                } else {
+                    alert("Delete failed: " + res.statusText);
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function renewGymLicense(gymId, gymName, tier) {
+            const daysStr = prompt(`Issue new / renewed RSA License for "${gymName}". Enter validity period in days:`, "30");
+            if (!daysStr) return;
+            const days = parseInt(daysStr) || 30;
+
+            try {
+                const res = await fetch('/api/v1/licenses/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        gym_name: gymName,
+                        tier: tier,
+                        duration_days: days
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('output-license-key').value = data.license_key;
+                    document.getElementById('license-output-modal').classList.remove('hidden');
+                } else {
+                    alert("Renewal license generation failed: " + res.statusText);
                 }
             } catch (e) {
                 alert("Network error: " + e);
