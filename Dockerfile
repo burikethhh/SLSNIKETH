@@ -6,13 +6,14 @@ WORKDIR /usr/src/gympos
 # Install build essentials
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace dependencies
-COPY Cargo.lock ./
+# Copy only shared library and cloud backend
 COPY shared ./shared
 COPY cloud ./cloud
 
-# Create a Linux-specific workspace containing only shared domain models and cloud service
-RUN printf '[workspace]\nmembers = ["shared", "cloud"]\nresolver = "2"\n' > Cargo.toml
+# Generate a clean Linux-only Cargo.toml workspace
+RUN echo '[workspace]' > Cargo.toml && \
+    echo 'members = ["shared", "cloud"]' >> Cargo.toml && \
+    echo 'resolver = "2"' >> Cargo.toml
 
 # Build cloud release binary
 RUN cargo build --release -p gympos-cloud
