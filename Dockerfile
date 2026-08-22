@@ -3,10 +3,10 @@ FROM rust:1.80-slim as builder
 
 WORKDIR /usr/src/app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install essential C toolchain (gcc/cc linker) and SSL headers
+RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace manifests and source code
+# Copy workspace manifests and source crates
 COPY Cargo.toml Cargo.lock ./
 COPY shared ./shared
 COPY cloud ./cloud
@@ -19,9 +19,10 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y ca-certificates openssl && rm -rf /var/lib/apt/lists/*
+# Install runtime SSL dependencies
+RUN apt-get update && apt-get install -y ca-certificates openssl libssl3 && rm -rf /var/lib/apt/lists/*
 
-# Copy binary and dashboard static files
+# Copy compiled binary and CEO dashboard static assets
 COPY --from=builder /usr/src/app/target/release/gympos-cloud /app/gympos-cloud
 COPY --from=builder /usr/src/app/cloud/dashboard /app/dashboard
 
