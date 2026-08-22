@@ -1,25 +1,28 @@
 # Multi-stage Docker build for GymPOS Cloud Backend
 FROM rust:1.80-slim as builder
 
-WORKDIR /usr/src/gympos
+WORKDIR /usr/src/app
 
-# Install build essentials and SSL development headers
-RUN apt-get update && apt-get install -y build-essential pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install build dependencies
+RUN apt-get update && apt-get install -y pkg-config libssl-dev ca-certificates build-essential && rm -rf /var/lib/apt/lists/*
 
-# Copy domain shared crate and cloud service crate
+# Copy shared domain crate and cloud backend crate
 COPY shared ./shared
 COPY cloud ./cloud
 
-# Define Linux workspace manifest
-RUN echo '[workspace]' > Cargo.toml && \
-    echo 'members = [' >> Cargo.toml && \
-    echo '    "shared",' >> Cargo.toml && \
-    echo '    "cloud",' >> Cargo.toml && \
-    echo ']' >> Cargo.toml && \
-    echo 'resolver = "2"' >> Cargo.toml
+# Create valid workspace configuration for Linux container
+RUN cat << 'EOF' > Cargo.toml
+[workspace]
+members = [
+    "shared",
+    "cloud"
+]
+resolver = "2"
+EOF
 
-# Build release binary for gympos-cloud
-RUN cargo build --release --package gympos-cloud
+# Build cloud release binary
+ENV CARGO_BUILD_JOBS=1
+RUN cargo build --release --package gympos-cloud --jobs 1
 
 # Final minimal runtime image
 FROM debian:bookworm-slim
@@ -28,9 +31,9 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
-# Copy compiled binary and static CEO dashboard
-COPY --from=builder /usr/src/gympos/target/release/gympos-cloud /app/gympos-cloud
-COPY --from=builder /usr/src/gympos/cloud/dashboard /app/dashboard
+# Copy binary and dashboard
+COPY --from=builder /usr/src/app/target/release/gympos-cloud /app/gympos-cloud
+COPY --from=builder /usr/src/app/cloud/dashboard /app/dashboard
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
