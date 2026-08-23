@@ -204,11 +204,40 @@ pub struct CreateWalkInRequest {
 // --- White-Label App Settings ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CameraConfig {
+    pub camera1_entry_device_id: String,
+    pub camera2_exit_device_id: String,
+    pub camera3_tailgate_device_id: String,
+    pub roi_x: f32,
+    pub roi_y: f32,
+    pub roi_width: f32,
+    pub roi_height: f32,
+    pub roi_sensitivity: f32,
+}
+
+impl Default for CameraConfig {
+    fn default() -> Self {
+        Self {
+            camera1_entry_device_id: "".to_string(),
+            camera2_exit_device_id: "".to_string(),
+            camera3_tailgate_device_id: "".to_string(),
+            roi_x: 20.0,
+            roi_y: 20.0,
+            roi_width: 60.0,
+            roi_height: 60.0,
+            roi_sensitivity: 85.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub gym_name: String,
     pub logo_data_url: Option<String>,
     pub theme_color: String,
     pub walk_in_rate: f64,
+    #[serde(default)]
+    pub camera_config: Option<CameraConfig>,
 }
 
 impl Default for AppSettings {
@@ -218,6 +247,7 @@ impl Default for AppSettings {
             logo_data_url: None,
             theme_color: "#2563eb".to_string(),
             walk_in_rate: 10.0,
+            camera_config: Some(CameraConfig::default()),
         }
     }
 }

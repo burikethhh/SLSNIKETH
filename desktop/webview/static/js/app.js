@@ -156,37 +156,306 @@ let appSettings = {
     gym_name: "Titan Fitness & Performance",
     logo_data_url: null,
     theme_color: "#2563eb",
-    walk_in_rate: 10.0
-// --- Camera Stream Controller ---
-let liveCameraStream = null;
+    walk_in_rate: 10.0,
+    camera_config: {
+        camera1_entry_device_id: "",
+        camera2_exit_device_id: "",
+        camera3_tailgate_device_id: "",
+        roi_x: 20.0,
+        roi_y: 20.0,
+        roi_width: 60.0,
+        roi_height: 60.0,
+        roi_sensitivity: 85.0
+    }
+};
+
+// --- Multi-Camera Stream Controller ---
+let streamCam1 = null;
+let streamCam2 = null;
+let streamCam3 = null;
+
+async function getStreamForDevice(deviceId) {
+    const constraints = {
+        video: deviceId ? { deviceId: { exact: deviceId } } : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        audio: false
+    };
+    return await navigator.mediaDevices.getUserMedia(constraints);
+}
 
 async function initCameraStreams() {
-    try {
-        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
-            if (!liveCameraStream) {
-                liveCameraStream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-                    audio: false
-                });
-            }
-            const v1 = document.getElementById('entrance-video-stream');
-            const v2 = document.getElementById('kiosk-video-stream');
-            if (v1 && (!v1.srcObject || v1.srcObject !== liveCameraStream)) {
-                v1.srcObject = liveCameraStream;
-                v1.play().catch(() => {});
-            }
-            if (v2 && (!v2.srcObject || v2.srcObject !== liveCameraStream)) {
-                v2.srcObject = liveCameraStream;
-                v2.play().catch(() => {});
-            }
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
 
-            const overlay1 = document.getElementById('entrance-cam-standby');
-            const overlay2 = document.getElementById('kiosk-cam-standby');
-            if (overlay1) overlay1.classList.add('hidden');
-            if (overlay2) overlay2.classList.add('hidden');
+    const cfg = appSettings.camera_config || {
+        camera1_entry_device_id: "",
+        camera2_exit_device_id: "",
+        camera3_tailgate_device_id: "",
+        roi_x: 20.0,
+        roi_y: 20.0,
+        roi_width: 60.0,
+        roi_height: 60.0,
+        roi_sensitivity: 85.0
+    };
+
+    try {
+        // 1. Camera 1: Face Scan Entry
+        if (!streamCam1) {
+            try {
+                streamCam1 = await getStreamForDevice(cfg.camera1_entry_device_id);
+            } catch (e) {
+                console.warn("Cam 1 stream fallback to default:", e);
+                streamCam1 = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            }
+        }
+        const v1Dash = document.getElementById('dash-cam1-entry');
+        const v1Kiosk = document.getElementById('kiosk-cam1-entry');
+        if (v1Dash && streamCam1) { v1Dash.srcObject = streamCam1; v1Dash.play().catch(() => {}); }
+        if (v1Kiosk && streamCam1) { v1Kiosk.srcObject = streamCam1; v1Kiosk.play().catch(() => {}); }
+        const o1Dash = document.getElementById('dash-cam1-standby');
+        const o1Kiosk = document.getElementById('kiosk-cam1-standby');
+        if (o1Dash) o1Dash.classList.add('hidden');
+        if (o1Kiosk) o1Kiosk.classList.add('hidden');
+
+        // 2. Camera 2: Face Scan Exit
+        if (!streamCam2) {
+            try {
+                if (cfg.camera2_exit_device_id) {
+                    streamCam2 = await getStreamForDevice(cfg.camera2_exit_device_id);
+                } else {
+                    streamCam2 = streamCam1; // Share default stream if no secondary camera is assigned
+                }
+            } catch (e) {
+                streamCam2 = streamCam1;
+            }
+        }
+        const v2Dash = document.getElementById('dash-cam2-exit');
+        const v2Kiosk = document.getElementById('kiosk-cam2-exit');
+        if (v2Dash && streamCam2) { v2Dash.srcObject = streamCam2; v2Dash.play().catch(() => {}); }
+        if (v2Kiosk && streamCam2) { v2Kiosk.srcObject = streamCam2; v2Kiosk.play().catch(() => {}); }
+        const o2Dash = document.getElementById('dash-cam2-standby');
+        const o2Kiosk = document.getElementById('kiosk-cam2-standby');
+        if (o2Dash) o2Dash.classList.add('hidden');
+        if (o2Kiosk) o2Kiosk.classList.add('hidden');
+
+        // 3. Camera 3: Anti-Tailgate ROI
+        if (!streamCam3) {
+            try {
+                if (cfg.camera3_tailgate_device_id) {
+                    streamCam3 = await getStreamForDevice(cfg.camera3_tailgate_device_id);
+                } else {
+                    streamCam3 = streamCam1; // Share default stream for overhead simulation
+                }
+            } catch (e) {
+                streamCam3 = streamCam1;
+            }
+        }
+        const v3Dash = document.getElementById('dash-cam3-tailgate');
+        const v3Kiosk = document.getElementById('kiosk-cam3-tailgate');
+        const v3Roi = document.getElementById('roi-preview-video');
+        if (v3Dash && streamCam3) { v3Dash.srcObject = streamCam3; v3Dash.play().catch(() => {}); }
+        if (v3Kiosk && streamCam3) { v3Kiosk.srcObject = streamCam3; v3Kiosk.play().catch(() => {}); }
+        if (v3Roi && streamCam3) { v3Roi.srcObject = streamCam3; v3Roi.play().catch(() => {}); }
+        const o3Dash = document.getElementById('dash-cam3-standby');
+        const o3Kiosk = document.getElementById('kiosk-cam3-standby');
+        if (o3Dash) o3Dash.classList.add('hidden');
+        if (o3Kiosk) o3Kiosk.classList.add('hidden');
+
+        // Apply ROI Calibrated Zone styling across overlays
+        applyRoiConfigToOverlays(cfg);
+    } catch (err) {
+        console.warn("Camera streams standby / not granted:", err);
+    }
+}
+
+async function populateCameraDevices() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+        const sel1 = document.getElementById('cam-assign-entry');
+        const sel2 = document.getElementById('cam-assign-exit');
+        const sel3 = document.getElementById('cam-assign-tailgate');
+
+        const buildOptions = (selectedId) => {
+            let html = '<option value="">Default System Webcam</option>';
+            videoDevices.forEach((dev, idx) => {
+                const label = dev.label || `Camera ${idx + 1} (${dev.deviceId.slice(0, 8)}...)`;
+                const isSel = (dev.deviceId === selectedId) ? 'selected' : '';
+                html += `<option value="${dev.deviceId}" ${isSel}>${label}</option>`;
+            });
+            return html;
+        };
+
+        const cfg = appSettings.camera_config || {};
+        if (sel1) sel1.innerHTML = buildOptions(cfg.camera1_entry_device_id || "");
+        if (sel2) sel2.innerHTML = buildOptions(cfg.camera2_exit_device_id || "");
+        if (sel3) sel3.innerHTML = buildOptions(cfg.camera3_tailgate_device_id || "");
+    } catch (e) {
+        console.error("Error enumerating video devices:", e);
+    }
+}
+
+async function saveCameraRouting() {
+    const sel1 = document.getElementById('cam-assign-entry');
+    const sel2 = document.getElementById('cam-assign-exit');
+    const sel3 = document.getElementById('cam-assign-tailgate');
+
+    if (!appSettings.camera_config) {
+        appSettings.camera_config = {
+            camera1_entry_device_id: "",
+            camera2_exit_device_id: "",
+            camera3_tailgate_device_id: "",
+            roi_x: 20.0,
+            roi_y: 20.0,
+            roi_width: 60.0,
+            roi_height: 60.0,
+            roi_sensitivity: 85.0
+        };
+    }
+
+    if (sel1) appSettings.camera_config.camera1_entry_device_id = sel1.value;
+    if (sel2) appSettings.camera_config.camera2_exit_device_id = sel2.value;
+    if (sel3) appSettings.camera_config.camera3_tailgate_device_id = sel3.value;
+
+    try {
+        await invokeTauri('save_app_settings', { settings: appSettings });
+        // Reset streams so they rebind to newly assigned hardware device IDs
+        if (streamCam1 && streamCam1.getTracks) streamCam1.getTracks().forEach(t => t.stop());
+        if (streamCam2 && streamCam2 !== streamCam1 && streamCam2.getTracks) streamCam2.getTracks().forEach(t => t.stop());
+        if (streamCam3 && streamCam3 !== streamCam1 && streamCam3.getTracks) streamCam3.getTracks().forEach(t => t.stop());
+        streamCam1 = null; streamCam2 = null; streamCam3 = null;
+        await initCameraStreams();
+        alert("Camera Assignments Successfully Saved & Live Routed!");
+    } catch (e) {
+        alert("Failed to save camera routing: " + e);
+    }
+}
+
+// --- Turnstile ROI Zone Calibration ---
+
+function updateRoiPreview() {
+    const x = parseFloat(document.getElementById('slider-roi-x').value) || 20;
+    const y = parseFloat(document.getElementById('slider-roi-y').value) || 20;
+    const w = parseFloat(document.getElementById('slider-roi-w').value) || 60;
+    const h = parseFloat(document.getElementById('slider-roi-h').value) || 60;
+
+    document.getElementById('val-roi-x').innerText = `${x}%`;
+    document.getElementById('val-roi-y').innerText = `${y}%`;
+    document.getElementById('val-roi-w').innerText = `${w}%`;
+    document.getElementById('val-roi-h').innerText = `${h}%`;
+    document.getElementById('roi-dim-text').innerText = `${w}% x ${h}%`;
+
+    const calibBox = document.getElementById('roi-calib-box');
+    if (calibBox) {
+        calibBox.style.left = `${x}%`;
+        calibBox.style.top = `${y}%`;
+        calibBox.style.width = `${w}%`;
+        calibBox.style.height = `${h}%`;
+    }
+
+    // Also reflect on dashboard and kiosk overhead overlays
+    const dashOverlay = document.getElementById('dash-roi-overlay');
+    const kioskOverlay = document.getElementById('kiosk-roi-overlay');
+    if (dashOverlay) {
+        dashOverlay.style.left = `${x}%`;
+        dashOverlay.style.top = `${y}%`;
+        dashOverlay.style.width = `${w}%`;
+        dashOverlay.style.height = `${h}%`;
+    }
+    if (kioskOverlay) {
+        kioskOverlay.style.left = `${x}%`;
+        kioskOverlay.style.top = `${y}%`;
+        kioskOverlay.style.width = `${w}%`;
+        kioskOverlay.style.height = `${h}%`;
+    }
+}
+
+function updateRoiSensitivityText() {
+    const sens = document.getElementById('slider-roi-sens').value || 85;
+    const sensText = sens >= 90 ? "Ultra Strict" : (sens >= 75 ? "High Precision" : "Standard");
+    document.getElementById('val-roi-sens').innerText = `${sens}% (${sensText})`;
+}
+
+function applyRoiConfigToOverlays(cfg) {
+    const x = cfg.roi_x !== undefined ? cfg.roi_x : 20;
+    const y = cfg.roi_y !== undefined ? cfg.roi_y : 20;
+    const w = cfg.roi_width !== undefined ? cfg.roi_width : 60;
+    const h = cfg.roi_height !== undefined ? cfg.roi_height : 60;
+    const sens = cfg.roi_sensitivity !== undefined ? cfg.roi_sensitivity : 85;
+
+    const sx = document.getElementById('slider-roi-x');
+    const sy = document.getElementById('slider-roi-y');
+    const sw = document.getElementById('slider-roi-w');
+    const sh = document.getElementById('slider-roi-h');
+    const ss = document.getElementById('slider-roi-sens');
+
+    if (sx) sx.value = x;
+    if (sy) sy.value = y;
+    if (sw) sw.value = w;
+    if (sh) sh.value = h;
+    if (ss) ss.value = sens;
+
+    updateRoiPreview();
+    updateRoiSensitivityText();
+}
+
+async function saveRoiCalibration() {
+    if (!appSettings.camera_config) {
+        appSettings.camera_config = {
+            camera1_entry_device_id: "",
+            camera2_exit_device_id: "",
+            camera3_tailgate_device_id: "",
+            roi_x: 20.0,
+            roi_y: 20.0,
+            roi_width: 60.0,
+            roi_height: 60.0,
+            roi_sensitivity: 85.0
+        };
+    }
+
+    appSettings.camera_config.roi_x = parseFloat(document.getElementById('slider-roi-x').value) || 20.0;
+    appSettings.camera_config.roi_y = parseFloat(document.getElementById('slider-roi-y').value) || 20.0;
+    appSettings.camera_config.roi_width = parseFloat(document.getElementById('slider-roi-w').value) || 60.0;
+    appSettings.camera_config.roi_height = parseFloat(document.getElementById('slider-roi-h').value) || 60.0;
+    appSettings.camera_config.roi_sensitivity = parseFloat(document.getElementById('slider-roi-sens').value) || 85.0;
+
+    try {
+        await invokeTauri('save_app_settings', { settings: appSettings });
+        applyRoiConfigToOverlays(appSettings.camera_config);
+        alert("Turnstile ROI Zone Calibration Successfully Saved!");
+    } catch (e) {
+        alert("Failed to save ROI calibration: " + e);
+    }
+}
+
+// --- App Settings Loader ---
+
+async function loadAppSettings() {
+    try {
+        const settings = await invokeTauri('get_app_settings');
+        if (settings) {
+            appSettings = Object.assign(appSettings, settings);
+            if (settings.theme_color) applyThemeColor(settings.theme_color);
+            if (settings.gym_name) {
+                document.querySelectorAll('.brand-gym-name').forEach(el => el.innerText = settings.gym_name);
+                const nameInp = document.getElementById('setting-gym-name');
+                if (nameInp) nameInp.value = settings.gym_name;
+            }
+            if (settings.logo_data_url) {
+                document.querySelectorAll('.brand-logo').forEach(el => el.src = settings.logo_data_url);
+                const prev = document.getElementById('setting-logo-preview');
+                if (prev) prev.src = settings.logo_data_url;
+            }
+            if (settings.walk_in_rate) {
+                const rateInp = document.getElementById('setting-walkin-rate');
+                if (rateInp) rateInp.value = settings.walk_in_rate;
+            }
+            if (settings.camera_config) {
+                applyRoiConfigToOverlays(settings.camera_config);
+            }
         }
     } catch (e) {
-        console.log("Webcam standby / not attached:", e);
+        console.warn("Could not load app settings from SQLite, using defaults:", e);
     }
 }
 
@@ -202,6 +471,7 @@ async function initApp() {
     await loadCoaches();
     await loadCoachSessions();
     await refreshComPorts();
+    await populateCameraDevices();
     await initCameraStreams();
 
     // Auto refresh fast real-time polling every 2.5 seconds for real-time fleet commands & logs

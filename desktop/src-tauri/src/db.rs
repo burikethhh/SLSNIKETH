@@ -180,13 +180,18 @@ impl Database {
 
     pub fn get_app_settings(&self) -> Result<AppSettings> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT gym_name, logo_data_url, theme_color, walk_in_rate FROM app_settings WHERE id = 1")?;
+        let _ = conn.execute("ALTER TABLE app_settings ADD COLUMN camera_config_json TEXT", []);
+        let mut stmt = conn.prepare("SELECT gym_name, logo_data_url, theme_color, walk_in_rate, camera_config_json FROM app_settings WHERE id = 1")?;
         let res = stmt.query_row([], |row| {
+            let config_json: Option<String> = row.get(4).unwrap_or(None);
+            let camera_config = config_json.and_then(|s| serde_json::from_str(&s).ok());
+
             Ok(AppSettings {
                 gym_name: row.get(0)?,
                 logo_data_url: row.get(1)?,
                 theme_color: row.get(2)?,
                 walk_in_rate: row.get(3)?,
+                camera_config: camera_config.or_else(|| Some(gympos_shared::CameraConfig::default())),
             })
         });
 
@@ -198,19 +203,24 @@ impl Database {
 
     pub fn save_app_settings(&self, settings: &AppSettings) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("ALTER TABLE app_settings ADD COLUMN camera_config_json TEXT", []);
+        let camera_json = settings.camera_config.as_ref().map(|c| serde_json::to_string(c).unwrap_or_default());
+
         conn.execute(
-            "INSERT INTO app_settings (id, gym_name, logo_data_url, theme_color, walk_in_rate)
-             VALUES (1, ?1, ?2, ?3, ?4)
+            "INSERT INTO app_settings (id, gym_name, logo_data_url, theme_color, walk_in_rate, camera_config_json)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET
                 gym_name = excluded.gym_name,
                 logo_data_url = excluded.logo_data_url,
                 theme_color = excluded.theme_color,
-                walk_in_rate = excluded.walk_in_rate",
+                walk_in_rate = excluded.walk_in_rate,
+                camera_config_json = excluded.camera_config_json",
             params![
                 settings.gym_name,
                 settings.logo_data_url,
                 settings.theme_color,
-                settings.walk_in_rate
+                settings.walk_in_rate,
+                camera_json
             ],
         )?;
         Ok(())

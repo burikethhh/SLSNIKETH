@@ -295,94 +295,97 @@
                     </div>
                 </div>
 
-                <!-- Live Camera Feeds & Hardware Gate Telemetry -->
-                <div class="grid grid-cols-2 gap-4">
-                    <!-- 1. Entrance Biometrics Camera Stream -->
+                <!-- Live 3-Camera CCTV Monitoring Grid -->
+                <div class="grid grid-cols-3 gap-4">
+                    <!-- Camera 1: Face Scan Entry -->
                     <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
-                        <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center justify-between mb-2.5">
                             <div class="flex items-center gap-2">
                                 <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-                                <span class="text-sm font-semibold text-slate-200">Entrance Biometrics Stream</span>
+                                <span class="text-xs font-bold text-slate-200">Camera 1: Face Scan Entry</span>
                             </div>
-                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] bg-emerald-950/70 border border-emerald-800/60 text-emerald-300 font-medium">
-                                <span class="relative flex h-1.5 w-1.5">
-                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
-                                </span>
-                                <span>LIVE STREAM</span>
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] bg-emerald-950/80 border border-emerald-700/50 text-emerald-300 font-mono font-medium">
+                                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                                <span>LIVE ENTRY</span>
                             </span>
                         </div>
-                        <div class="h-64 rounded-xl bg-black border border-slate-800/60 relative overflow-hidden flex items-center justify-center">
-                            <!-- Real HTML5 Video Stream for Camera Device -->
-                            <video id="entrance-video-stream" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                            
-                            <!-- Camera Standby / Status Overlay -->
-                            <div id="entrance-cam-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-4 text-center">
-                                <div class="text-xs font-semibold text-slate-300">Biometric Facial Terminal Active</div>
-                                <div class="text-[11px] text-slate-500 mt-1">YuNet ONNX Engine • SFace 128-d Cosine Metric</div>
-                                <button onclick="initCameraStreams()" class="mt-3 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-xs text-emerald-400 border border-slate-800 font-medium transition">
-                                    Attach Live Camera Source
-                                </button>
+                        <div class="h-48 rounded-xl bg-black border border-slate-800/60 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="dash-cam1-entry" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            <div id="dash-cam1-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-2 text-center">
+                                <div class="text-[11px] font-semibold text-slate-300">Entry Face Terminal</div>
+                                <div class="text-[9px] text-slate-500 mt-0.5">YuNet + SFace (0.80 Metric)</div>
                             </div>
-
-                            <!-- Real-time HUD Status Overlay -->
-                            <div class="absolute bottom-2 left-3 right-3 flex items-center justify-between text-[10px] text-slate-400 bg-slate-950/70 backdrop-blur-sm px-2.5 py-1 rounded border border-slate-800/60 font-mono">
-                                <span>1080P • YuNet AI Engine</span>
-                                <span class="text-emerald-400">FPS: 30.0 (14ms)</span>
+                            <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
+                                <span>CAM-1 [IN]</span>
+                                <span class="text-emerald-400">1080P @ 30FPS</span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 2. Turnstile Gate Hardware & Tailgate Telemetry -->
+                    <!-- Camera 2: Face Scan Exit -->
                     <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
-                        <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center justify-between mb-2.5">
                             <div class="flex items-center gap-2">
-                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                <span class="text-sm font-semibold text-slate-200">Turnstile Gate & Hardware Telemetry</span>
+                                <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                <span class="text-xs font-bold text-slate-200">Camera 2: Face Scan Exit</span>
                             </div>
-                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] bg-blue-950/70 border border-blue-800/60 text-blue-300 font-medium">
-                                <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                <span>ARMED & READY</span>
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] bg-blue-950/80 border border-blue-700/50 text-blue-300 font-mono font-medium">
+                                <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping"></span>
+                                <span>LIVE EXIT</span>
                             </span>
                         </div>
-                        <div class="h-64 rounded-xl bg-slate-950/90 border border-slate-800/60 p-4 flex flex-col justify-between">
-                            <div class="grid grid-cols-2 gap-3">
-                                <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800/80">
-                                    <div class="text-[11px] text-slate-400">Magnetic Lock Relay</div>
-                                    <div id="telemetry-lock-state" class="text-sm font-bold text-emerald-400 mt-1">LOCKED (STANDBY)</div>
-                                    <div class="text-[10px] text-slate-500 mt-0.5">3000ms Auto-Relock</div>
-                                </div>
-                                <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800/80">
-                                    <div class="text-[11px] text-slate-400">Hardware Controller</div>
-                                    <div id="telemetry-hw-state" class="text-sm font-bold text-slate-200 mt-1 font-mono">ESP32 UART</div>
-                                    <div class="text-[10px] text-emerald-400 mt-0.5">115200 Baud Ready</div>
-                                </div>
-                                <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800/80">
-                                    <div class="text-[11px] text-slate-400">Passage ROI Radar</div>
-                                    <div class="text-sm font-bold text-slate-200 mt-1">Single Occupancy</div>
-                                    <div class="text-[10px] text-slate-500 mt-0.5">YOLOv8 Multi-Person Guard</div>
-                                </div>
-                                <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800/80">
-                                    <div class="text-[11px] text-slate-400">Anti-Tailgate Siren</div>
-                                    <div class="text-sm font-bold text-blue-300 mt-1">Strobe & Buzzer Armed</div>
-                                    <div class="text-[10px] text-slate-500 mt-0.5">5000ms Hardware Pulse</div>
-                                </div>
+                        <div class="h-48 rounded-xl bg-black border border-slate-800/60 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="dash-cam2-exit" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            <div id="dash-cam2-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-2 text-center">
+                                <div class="text-[11px] font-semibold text-slate-300">Exit Checkout Terminal</div>
+                                <div class="text-[9px] text-slate-500 mt-0.5">Automated Gate Checkout</div>
                             </div>
-                            <div class="flex items-center justify-between text-[10px] text-slate-500 border-t border-slate-900 pt-2 font-mono">
-                                <span>Firmware: v2.4-ESP32-RELAY</span>
-                                <span class="text-emerald-400">STATUS: INTERLOCK ACTIVE</span>
+                            <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
+                                <span>CAM-2 [OUT]</span>
+                                <span class="text-blue-400">1080P @ 30FPS</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Camera 3: Anti-Tailgate ROI Radar -->
+                    <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
+                        <div class="flex items-center justify-between mb-2.5">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span class="text-xs font-bold text-slate-200">Camera 3: Anti-Tailgate</span>
+                            </div>
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] bg-purple-950/80 border border-purple-700/50 text-purple-300 font-mono font-medium">
+                                <svg class="w-2.5 h-2.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span>ROI ARMED</span>
+                            </span>
+                        </div>
+                        <div class="h-48 rounded-xl bg-black border border-slate-800/60 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="dash-cam3-tailgate" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            
+                            <!-- Dynamic Calibrated ROI Box Overlay -->
+                            <div id="dash-roi-overlay" class="absolute border border-purple-500/80 bg-purple-500/10 pointer-events-none rounded transition-all duration-300" style="left: 20%; top: 20%; width: 60%; height: 60%;">
+                                <span class="absolute top-1 left-1 text-[8px] font-mono text-purple-300 font-bold bg-purple-950/90 px-1 rounded">ROI ZONE (1 MAX)</span>
+                            </div>
+
+                            <div id="dash-cam3-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-2 text-center pointer-events-none">
+                                <div class="text-[11px] font-semibold text-slate-300">Overhead Passage Radar</div>
+                                <div class="text-[9px] text-slate-500 mt-0.5">YOLOv8 Multi-Person Tracking</div>
+                            </div>
+                            <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
+                                <span>CAM-3 [OVERHEAD]</span>
+                                <span class="text-purple-400">ROI: ACTIVE</span>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- 2. LIVE GATE / ATTENDANCE VIEW -->
+            <!-- 2. LIVE GATE / ATTENDANCE VIEW (3-CAMERA KIOSK) -->
             <div id="view-attendance" class="hidden space-y-6">
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-2xl font-bold text-slate-100">Live Access Gate & Attendance Kiosk</h2>
-                        <p class="text-xs text-slate-400">Automated face recognition, gate triggering, and anti-tailgate detection</p>
+                        <p class="text-xs text-slate-400">Automated 3-camera verification: Entry Face Scan, Exit Face Scan, and Overhead Anti-Tailgate</p>
                     </div>
                     <div class="flex gap-2">
                         <button onclick="openWalkInModal()" class="brand-btn px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5">
@@ -412,53 +415,77 @@
                     </div>
                 </div>
 
-                <!-- Clean Kiosk Camera & Telemetry Bar -->
-                <div class="glass-panel p-5 border border-slate-800/80">
-                    <div class="flex items-center justify-between gap-6">
-                        <!-- Left: Camera Preview Box & Status -->
-                        <div class="flex items-center gap-5">
-                            <div class="w-44 h-36 rounded-xl bg-black border border-slate-800 relative overflow-hidden shrink-0 shadow-inner flex items-center justify-center">
-                                <video id="kiosk-video-stream" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                                <div id="kiosk-cam-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-2">
-                                    <div class="text-[11px] font-semibold text-slate-300">Face Recognition Terminal</div>
-                                    <span class="text-[10px] font-mono text-emerald-400 font-semibold mt-1">ONLINE & READY</span>
-                                </div>
+                <!-- 3 Live Kiosk Camera Stream Panels -->
+                <div class="grid grid-cols-3 gap-4">
+                    <!-- Kiosk Camera 1: Entry Scanner -->
+                    <div class="glass-panel p-4 border border-slate-800/80 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                <span>Camera 1: Face Scan Entry</span>
                             </div>
-                            <div class="space-y-1.5 text-left">
-                                <div class="text-base font-bold text-slate-100 brand">YuNet + SFace Biometric Turnstile Terminal</div>
-                                <div class="text-xs text-slate-400">Look directly into the camera lens. Turnstile unlocks automatically upon face match.</div>
-                                <div class="flex items-center gap-2 pt-1">
-                                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] bg-emerald-950/80 border border-emerald-700/50 text-emerald-300 font-medium">
-                                        <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                                        <span>GATE ONLINE</span>
-                                    </span>
-                                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] bg-blue-950/80 border border-blue-700/50 text-blue-300 font-medium">
-                                        <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                        <span>AUTO-PULSE: ARMED</span>
-                                    </span>
-                                </div>
+                            <span class="text-[10px] text-emerald-400 font-mono">GATE IN</span>
+                        </div>
+                        <div class="h-44 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="kiosk-cam1-entry" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            <div id="kiosk-cam1-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-2">
+                                <div class="text-xs font-semibold text-slate-300">Entry Terminal Ready</div>
+                                <span class="text-[10px] text-slate-500 mt-0.5">Biometric Facial Verification</span>
                             </div>
                         </div>
+                        <button onclick="simulateFaceScan('in')" class="brand-btn w-full py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>
+                            <span>Verify & Check-In (Entry)</span>
+                        </button>
+                    </div>
 
-                        <!-- Right: Telemetry & Radar Overview -->
-                        <div class="flex items-center gap-3">
-                            <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-left min-w-[150px]">
-                                <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
-                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                    <span>Passage Zone</span>
-                                </div>
-                                <div class="text-xs font-bold text-slate-200 mt-1">Single Occupancy</div>
-                                <div class="text-[10px] text-emerald-400 mt-0.5">Verified Clear</div>
+                    <!-- Kiosk Camera 2: Exit Scanner -->
+                    <div class="glass-panel p-4 border border-slate-800/80 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                                <span>Camera 2: Face Scan Exit</span>
                             </div>
-                            <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-left min-w-[150px]">
-                                <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
-                                    <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                                    <span>Anti-Tailgate</span>
-                                </div>
-                                <div class="text-xs font-bold text-slate-200 mt-1">Active Radar</div>
-                                <div class="text-[10px] text-blue-400 mt-0.5">0 Incidents</div>
+                            <span class="text-[10px] text-blue-400 font-mono">GATE OUT</span>
+                        </div>
+                        <div class="h-44 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="kiosk-cam2-exit" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            <div id="kiosk-cam2-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-2">
+                                <div class="text-xs font-semibold text-slate-300">Exit Terminal Ready</div>
+                                <span class="text-[10px] text-slate-500 mt-0.5">Biometric Facial Checkout</span>
                             </div>
                         </div>
+                        <button onclick="simulateFaceScan('out')" class="px-3 py-2 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 w-full font-semibold flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                            <span>Verify & Check-Out (Exit)</span>
+                        </button>
+                    </div>
+
+                    <!-- Kiosk Camera 3: Overhead Anti-Tailgate -->
+                    <div class="glass-panel p-4 border border-slate-800/80 space-y-3">
+                        <div class="flex items-center justify-between">
+                            <div class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                                <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                                <span>Camera 3: Anti-Tailgate ROI</span>
+                            </div>
+                            <span class="text-[10px] text-purple-400 font-mono">RADAR 60Hz</span>
+                        </div>
+                        <div class="h-44 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="kiosk-cam3-tailgate" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            
+                            <div id="kiosk-roi-overlay" class="absolute border border-purple-500/80 bg-purple-500/10 pointer-events-none rounded transition-all duration-300" style="left: 20%; top: 20%; width: 60%; height: 60%;">
+                                <span class="absolute top-1 left-1 text-[8px] font-mono text-purple-300 font-bold bg-purple-950/90 px-1 rounded">ROI ZONE (1 MAX)</span>
+                            </div>
+
+                            <div id="kiosk-cam3-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-2 pointer-events-none">
+                                <div class="text-xs font-semibold text-slate-300">Turnstile Barrier Radar</div>
+                                <span class="text-[10px] text-purple-400 font-semibold mt-0.5">YOLOv8 Single Occupancy</span>
+                            </div>
+                        </div>
+                        <button onclick="triggerTailgateSecurityAlarm()" class="px-3 py-2 rounded-lg text-xs bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800/60 w-full font-semibold flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                            <span>Trigger Tailgate Alarm</span>
+                        </button>
                     </div>
                 </div>
 
@@ -746,27 +773,165 @@
                 </div>
             </div>
 
-            <!-- 8. HARDWARE VIEW -->
+            <!-- 8. HARDWARE & MULTI-CAMERA SETTINGS VIEW -->
             <div id="view-hardware" class="hidden space-y-6">
-                <h2 class="text-2xl font-bold text-slate-100">ESP32 & Hardware Configuration</h2>
-                <div class="glass-panel p-5 max-w-xl space-y-4">
-                    <div>
-                        <label class="block text-xs font-medium text-slate-300 mb-1.5">Select Serial COM Port</label>
-                        <div class="flex gap-2">
-                            <select id="com-port-select" class="input-dark">
-                                <option value="">-- No Ports Detected --</option>
-                            </select>
-                            <button onclick="refreshComPorts()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 flex items-center gap-1.5">
-                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                <span>Refresh</span>
+                <div>
+                    <h2 class="text-2xl font-bold text-slate-100">Hardware, 3-Camera Routing & Turnstile ROI Settings</h2>
+                    <p class="text-xs text-slate-400">Configure ESP32 serial relay controller, assign 3 dedicated camera devices, and calibrate Turnstile ROI detection zone</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-6">
+                    <!-- Column 1: ESP32 Hardware & Multi-Camera Device Assignment -->
+                    <div class="space-y-6">
+                        <!-- ESP32 Serial Port Relay -->
+                        <div class="glass-panel p-5 space-y-4 border border-slate-800">
+                            <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <span>ESP32 Relay & Turnstile Interlock</span>
+                            </h3>
+                            <div>
+                                <label class="block text-xs font-medium text-slate-300 mb-1.5">Select Serial COM Port</label>
+                                <div class="flex gap-2">
+                                    <select id="com-port-select" class="input-dark">
+                                        <option value="">-- No Ports Detected --</option>
+                                    </select>
+                                    <button onclick="refreshComPorts()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 border border-slate-700 flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                        <span>Refresh</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <button onclick="connectSelectedPort()" class="brand-btn w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                <span>Connect to ESP32 (115200 Baud)</span>
+                            </button>
+                            <div id="hw-connect-msg" class="text-xs text-slate-400"></div>
+                        </div>
+
+                        <!-- 3-Camera Routing & Device Mapping Panel -->
+                        <div class="glass-panel p-5 space-y-4 border border-slate-800">
+                            <div class="flex items-center justify-between">
+                                <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
+                                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                    <span>3-Camera Device Assignment</span>
+                                </h3>
+                                <button onclick="populateCameraDevices()" class="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1 font-semibold">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                    <span>Scan Cameras</span>
+                                </button>
+                            </div>
+                            
+                            <div class="space-y-3 text-xs">
+                                <div>
+                                    <label class="block text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
+                                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                                        <span>Camera 1: Face Scan Entry Device</span>
+                                    </label>
+                                    <select id="cam-assign-entry" class="input-dark">
+                                        <option value="">Default System Webcam</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
+                                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                                        <span>Camera 2: Face Scan Exit Device</span>
+                                    </label>
+                                    <select id="cam-assign-exit" class="input-dark">
+                                        <option value="">Default System Webcam</option>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-slate-300 font-semibold mb-1 flex items-center gap-1.5">
+                                        <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                                        <span>Camera 3: Anti-Tailgate Overhead Device</span>
+                                    </label>
+                                    <select id="cam-assign-tailgate" class="input-dark">
+                                        <option value="">Default System Webcam</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <button onclick="saveCameraRouting()" class="brand-btn w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                <span>Save & Bind 3-Camera Routing</span>
                             </button>
                         </div>
                     </div>
-                    <button onclick="connectSelectedPort()" class="brand-btn w-full py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                        <span>Connect to ESP32</span>
-                    </button>
-                    <div id="hw-connect-msg" class="text-xs text-slate-400"></div>
+
+                    <!-- Column 2: Turnstile ROI Zone Calibration -->
+                    <div class="glass-panel p-5 space-y-4 border border-slate-800">
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
+                                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span>Turnstile Anti-Tailgate ROI Zone Calibration</span>
+                            </h3>
+                            <span class="text-[10px] text-purple-300 font-mono bg-purple-950/80 px-2 py-0.5 rounded border border-purple-800/60 font-semibold">OVERHEAD CAM-3</span>
+                        </div>
+
+                        <!-- Live Visual ROI Boundary Preview -->
+                        <div class="h-48 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
+                            <video id="roi-preview-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
+                            
+                            <!-- Calibrated Dynamic Box with resize handles -->
+                            <div id="roi-calib-box" class="absolute border-2 border-dashed border-purple-400 bg-purple-500/20 rounded pointer-events-none transition-all duration-150" style="left: 20%; top: 20%; width: 60%; height: 60%;">
+                                <div class="absolute top-1 left-1 bg-purple-950/90 text-purple-200 text-[9px] font-mono font-bold px-1 rounded border border-purple-700">
+                                    CALIBRATED PASSAGE ROI (<span id="roi-dim-text">60% x 60%</span>)
+                                </div>
+                            </div>
+                            <div class="absolute bottom-1.5 right-2 text-[9px] font-mono text-purple-300 bg-slate-950/80 px-1.5 py-0.5 rounded">
+                                YOLOv8 Multi-Person Tracking Active
+                            </div>
+                        </div>
+
+                        <!-- Interactive ROI Sliders & Sensitivities -->
+                        <div class="space-y-3 text-xs pt-1">
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                        <span>ROI X Position:</span>
+                                        <span id="val-roi-x" class="font-mono text-purple-400">20%</span>
+                                    </div>
+                                    <input type="range" id="slider-roi-x" min="0" max="80" value="20" class="w-full accent-purple-500" oninput="updateRoiPreview()">
+                                </div>
+                                <div>
+                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                        <span>ROI Y Position:</span>
+                                        <span id="val-roi-y" class="font-mono text-purple-400">20%</span>
+                                    </div>
+                                    <input type="range" id="slider-roi-y" min="0" max="80" value="20" class="w-full accent-purple-500" oninput="updateRoiPreview()">
+                                </div>
+                                <div>
+                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                        <span>ROI Width:</span>
+                                        <span id="val-roi-w" class="font-mono text-purple-400">60%</span>
+                                    </div>
+                                    <input type="range" id="slider-roi-w" min="20" max="100" value="60" class="w-full accent-purple-500" oninput="updateRoiPreview()">
+                                </div>
+                                <div>
+                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                        <span>ROI Height:</span>
+                                        <span id="val-roi-h" class="font-mono text-purple-400">60%</span>
+                                    </div>
+                                    <input type="range" id="slider-roi-h" min="20" max="100" value="60" class="w-full accent-purple-500" oninput="updateRoiPreview()">
+                                </div>
+                            </div>
+
+                            <div>
+                                <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                    <span>Optical Tailgate Sensitivity:</span>
+                                    <span id="val-roi-sens" class="font-mono text-purple-400">85% (High Precision)</span>
+                                </div>
+                                <input type="range" id="slider-roi-sens" min="50" max="99" value="85" class="w-full accent-purple-500" oninput="updateRoiSensitivityText()">
+                            </div>
+                        </div>
+
+                        <button onclick="saveRoiCalibration()" class="brand-btn w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <span>Save & Apply Turnstile ROI Calibration</span>
+                        </button>
+                    </div>
                 </div>
             </div>
         </main>
