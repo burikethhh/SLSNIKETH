@@ -109,18 +109,30 @@
         </button>
     </div>
 
+    <!-- Floating High-Tech Toast Notification HUD -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2.5 pointer-events-none max-w-sm w-full"></div>
+
     <!-- Top Navigation Bar (White-Label Customizable) -->
     <header class="glass-panel mx-4 mt-3 px-4 py-2.5 flex items-center justify-between z-10 shrink-0">
         <div class="flex items-center gap-3">
-            <img id="app-header-logo" src="static/logo.jpg" alt="Logo" class="w-9 h-9 rounded-lg shadow-lg border border-slate-700 object-cover">
+            <img id="app-header-logo" src="static/logo.jpg" alt="Logo" class="w-9 h-9 rounded-lg shadow-lg border border-slate-700 object-cover brand-logo">
             <div>
-                <div id="app-gym-name" class="brand text-lg font-bold tracking-wide text-white">Titan Fitness & Performance</div>
+                <div id="app-gym-name" class="brand brand-gym-name text-lg font-bold tracking-wide text-white">Titan Fitness & Performance</div>
                 <div id="app-sub-heading" class="text-[10px] text-slate-400 uppercase tracking-widest">SaaS Access Control & POS</div>
             </div>
         </div>
 
         <!-- System Status, Walk-In Pass & Quick Actions -->
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2.5">
+            <!-- Autonomous Gate AI Status Toggle -->
+            <div id="auto-gate-mode-badge" onclick="toggleAutoGateMode()" class="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 transition hover:bg-emerald-900/80 shadow-sm" title="Click to toggle Auto Biometrics & Anti-Tailgate">
+                <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span id="auto-gate-mode-text" class="font-mono">AUTO-AI: ACTIVE</span>
+            </div>
+
             <!-- Hardware Lock Status -->
             <div id="hw-status-badge" class="flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-800/80 border border-slate-700 text-slate-300">
                 <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
