@@ -91,7 +91,7 @@ pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContex
     // Log security audit trail so gym owner can track staff unlocking door without member payment
     let _ = state.db.log_attendance(
         None,
-        Some("⚠️ STAFF MANUAL OVERRIDE (Unauthenticated Pulse)"),
+        Some("STAFF MANUAL OVERRIDE (Unauthenticated Pulse)"),
         "override",
         Some(0.0),
         false,

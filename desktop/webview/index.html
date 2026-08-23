@@ -295,59 +295,95 @@
                     </div>
                 </div>
 
-                <!-- Live Camera Feeds & Tailgate Status (Enlarged High-Tech Stream) -->
+                <!-- Live Camera Feeds & Tailgate Status (Clean Minimalist Stream) -->
                 <div class="grid grid-cols-2 gap-4">
-                    <div class="glass-panel p-4 border border-slate-800">
+                    <!-- 1. Entrance Biometrics Stream -->
+                    <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
                         <div class="flex items-center justify-between mb-3">
                             <div class="flex items-center gap-2">
                                 <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                                 <span class="text-sm font-semibold text-slate-200">Entrance Biometrics (YuNet + SFace Stream)</span>
                             </div>
-                            <span class="px-2.5 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-bold tracking-wider animate-pulse">● LIVE 1080P</span>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] bg-emerald-950/70 border border-emerald-800/60 text-emerald-300 font-medium">
+                                <span class="relative flex h-1.5 w-1.5">
+                                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span class="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                                </span>
+                                <span>LIVE 1080P</span>
+                            </span>
                         </div>
-                        <div class="h-72 rounded-xl bg-slate-950/80 border border-slate-700/80 flex flex-col items-center justify-center text-slate-400 text-xs relative overflow-hidden shadow-inner">
-                            <!-- High-Tech Biometric HUD Scanner Overlay -->
-                            <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-                            <div class="absolute inset-4 border border-emerald-500/20 rounded-lg pointer-events-none"></div>
-                            <!-- Reticle Corners -->
-                            <div class="w-40 h-48 border-2 border-emerald-500/40 rounded-2xl flex flex-col items-center justify-center relative bg-emerald-950/10 backdrop-blur-[1px]">
-                                <div class="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400"></div>
-                                <div class="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400"></div>
-                                <div class="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400"></div>
-                                <div class="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400"></div>
-                                
-                                <svg class="w-12 h-12 text-emerald-400/60 mb-2 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                <span class="text-[11px] font-mono text-emerald-300 font-bold">YuNet Face Tracking</span>
-                                <span class="text-[9px] text-emerald-400/70 font-mono mt-0.5">SFace 128-d Cosine (0.80)</span>
+                        <div class="h-64 rounded-xl bg-slate-950/90 border border-slate-800/60 flex flex-col items-center justify-between p-4 text-slate-400 text-xs relative overflow-hidden">
+                            <!-- Subtle CCTV scan backdrop -->
+                            <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.04)_0%,transparent_70%)] pointer-events-none"></div>
+                            
+                            <!-- Scanner Top Header Telemetry -->
+                            <div class="w-full flex items-center justify-between text-[11px] text-slate-500 z-10">
+                                <span class="flex items-center gap-1 font-mono">
+                                    <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                    <span>CAM-01 [ENTRANCE]</span>
+                                </span>
+                                <span class="text-emerald-400/90 font-mono text-[10px]">1080P @ 30FPS</span>
                             </div>
-                            <div class="absolute bottom-3 left-4 right-4 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                                <span>FPS: 30.0 | Latency: 14ms</span>
-                                <span class="text-emerald-400">STATUS: SCANNING ACTIVE</span>
+
+                            <!-- Center Biometric Reticle -->
+                            <div class="flex flex-col items-center justify-center text-center z-10 my-auto">
+                                <div class="w-20 h-20 rounded-full bg-emerald-950/30 border border-emerald-500/20 flex items-center justify-center mb-2.5 relative">
+                                    <div class="absolute inset-0 rounded-full border border-emerald-400/30 animate-ping opacity-25"></div>
+                                    <svg class="w-9 h-9 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                </div>
+                                <div class="text-xs font-semibold text-slate-200">YuNet Facial Tracking Active</div>
+                                <div class="text-[10px] text-slate-500 mt-0.5">SFace 128-d Cosine Metric (Threshold: 0.80)</div>
+                            </div>
+
+                            <!-- Bottom Status Bar -->
+                            <div class="w-full flex items-center justify-between text-[10px] text-slate-500 border-t border-slate-900 pt-2 z-10 font-mono">
+                                <span>Latency: 14ms</span>
+                                <span class="text-emerald-400 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                    <span>READY FOR SCAN</span>
+                                </span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="glass-panel p-4 border border-slate-800">
+                    <!-- 2. Turnstile Radar & Tailgate Protection -->
+                    <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
                         <div class="flex items-center justify-between mb-3">
                             <div class="flex items-center gap-2">
                                 <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
                                 <span class="text-sm font-semibold text-slate-200">Turnstile ROI & Tailgate Radar (YOLOv8)</span>
                             </div>
-                            <span class="px-2.5 py-0.5 rounded text-[10px] bg-blue-950 text-blue-300 border border-blue-800 font-bold tracking-wider">ARMED & ACTIVE</span>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] bg-blue-950/70 border border-blue-800/60 text-blue-300 font-medium">
+                                <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                <span>ARMED & ACTIVE</span>
+                            </span>
                         </div>
-                        <div class="h-72 rounded-xl bg-slate-950/80 border border-slate-700/80 flex flex-col items-center justify-center text-slate-400 text-xs relative overflow-hidden shadow-inner">
-                            <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.06)_0%,transparent_70%)] pointer-events-none"></div>
-                            <!-- Simulated ROI box -->
-                            <div class="w-4/5 h-4/5 border-2 border-dashed border-blue-500/50 rounded-xl flex flex-col items-center justify-center text-xs text-blue-400 bg-blue-950/15 relative">
-                                <div class="w-16 h-16 rounded-full border border-blue-500/30 flex items-center justify-center mb-2">
-                                    <div class="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center animate-ping"></div>
-                                </div>
-                                <span class="font-bold text-slate-200">Turnstile Passage Zone</span>
-                                <span class="text-[10px] text-blue-300 mt-1 font-mono">Max Occupancy: 1 Person / Pulse</span>
+                        <div class="h-64 rounded-xl bg-slate-950/90 border border-slate-800/60 flex flex-col items-center justify-between p-4 text-slate-400 text-xs relative overflow-hidden">
+                            <div class="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(59,130,246,0.04)_0%,transparent_70%)] pointer-events-none"></div>
+
+                            <div class="w-full flex items-center justify-between text-[11px] text-slate-500 z-10">
+                                <span class="flex items-center gap-1 font-mono">
+                                    <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                    <span>ZONE-01 [TURNSTILE A]</span>
+                                </span>
+                                <span class="text-blue-400/90 font-mono text-[10px]">RADAR 60Hz</span>
                             </div>
-                            <div class="absolute bottom-3 left-4 right-4 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                                <span>Multi-Person Alarm: READY</span>
-                                <span class="text-blue-400">HARDWARE INTERLOCK: OK</span>
+
+                            <div class="flex flex-col items-center justify-center text-center z-10 my-auto">
+                                <div class="w-20 h-20 rounded-full bg-blue-950/30 border border-blue-500/20 flex items-center justify-center mb-2.5 relative">
+                                    <div class="absolute inset-0 rounded-full border border-blue-400/30 animate-ping opacity-25"></div>
+                                    <svg class="w-9 h-9 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                </div>
+                                <div class="text-xs font-semibold text-slate-200">Single Occupancy Protected</div>
+                                <div class="text-[10px] text-slate-500 mt-0.5">Max 1 Person Allowed / Turnstile Pulse</div>
+                            </div>
+
+                            <div class="w-full flex items-center justify-between text-[10px] text-slate-500 border-t border-slate-900 pt-2 z-10 font-mono">
+                                <span>Hardware Interlock: Enabled</span>
+                                <span class="text-blue-400 flex items-center gap-1">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                                    <span>SECURITY ARMED</span>
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -389,43 +425,50 @@
                     </div>
                 </div>
 
-                <!-- Live Gate Kiosk Camera HUD (Prominent Wide Viewport) -->
-                <div class="glass-panel p-4 border border-slate-800">
-                    <div class="h-64 rounded-xl bg-slate-950/90 border border-slate-700/80 flex items-center justify-between px-8 text-slate-400 relative overflow-hidden shadow-2xl">
-                        <div class="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(16,185,129,0.08)_0%,transparent_70%)] pointer-events-none"></div>
-                        
-                        <!-- Left Camera Feed Overlay -->
-                        <div class="flex items-center gap-6 z-10">
-                            <div class="w-36 h-48 border-2 border-emerald-500/50 rounded-2xl flex flex-col items-center justify-center relative bg-emerald-950/20">
-                                <div class="absolute -top-1 -left-1 w-4 h-4 border-t-2 border-l-2 border-emerald-400"></div>
-                                <div class="absolute -top-1 -right-1 w-4 h-4 border-t-2 border-r-2 border-emerald-400"></div>
-                                <div class="absolute -bottom-1 -left-1 w-4 h-4 border-b-2 border-l-2 border-emerald-400"></div>
-                                <div class="absolute -bottom-1 -right-1 w-4 h-4 border-b-2 border-r-2 border-emerald-400"></div>
-                                <svg class="w-10 h-10 text-emerald-400 animate-pulse mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                <span class="text-[10px] font-mono text-emerald-300 font-bold">READY TO SCAN</span>
+                <!-- Clean Kiosk Camera & Telemetry Bar -->
+                <div class="glass-panel p-5 border border-slate-800/80">
+                    <div class="flex items-center justify-between gap-6">
+                        <!-- Left: Camera Preview Box & Status -->
+                        <div class="flex items-center gap-5">
+                            <div class="w-32 h-36 rounded-xl bg-slate-950/90 border border-slate-800 flex flex-col items-center justify-center text-slate-400 relative overflow-hidden shrink-0 shadow-inner">
+                                <div class="w-14 h-14 rounded-full bg-emerald-950/40 border border-emerald-500/20 flex items-center justify-center mb-2">
+                                    <svg class="w-7 h-7 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                </div>
+                                <span class="text-[10px] font-mono text-emerald-400 font-semibold">READY TO SCAN</span>
                             </div>
-                            <div class="space-y-1 text-left">
+                            <div class="space-y-1.5 text-left">
                                 <div class="text-base font-bold text-slate-100 brand">YuNet + SFace Biometric Turnstile Terminal</div>
-                                <div class="text-xs text-slate-400">Look directly into camera lens. Turnstile unlocks automatically upon match.</div>
-                                <div class="flex items-center gap-2 pt-2">
-                                    <span class="px-2.5 py-1 rounded-full text-[10px] bg-emerald-950 border border-emerald-500/40 text-emerald-300 font-mono font-bold">● GATE ONLINE</span>
-                                    <span class="px-2.5 py-1 rounded-full text-[10px] bg-blue-950 border border-blue-500/40 text-blue-300 font-mono font-bold">⚡ AUTO-PULSE: ARMED</span>
+                                <div class="text-xs text-slate-400">Look directly into the camera lens. Turnstile unlocks automatically upon face match.</div>
+                                <div class="flex items-center gap-2 pt-1">
+                                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] bg-emerald-950/80 border border-emerald-700/50 text-emerald-300 font-medium">
+                                        <svg class="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                        <span>GATE ONLINE</span>
+                                    </span>
+                                    <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] bg-blue-950/80 border border-blue-700/50 text-blue-300 font-medium">
+                                        <svg class="w-3 h-3 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                                        <span>AUTO-PULSE: ARMED</span>
+                                    </span>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Right Turnstile Radar Overlay -->
-                        <div class="w-56 h-48 border border-slate-700 rounded-xl bg-slate-900/60 p-3 flex flex-col justify-between z-10 font-mono text-[11px]">
-                            <div class="flex items-center justify-between text-slate-300 border-b border-slate-800 pb-1">
-                                <span>TURNSHIELD RADAR</span>
-                                <span class="text-emerald-400 font-bold">ARMED</span>
+                        <!-- Right: Telemetry & Radar Overview -->
+                        <div class="flex items-center gap-3">
+                            <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-left min-w-[150px]">
+                                <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+                                    <span>Passage Zone</span>
+                                </div>
+                                <div class="text-xs font-bold text-slate-200 mt-1">Single Occupancy</div>
+                                <div class="text-[10px] text-emerald-400 mt-0.5">Verified Clear</div>
                             </div>
-                            <div class="text-center py-2 text-xs text-slate-400">
-                                Single-person barrier zone verified
-                            </div>
-                            <div class="bg-slate-950 p-2 rounded border border-slate-800 text-[10px] text-slate-400 flex justify-between">
-                                <span>Anti-Tailgate:</span>
-                                <span class="text-emerald-400 font-bold">ACTIVE (0 VIOLATIONS)</span>
+                            <div class="p-3.5 rounded-xl bg-slate-900/60 border border-slate-800/80 text-left min-w-[150px]">
+                                <div class="text-[11px] text-slate-400 flex items-center gap-1.5">
+                                    <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                                    <span>Anti-Tailgate</span>
+                                </div>
+                                <div class="text-xs font-bold text-slate-200 mt-1">Active Radar</div>
+                                <div class="text-[10px] text-blue-400 mt-0.5">0 Incidents</div>
                             </div>
                         </div>
                     </div>

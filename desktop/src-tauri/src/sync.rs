@@ -50,7 +50,7 @@ impl CloudSyncWorker {
                             if resp.status().is_success() {
                                 if let Ok(body) = resp.json::<SyncResponse>().await {
                                     if body.remote_disabled {
-                                        warn!("🛑 REMOTE KILL SWITCH: CEO Command Center disabled gym {}. Revoking local license.", claims.gym_name);
+                                        warn!("REMOTE KILL SWITCH ACTIVATED: CEO Command Center disabled gym {}. Revoking local license.", claims.gym_name);
                                         self.license.revoke();
                                         let _ = self.db.clear_cached_license();
                                     }
