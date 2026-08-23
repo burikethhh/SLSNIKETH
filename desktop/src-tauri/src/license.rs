@@ -8,7 +8,13 @@ use rsa::signature::Verifier;
 use sha2::Sha256;
 
 pub const EMBEDDED_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyYyv2f1WJ0V1v7Z8p3Gz
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr3tMulsXeUjbCLhDfgcn
+3oMMqFhV1dl/qiNHRiq4Ci0Rz42bORrv8GTXtVme4FPIhnRlgKPqVunjUM9tqHXA
+WVZxOi5EJ9cHelFxYdwy7EVRva4QJJMfmRxud4ck+SAo/sPkuy6i9BueORdOypkB
+Zy5X94Ok1EmnZvnnuq8FuEIgwCr0lAgrWJYi/rqwtxHKLSLVl5cTalte5m2xASHL
+F1B9Pos4b5Ce1VLS/n6bq69bhB2KXht9oq0Jd/XNEOx8AeYzcGyRlmtldPXRE4dI
+yh0EFfogPk4NElGtiF4US/eJ12ku/sqs752S8cT2f/nh/WLaCEJZuR/S3+hL5jJQ
+0QIDAQAB
 -----END PUBLIC KEY-----"#;
 
 pub struct LicenseManager {

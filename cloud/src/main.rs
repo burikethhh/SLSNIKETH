@@ -1,4 +1,5 @@
 mod crypto;
+mod db;
 mod models;
 mod routes;
 
@@ -7,9 +8,10 @@ use axum::{
     Router,
 };
 use crypto::LicenseSigner;
+use db::CloudDatabase;
 use parking_lot::RwLock;
 use routes::AppState;
-use std::{collections::{HashMap, HashSet}, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
@@ -28,15 +30,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             LicenseSigner::from_pem(&pem)?
         }
         Err(_) => {
-            tracing::warn!("No RSA_PRIVATE_KEY_PEM provided. Generating ephemeral RSA-2048 keypair...");
-            LicenseSigner::generate_ephemeral()?
+            tracing::info!("Using embedded production RSA-2048 signing key");
+            LicenseSigner::default_production()?
         }
     };
 
+    let cloud_db = Arc::new(CloudDatabase::new("gympos_cloud.sqlite")?);
+    let loaded_gyms = cloud_db.load_all_gyms().unwrap_or_default();
+    let loaded_disabled = cloud_db.load_disabled_gyms().unwrap_or_default();
+    tracing::info!("Loaded {} gyms and {} revoked flags from SQLite", loaded_gyms.len(), loaded_disabled.len());
+
     let state = Arc::new(AppState {
         signer,
-        gyms: Arc::new(RwLock::new(HashMap::new())),
-        disabled_gyms: Arc::new(RwLock::new(HashSet::new())),
+        db: cloud_db,
+        gyms: Arc::new(RwLock::new(loaded_gyms)),
+        disabled_gyms: Arc::new(RwLock::new(loaded_disabled)),
     });
 
     let cors = CorsLayer::new()

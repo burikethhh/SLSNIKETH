@@ -34,6 +34,14 @@ pub fn run() {
         }
     }
 
+    // Pre-populate in-memory FaceVectorStore with active unexpired walk-in passes
+    if let Ok(walk_ins) = db.list_active_walk_in_vectors() {
+        for (id, guest_name, vector, expires_at) in walk_ins {
+            let label = format!("Walk-In: {}", guest_name);
+            face_store.upsert_with_expiry(id, label, vec![vector], Some(expires_at));
+        }
+    }
+
     let db_arc = Arc::new(db);
     let license_arc = Arc::new(license);
 

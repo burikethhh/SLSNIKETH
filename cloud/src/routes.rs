@@ -13,11 +13,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::crypto::{verify_license_token, LicenseSigner};
+use crate::db::CloudDatabase;
 use crate::models::{GenerateLicenseRequest, GymRecord, LicenseResponse, RegisterGymRequest, RemoteDisableRequest};
 
 #[derive(Clone)]
 pub struct AppState {
     pub signer: LicenseSigner,
+    pub db: Arc<CloudDatabase>,
     pub gyms: Arc<RwLock<HashMap<Uuid, GymRecord>>>,
     pub disabled_gyms: Arc<RwLock<HashSet<Uuid>>>,
 }
@@ -64,6 +66,7 @@ pub async fn register_gym(
         created_at: now,
     };
 
+    let _ = state.db.upsert_gym(&gym_record);
     state.gyms.write().insert(gym_id, gym_record);
 
     let claims = LicenseClaims {
@@ -114,6 +117,7 @@ pub async fn update_gym(
         gym.name = payload.name.clone();
         gym.owner_email = payload.contact_email.clone();
         gym.tier = payload.tier;
+        let _ = state.db.update_gym(&payload);
         Ok((StatusCode::OK, Json(json!(gym))))
     } else {
         Err((
@@ -131,6 +135,7 @@ pub async fn delete_gym(
     let mut disabled = state.disabled_gyms.write();
     if gyms.remove(&gym_id).is_some() {
         disabled.remove(&gym_id);
+        let _ = state.db.delete_gym(&gym_id);
         Ok((StatusCode::OK, Json(json!({ "status": "deleted", "gym_id": gym_id }))))
     } else {
         Err((
@@ -268,6 +273,7 @@ pub async fn remote_disable(
     } else {
         disabled.remove(&payload.gym_id);
     }
+    let _ = state.db.set_disabled(&payload.gym_id, payload.disable);
 
     (
         StatusCode::OK,

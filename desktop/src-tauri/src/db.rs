@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use gympos_shared::{
     AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest,
     CreateProductRequest, CreateWalkInRequest, Member, ProductItem, SaleTransaction, UpdateCoachRequest,
@@ -327,6 +327,41 @@ impl Database {
         let mut list = Vec::new();
         for r in rows {
             list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn list_active_walk_in_vectors(&self) -> Result<Vec<(String, String, Vec<f32>, DateTime<Utc>)>> {
+        let conn = self.conn.lock().unwrap();
+        let now_str = Utc::now().to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT id, guest_name, face_vector, expires_at 
+             FROM walk_ins WHERE expires_at > ?1 AND face_vector IS NOT NULL",
+        )?;
+
+        let rows = stmt.query_map(params![now_str], |row| {
+            let id: String = row.get(0)?;
+            let guest_name: String = row.get(1)?;
+            let vec_str: Option<String> = row.get(2)?;
+            let exp_str: String = row.get(3)?;
+
+            let expires_at = chrono::DateTime::parse_from_rfc3339(&exp_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let vector: Vec<f32> = vec_str
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
+            Ok((id, guest_name, vector, expires_at))
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            let item = r?;
+            if !item.2.is_empty() {
+                list.push(item);
+            }
         }
         Ok(list)
     }
@@ -671,27 +706,36 @@ impl Database {
     }
 
     pub fn process_sale(&self, member_id: Option<&str>, items: &[CartItem], payment_method: &str) -> Result<SaleTransaction> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        if items.is_empty() {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
         let tx_id = format!("TX-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         let now = Utc::now();
-
         let total_amount: f64 = items.iter().map(|item| item.unit_price * (item.quantity as f64)).sum();
         let items_json = serde_json::to_string(items).unwrap_or_else(|_| "[]".to_string());
 
+        let tx = conn.transaction()?;
+
         // Deduct inventory stock
         for item in items {
-            conn.execute(
-                "UPDATE products SET stock = MAX(0, stock - ?1) WHERE id = ?2",
-                params![item.quantity, item.product_id],
-            )?;
+            if item.quantity > 0 {
+                tx.execute(
+                    "UPDATE products SET stock = MAX(0, stock - ?1) WHERE id = ?2",
+                    params![item.quantity, item.product_id],
+                )?;
+            }
         }
 
         // Record transaction
-        conn.execute(
+        tx.execute(
             "INSERT INTO transactions (id, member_id, total_amount, payment_method, items_json, created_at, synced_to_cloud)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
             params![tx_id, member_id, total_amount, payment_method, items_json, now.to_rfc3339()],
         )?;
+
+        tx.commit()?;
 
         Ok(SaleTransaction {
             id: tx_id,
