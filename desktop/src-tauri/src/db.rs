@@ -241,6 +241,12 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_cached_license(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM license_cache", [])?;
+        Ok(())
+    }
+
     // --- Walk-In / Day Pass (Strict 8-Hour Validity) ---
 
     pub fn create_walk_in(&self, req: &CreateWalkInRequest) -> Result<WalkInRecord> {

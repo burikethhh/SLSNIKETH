@@ -87,6 +87,16 @@ pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContex
     if !claims.hardware_lock_enabled {
         return Err("Hardware lock is disabled on this license tier".to_string());
     }
+
+    // Log security audit trail so gym owner can track staff unlocking door without member payment
+    let _ = state.db.log_attendance(
+        None,
+        Some("⚠️ STAFF MANUAL OVERRIDE (Unauthenticated Pulse)"),
+        "override",
+        Some(0.0),
+        false,
+    );
+
     state.hardware.unlock_door(duration_ms.unwrap_or(3000))
 }
 

@@ -1,13 +1,13 @@
+use gympos_shared::{SyncPushPayload, SyncResponse};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::db::Database;
 use crate::license::LicenseManager;
 
 pub struct CloudSyncWorker {
-    #[allow(dead_code)]
     pub db: Arc<Database>,
     pub license: Arc<LicenseManager>,
     pub cloud_url: String,
@@ -22,21 +22,45 @@ impl CloudSyncWorker {
         }
     }
 
-    /// Spawns the background synchronization loop
+    /// Spawns the background synchronization loop with real-time kill-switch polling
     pub fn start_background_sync(self) {
         tauri::async_runtime::spawn(async move {
-            info!("Cloud sync background worker started targeting: {}", self.cloud_url);
+            info!("Cloud sync background worker active targeting: {}", self.cloud_url);
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap_or_default();
+
             loop {
-                sleep(Duration::from_secs(60)).await;
+                // Poll every 5 seconds for responsive real-time fleet commands
+                sleep(Duration::from_secs(5)).await;
 
                 if let Some(claims) = self.license.current_claims() {
-                    info!("Running scheduled sync cycle for gym: {}", claims.gym_name);
-                    // Sync cycle:
-                    // 1. In production, serialize unsynced attendance_logs from self.db
-                    // 2. Post to /api/v1/sync/push
-                    // 3. If response indicates remote_disabled == true, invalidate local license
-                } else {
-                    // Gym is currently unlicensed, sleep and retry
+                    let sync_url = format!("{}/api/v1/sync/push", self.cloud_url.trim_end_matches('/'));
+                    let payload = SyncPushPayload {
+                        gym_id: claims.gym_id,
+                        timestamp: chrono::Utc::now(),
+                        attendance_logs: vec![],
+                        face_vectors: vec![],
+                        sales: vec![],
+                    };
+
+                    match client.post(&sync_url).json(&payload).send().await {
+                        Ok(resp) => {
+                            if resp.status().is_success() {
+                                if let Ok(body) = resp.json::<SyncResponse>().await {
+                                    if body.remote_disabled {
+                                        warn!("🛑 REMOTE KILL SWITCH: CEO Command Center disabled gym {}. Revoking local license.", claims.gym_name);
+                                        self.license.revoke();
+                                        let _ = self.db.clear_cached_license();
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!("Cloud sync heartbeat pending: {}", e);
+                        }
+                    }
                 }
             }
         });

@@ -172,11 +172,11 @@ async function initApp() {
     await loadCoachSessions();
     await refreshComPorts();
 
-    // Auto refresh every 8 seconds
+    // Auto refresh fast real-time polling every 2.5 seconds for real-time fleet commands & logs
     setInterval(async () => {
-        if (currentView === 'dashboard') await refreshDashboard();
+        await refreshDashboard();
         if (currentView === 'attendance') await loadAttendanceLogs();
-    }, 8000);
+    }, 2500);
 }
 
 // --- Theme & White-Label Branding Engine ---
@@ -221,14 +221,24 @@ function applyThemeColor(hex) {
 async function loadAppSettings() {
     try {
         const settings = await invokeTauri('get_app_settings');
-        if (settings) {
+        if (settings && (settings.gym_name || settings.logo_data_url || settings.theme_color)) {
             appSettings = settings;
+            localStorage.setItem('gympos_branding', JSON.stringify(settings));
             applyBrandingToUI(settings);
+            return;
         }
     } catch (e) {
-        console.warn("Using default branding settings:", e);
-        applyBrandingToUI(appSettings);
+        console.warn("Using local cached branding settings:", e);
     }
+
+    const cached = localStorage.getItem('gympos_branding');
+    if (cached) {
+        try {
+            const parsed = JSON.parse(cached);
+            appSettings = Object.assign(appSettings, parsed);
+        } catch (err) {}
+    }
+    applyBrandingToUI(appSettings);
 }
 
 function applyBrandingToUI(settings) {
@@ -300,6 +310,7 @@ async function saveBrandingSettings() {
 
     appSettings.gym_name = gymName || "Titan Fitness & Performance";
     appSettings.walk_in_rate = walkinRate;
+    localStorage.setItem('gympos_branding', JSON.stringify(appSettings));
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
@@ -360,25 +371,52 @@ async function refreshDashboard() {
         const licenseDetailEl = document.getElementById('stat-license-detail');
         const status = summary.license_status;
 
-        if (typeof status === 'object' && status.Valid) {
-            const valid = status.Valid;
-            licenseBadge.innerText = `Active (${valid.tier.toUpperCase()}) - ${valid.days_remaining}d left`;
-            licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300";
+        // Support serde tagged enum: { type: "Valid", ... }, { type: "GracePeriod", ... }, { type: "Expired", ... }, { type: "Unlicensed" }
+        // as well as untagged variants: status.Valid, status.GracePeriod, etc.
+        const statusType = (typeof status === 'object' && status !== null)
+            ? (status.type || (status.Valid ? 'Valid' : status.GracePeriod ? 'GracePeriod' : status.Expired ? 'Expired' : status.Invalid ? 'Invalid' : 'Unlicensed'))
+            : status;
+
+        if (statusType === 'Valid') {
+            const valid = (status.type === 'Valid') ? status : (status.Valid || {});
+            const days = (valid.days_remaining !== undefined && valid.days_remaining !== null) ? valid.days_remaining : 30;
+            const tier = (valid.tier || summary.tier || 'PRO').toUpperCase();
+            const gymName = valid.gym_name || summary.gym_name || 'Gym';
+            if (licenseBadge) {
+                licenseBadge.innerText = `Active (${tier}) - ${days}d left`;
+                licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300";
+            }
             if (licenseStateEl) licenseStateEl.innerText = "ACTIVE";
-            if (licenseDetailEl) licenseDetailEl.innerText = `${valid.gym_name} (${valid.days_remaining} days remaining)`;
-        } else if (typeof status === 'object' && status.GracePeriod) {
-            const grace = status.GracePeriod;
-            licenseBadge.innerText = `GRACE PERIOD (${grace.grace_days_remaining}d left)`;
-            licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-amber-950/60 border border-amber-500/40 text-amber-300 animate-pulse";
+            if (licenseDetailEl) licenseDetailEl.innerText = `${gymName} (${days} days remaining)`;
+        } else if (statusType === 'GracePeriod') {
+            const grace = (status.type === 'GracePeriod') ? status : (status.GracePeriod || {});
+            const days = grace.grace_days_remaining || 3;
+            if (licenseBadge) {
+                licenseBadge.innerText = `GRACE PERIOD (${days}d left)`;
+                licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-amber-950/60 border border-amber-500/40 text-amber-300 animate-pulse";
+            }
             if (licenseStateEl) licenseStateEl.innerText = "GRACE PERIOD";
-            if (licenseDetailEl) licenseDetailEl.innerText = `Expired! ${grace.grace_days_remaining} days before lockout`;
-        } else if (typeof status === 'object' && status.Expired) {
-            licenseBadge.innerText = "LOCKED OUT (EXPIRED)";
-            licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-950/80 border border-red-500/50 text-red-300";
+            if (licenseDetailEl) licenseDetailEl.innerText = `Expired! ${days} days before lockout`;
+        } else if (statusType === 'Expired') {
+            if (licenseBadge) {
+                licenseBadge.innerText = "LOCKED OUT (EXPIRED)";
+                licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-950/80 border border-red-500/50 text-red-300";
+            }
             if (licenseStateEl) licenseStateEl.innerText = "LOCKED OUT";
             if (licenseDetailEl) licenseDetailEl.innerText = "Subscription expired. Please renew.";
+        } else if (statusType === 'Invalid') {
+            const reason = status.reason || "License invalidated / revoked";
+            if (licenseBadge) {
+                licenseBadge.innerText = "REVOKED / INVALID";
+                licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-red-950/90 border border-red-600 text-red-300";
+            }
+            if (licenseStateEl) licenseStateEl.innerText = "REVOKED";
+            if (licenseDetailEl) licenseDetailEl.innerText = reason;
         } else {
-            licenseBadge.innerText = "UNLICENSED";
+            if (licenseBadge) {
+                licenseBadge.innerText = "UNLICENSED";
+                licenseBadge.parentElement.className = "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-400";
+            }
             if (licenseStateEl) licenseStateEl.innerText = "UNLICENSED";
             if (licenseDetailEl) licenseDetailEl.innerText = "Please activate a license key";
         }
@@ -1225,27 +1263,43 @@ async function loadAttendanceLogs() {
 
         tbody.innerHTML = logs.map(l => {
             const isTailgate = l.tailgate_flag;
-            const dirColor = l.direction === 'in' ? 'text-emerald-400 bg-emerald-950 border-emerald-800' : 'text-blue-400 bg-blue-950 border-blue-800';
+            const isOverride = l.direction === 'override' || (l.member_name && l.member_name.includes('STAFF MANUAL'));
+            const isWalkIn = l.member_name && l.member_name.startsWith('Walk-In:');
+
+            let dirBadge = '';
+            if (isOverride) {
+                dirBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border text-amber-300 bg-amber-950/80 border-amber-600 font-bold animate-pulse">
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    <span>STAFF OVERRIDE</span>
+                </span>`;
+            } else {
+                const dirColor = l.direction === 'in' ? 'text-emerald-400 bg-emerald-950 border-emerald-800' : 'text-blue-400 bg-blue-950 border-blue-800';
+                dirBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border ${dirColor} uppercase font-bold">
+                    ${l.direction === 'in' 
+                        ? '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>'
+                        : '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>'}
+                    <span>${l.direction}</span>
+                </span>`;
+            }
+
+            let flagBadge = '<span class="text-slate-500 text-[10px]">Normal</span>';
+            if (isTailgate) {
+                flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>';
+            } else if (isOverride) {
+                flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-400 border border-amber-700 font-semibold"><span>UNPAID / MANUAL PULSE</span></span>';
+            } else if (isWalkIn) {
+                flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-emerald-950/70 text-emerald-400 border border-emerald-800 font-medium"><span>8H TIMED PASS</span></span>';
+            }
+
             const timeFormatted = new Date(l.timestamp).toLocaleTimeString();
 
             return `
-                <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : ''}">
+                <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : '')}">
                     <td class="p-3 font-mono text-blue-300">${l.id}</td>
                     <td class="p-3 font-semibold text-slate-200">${l.member_name || 'Unidentified Person'}</td>
-                    <td class="p-3">
-                        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border ${dirColor} uppercase font-bold">
-                            ${l.direction === 'in' 
-                                ? '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg>'
-                                : '<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>'}
-                            <span>${l.direction}</span>
-                        </span>
-                    </td>
+                    <td class="p-3">${dirBadge}</td>
                     <td class="p-3 text-slate-400">${l.confidence ? (l.confidence * 100).toFixed(1) + '%' : '--'}</td>
-                    <td class="p-3">
-                        ${isTailgate 
-                            ? '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>'
-                            : '<span class="text-slate-500 text-[10px]">Normal</span>'}
-                    </td>
+                    <td class="p-3">${flagBadge}</td>
                     <td class="p-3 text-slate-400">${timeFormatted}</td>
                 </tr>
             `;

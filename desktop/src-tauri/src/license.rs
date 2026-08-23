@@ -86,4 +86,8 @@ impl LicenseManager {
     pub fn current_claims(&self) -> Option<LicenseClaims> {
         self.current_claims.read().clone()
     }
+
+    pub fn revoke(&self) {
+        *self.current_claims.write() = None;
+    }
 }
