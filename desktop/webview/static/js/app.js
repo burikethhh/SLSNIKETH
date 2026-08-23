@@ -157,7 +157,38 @@ let appSettings = {
     logo_data_url: null,
     theme_color: "#2563eb",
     walk_in_rate: 10.0
-};
+// --- Camera Stream Controller ---
+let liveCameraStream = null;
+
+async function initCameraStreams() {
+    try {
+        if (navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === 'function') {
+            if (!liveCameraStream) {
+                liveCameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+                    audio: false
+                });
+            }
+            const v1 = document.getElementById('entrance-video-stream');
+            const v2 = document.getElementById('kiosk-video-stream');
+            if (v1 && (!v1.srcObject || v1.srcObject !== liveCameraStream)) {
+                v1.srcObject = liveCameraStream;
+                v1.play().catch(() => {});
+            }
+            if (v2 && (!v2.srcObject || v2.srcObject !== liveCameraStream)) {
+                v2.srcObject = liveCameraStream;
+                v2.play().catch(() => {});
+            }
+
+            const overlay1 = document.getElementById('entrance-cam-standby');
+            const overlay2 = document.getElementById('kiosk-cam-standby');
+            if (overlay1) overlay1.classList.add('hidden');
+            if (overlay2) overlay2.classList.add('hidden');
+        }
+    } catch (e) {
+        console.log("Webcam standby / not attached:", e);
+    }
+}
 
 // --- App Initialization ---
 
@@ -171,6 +202,7 @@ async function initApp() {
     await loadCoaches();
     await loadCoachSessions();
     await refreshComPorts();
+    await initCameraStreams();
 
     // Auto refresh fast real-time polling every 2.5 seconds for real-time fleet commands & logs
     setInterval(async () => {
@@ -1417,11 +1449,27 @@ function dismissSiren() {
 
 async function quickUnlockDoor() {
     const btn = document.getElementById('btn-quick-unlock');
+    const lockEl = document.getElementById('telemetry-lock-state');
     try {
         btn.classList.add('opacity-50');
+        if (lockEl) {
+            lockEl.innerText = "UNLOCKED (PULSE)";
+            lockEl.className = "text-sm font-bold text-amber-400 mt-1 animate-pulse";
+        }
         await invokeTauri('unlock_magnetic_lock', { durationMs: 3000 });
-        alert("Magnetic Lock Triggered: Door Unlocked for 3 seconds");
+        setTimeout(() => {
+            if (lockEl) {
+                lockEl.innerText = "LOCKED (STANDBY)";
+                lockEl.className = "text-sm font-bold text-emerald-400 mt-1";
+            }
+        }, 3000);
+        await loadAttendanceLogs();
+        await refreshDashboard();
     } catch (e) {
+        if (lockEl) {
+            lockEl.innerText = "LOCKED (STANDBY)";
+            lockEl.className = "text-sm font-bold text-emerald-400 mt-1";
+        }
         alert("Unlock Failed: " + e);
     } finally {
         btn.classList.remove('opacity-50');

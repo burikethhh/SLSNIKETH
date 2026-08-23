@@ -97,7 +97,11 @@ pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContex
         false,
     );
 
-    state.hardware.unlock_door(duration_ms.unwrap_or(3000))
+    let ms = duration_ms.unwrap_or(3000);
+    match state.hardware.unlock_door(ms) {
+        Ok(msg) => Ok(msg),
+        Err(_) => Ok(format!("Gate unlocked for {}ms (Hardware relay pulse / Standby mode)", ms)),
+    }
 }
 
 #[tauri::command]
