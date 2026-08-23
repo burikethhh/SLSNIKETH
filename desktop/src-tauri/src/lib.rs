@@ -57,6 +57,14 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .setup(|app| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            Ok(())
+        })
         .manage(app_context)
         .invoke_handler(tauri::generate_handler![
             commands::get_app_settings,
