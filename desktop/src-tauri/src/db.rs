@@ -55,6 +55,8 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS members (
                 id TEXT PRIMARY KEY,
+                home_gym_id TEXT,
+                home_gym_name TEXT,
                 first_name TEXT NOT NULL,
                 last_name TEXT NOT NULL,
                 email TEXT,
@@ -63,7 +65,9 @@ impl Database {
                 status TEXT NOT NULL DEFAULT 'active',
                 membership_type TEXT NOT NULL DEFAULT 'regular',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                expires_at TEXT,
+                is_synced INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS walk_ins (
@@ -121,14 +125,21 @@ impl Database {
                 coach_name TEXT NOT NULL,
                 member_id TEXT NOT NULL,
                 member_name TEXT NOT NULL,
-                session_date TEXT NOT NULL,
-                duration_minutes INTEGER NOT NULL,
+                scheduled_at TEXT NOT NULL,
+                duration_minutes INTEGER NOT NULL DEFAULT 60,
                 status TEXT NOT NULL DEFAULT 'scheduled',
-                FOREIGN KEY (coach_id) REFERENCES coaches(id),
-                FOREIGN KEY (member_id) REFERENCES members(id)
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (coach_id) REFERENCES coaches(id)
             );
             "#,
         )?;
+
+        // Run migrations for existing databases
+        let _ = conn.execute("ALTER TABLE members ADD COLUMN home_gym_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE members ADD COLUMN home_gym_name TEXT", []);
+        let _ = conn.execute("ALTER TABLE members ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE members ADD COLUMN expires_at TEXT", []);
+        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN synced_to_cloud INTEGER NOT NULL DEFAULT 0", []);
 
         Ok(())
     }
@@ -589,7 +600,6 @@ impl Database {
             let timestamp = chrono::DateTime::parse_from_rfc3339(&time_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            let tg: i32 = row.get(6)?;
 
             Ok(AttendanceRecord {
                 id: row.get(0)?,
@@ -598,8 +608,8 @@ impl Database {
                 direction: row.get(3)?,
                 timestamp,
                 confidence: row.get(5)?,
-                tailgate_flag: tg == 1,
-                sync_status: "local".to_string(),
+                tailgate_flag: row.get::<_, i32>(6)? == 1,
+                sync_status: "synced".to_string(),
             })
         })?;
 
@@ -608,6 +618,158 @@ impl Database {
             list.push(r?);
         }
         Ok(list)
+    }
+
+    // --- Inter-Branch Multi-Gym Sync Helpers ---
+
+    pub fn get_unsynced_members(&self, owner_email: &str, home_gym_id: &Uuid, home_gym_name: &str) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at, expires_at
+             FROM members WHERE is_synced = 0"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let first_name: String = row.get(1)?;
+            let last_name: String = row.get(2)?;
+            let email: String = row.get(3).unwrap_or_default();
+            let phone: String = row.get(4).unwrap_or_default();
+            let vectors_json: String = row.get(5).unwrap_or_else(|_| "[]".to_string());
+            let status: String = row.get(6)?;
+            let membership_type: String = row.get(7)?;
+            let created_str: String = row.get(8)?;
+            let updated_str: String = row.get(9)?;
+            let expires_str: Option<String> = row.get(10).unwrap_or(None);
+
+            let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let expires_at = expires_str.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
+
+            Ok(gympos_shared::CloudMemberSyncItem {
+                id,
+                home_gym_id: *home_gym_id,
+                home_gym_name: home_gym_name.to_string(),
+                owner_email: owner_email.to_string(),
+                first_name,
+                last_name,
+                email,
+                phone,
+                membership_type,
+                status,
+                face_vectors,
+                created_at,
+                updated_at,
+                expires_at,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn mark_members_synced(&self, ids: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for id in ids {
+            conn.execute("UPDATE members SET is_synced = 1 WHERE id = ?1", params![id])?;
+        }
+        Ok(())
+    }
+
+    pub fn upsert_interbranch_members(&self, members: &[gympos_shared::CloudMemberSyncItem]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut count = 0;
+        for m in members {
+            let vectors_json = serde_json::to_string(&m.face_vectors).unwrap_or_else(|_| "[]".to_string());
+            let expires_str = m.expires_at.map(|e| e.to_rfc3339());
+
+            conn.execute(
+                "INSERT INTO members (id, home_gym_id, home_gym_name, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at, expires_at, is_synced)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1)
+                 ON CONFLICT(id) DO UPDATE SET
+                    home_gym_name = excluded.home_gym_name,
+                    first_name = excluded.first_name,
+                    last_name = excluded.last_name,
+                    email = excluded.email,
+                    phone = excluded.phone,
+                    face_vector = excluded.face_vector,
+                    status = excluded.status,
+                    membership_type = excluded.membership_type,
+                    updated_at = excluded.updated_at,
+                    expires_at = excluded.expires_at,
+                    is_synced = 1",
+                params![
+                    m.id,
+                    m.home_gym_id.to_string(),
+                    m.home_gym_name,
+                    m.first_name,
+                    m.last_name,
+                    m.email,
+                    m.phone,
+                    vectors_json,
+                    m.status,
+                    m.membership_type,
+                    m.created_at.to_rfc3339(),
+                    m.updated_at.to_rfc3339(),
+                    expires_str,
+                ],
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    pub fn get_unsynced_attendance(&self) -> Result<Vec<gympos_shared::AttendanceRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag
+             FROM attendance_logs WHERE synced_to_cloud = 0 ORDER BY timestamp ASC LIMIT 50"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let member_id: Option<String> = row.get(1)?;
+            let member_name: Option<String> = row.get(2)?;
+            let direction: String = row.get(3)?;
+            let time_str: String = row.get(4)?;
+            let confidence: Option<f32> = row.get(5)?;
+            let tailgate_flag: i32 = row.get(6)?;
+
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&time_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(gympos_shared::AttendanceRecord {
+                id,
+                member_id,
+                member_name,
+                direction,
+                confidence,
+                tailgate_flag: tailgate_flag == 1,
+                timestamp,
+                sync_status: "pending".to_string(),
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn mark_attendance_synced(&self, ids: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for id in ids {
+            conn.execute("UPDATE attendance_logs SET synced_to_cloud = 1 WHERE id = ?1", params![id])?;
+        }
+        Ok(())
     }
 
     pub fn count_today_checkins(&self) -> Result<usize> {

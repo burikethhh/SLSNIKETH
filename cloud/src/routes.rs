@@ -73,6 +73,7 @@ pub async fn register_gym(
         license_id,
         gym_id,
         gym_name: payload.name.clone(),
+        owner_email: payload.owner_email.clone(),
         tier: payload.tier,
         issued_at: now,
         expires_at,
@@ -158,6 +159,7 @@ pub async fn generate_license(
         license_id,
         gym_id,
         gym_name: payload.gym_name.clone(),
+        owner_email: payload.owner_email.clone(),
         tier: payload.tier,
         issued_at: now,
         expires_at,
@@ -234,15 +236,24 @@ pub async fn sync_push(
 ) -> impl IntoResponse {
     let is_disabled = state.disabled_gyms.read().contains(&payload.gym_id);
 
-    let processed_att = payload.attendance_logs.len();
+    // 1. Ingest newly added/updated members and face vectors from this branch
+    let processed_members = state.db.upsert_cloud_members(&payload.owner_email, &payload.members).unwrap_or(0);
+
+    // 2. Ingest attendance records from this branch
+    let processed_att = state.db.insert_attendance_logs(&payload.owner_email, &payload.attendance_logs, &payload.gym_id).unwrap_or(0);
     let processed_vec = payload.face_vectors.len();
+
+    // 3. Query all inter-branch members from sister gyms under the same owner
+    let sister_branch_members = state.db.get_sister_branch_members(&payload.owner_email, &payload.gym_id).unwrap_or_default();
 
     (
         StatusCode::OK,
         Json(SyncResponse {
             processed_attendance: processed_att,
+            processed_members,
             processed_vectors: processed_vec,
             remote_disabled: is_disabled,
+            sister_branch_members,
             server_time: Utc::now(),
         }),
     )

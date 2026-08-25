@@ -35,6 +35,7 @@ pub struct LicenseClaims {
     pub license_id: Uuid,
     pub gym_id: Uuid,
     pub gym_name: String,
+    pub owner_email: String,
     pub tier: LicenseTier,
     pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -320,6 +321,24 @@ pub struct CoachSession {
 // --- Cloud Sync Payloads & Responses ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudMemberSyncItem {
+    pub id: String,
+    pub home_gym_id: Uuid,
+    pub home_gym_name: String,
+    pub owner_email: String,
+    pub first_name: String,
+    pub last_name: String,
+    pub email: String,
+    pub phone: String,
+    pub membership_type: String,
+    pub status: String,
+    pub face_vectors: Vec<Vec<f32>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaceVectorSyncItem {
     pub member_id: String,
     pub full_name: String,
@@ -330,8 +349,11 @@ pub struct FaceVectorSyncItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncPushPayload {
     pub gym_id: Uuid,
+    pub gym_name: String,
+    pub owner_email: String,
     pub timestamp: DateTime<Utc>,
     pub attendance_logs: Vec<AttendanceRecord>,
+    pub members: Vec<CloudMemberSyncItem>,
     pub face_vectors: Vec<FaceVectorSyncItem>,
     pub sales: Vec<SaleTransaction>,
 }
@@ -339,7 +361,9 @@ pub struct SyncPushPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {
     pub processed_attendance: usize,
+    pub processed_members: usize,
     pub processed_vectors: usize,
     pub remote_disabled: bool,
+    pub sister_branch_members: Vec<CloudMemberSyncItem>,
     pub server_time: DateTime<Utc>,
 }

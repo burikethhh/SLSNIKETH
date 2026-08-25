@@ -504,8 +504,20 @@ async function startAutonomousBiometricEngine() {
         // 1. Autonomous Face Scan Entry (Camera 1)
         if (cachedMembers.length > 0 || cachedWalkIns.length > 0) {
             // Find a member or walk-in who is not on cooldown
-            const allCandidates = [...cachedMembers.map(m => ({ id: m.id, name: `${m.first_name} ${m.last_name}`, vector: m.face_vectors[0], type: 'member' })),
-                                   ...cachedWalkIns.map(w => ({ id: w.id, name: w.guest_name, vector: w.face_vector, type: 'walkin' }))];
+            const allCandidates = [...cachedMembers.map(m => ({ 
+                                        id: m.id, 
+                                        name: `${m.first_name} ${m.last_name}`, 
+                                        vector: m.face_vectors[0], 
+                                        home_gym_name: m.home_gym_name || null,
+                                        type: 'member' 
+                                   })),
+                                   ...cachedWalkIns.map(w => ({ 
+                                        id: w.id, 
+                                        name: w.guest_name, 
+                                        vector: w.face_vector, 
+                                        home_gym_name: null,
+                                        type: 'walkin' 
+                                   }))];
 
             if (allCandidates.length > 0) {
                 const candidate = allCandidates[autoScanIndex % allCandidates.length];
@@ -543,9 +555,13 @@ async function startAutonomousBiometricEngine() {
                                 }, 3000);
                             }
 
+                            const isCrossBranch = candidate.home_gym_name && candidate.home_gym_name !== appSettings.gym_name;
+                            const toastTitle = isCrossBranch ? "Inter-Branch Entry Verified" : "Auto Entry Verified";
+                            const branchInfo = isCrossBranch ? `<span class="text-amber-300 font-semibold">[Branch: ${candidate.home_gym_name}]</span> ` : '';
+
                             showHudToast(
-                                "Auto Entry Verified",
-                                `Welcome, <b>${res.member_name}</b>! Gate unlocked (3000ms).`,
+                                toastTitle,
+                                `Welcome, <b>${res.member_name}</b>! ${branchInfo}Gate unlocked (3000ms).`,
                                 "success"
                             );
 
@@ -1082,7 +1098,10 @@ function filterMembersList() {
             <tr class="hover:bg-slate-800/30 transition ${isSuspended || isExpired ? 'opacity-70' : ''}">
                 <td class="p-3 font-mono text-blue-300">${m.id}</td>
                 <td class="p-3">
-                    <div class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</div>
+                    <div class="flex items-center gap-2">
+                        <span class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</span>
+                        ${m.home_gym_name && m.home_gym_name !== appSettings.gym_name ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60" title="Inter-Branch Member">📍 ${m.home_gym_name}</span>` : ''}
+                    </div>
                     <div class="text-[10px] text-slate-500">${m.email || '--'}</div>
                 </td>
                 <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${m.membership_type}</td>

@@ -40,6 +40,35 @@ impl CloudDatabase {
                 gym_id TEXT PRIMARY KEY,
                 disabled_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS cloud_members (
+                id TEXT PRIMARY KEY,
+                owner_email TEXT NOT NULL,
+                home_gym_id TEXT NOT NULL,
+                home_gym_name TEXT NOT NULL,
+                first_name TEXT NOT NULL,
+                last_name TEXT NOT NULL,
+                email TEXT,
+                phone TEXT,
+                membership_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                face_vectors_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                expires_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS cloud_attendance (
+                id TEXT PRIMARY KEY,
+                gym_id TEXT NOT NULL,
+                owner_email TEXT NOT NULL,
+                member_id TEXT,
+                member_name TEXT,
+                direction TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                confidence REAL,
+                tailgate_flag INTEGER NOT NULL
+            );
             "#,
         )?;
         Ok(())
@@ -150,5 +179,134 @@ impl CloudDatabase {
             )?;
         }
         Ok(())
+    }
+
+    // --- Inter-Branch Multi-Gym Sync ---
+
+    pub fn upsert_cloud_members(&self, owner_email: &str, members: &[gympos_shared::CloudMemberSyncItem]) -> Result<usize> {
+        let conn = self.conn.lock();
+        let mut count = 0;
+        for m in members {
+            let vectors_json = serde_json::to_string(&m.face_vectors).unwrap_or_else(|_| "[]".to_string());
+            let expires_str = m.expires_at.map(|e| e.to_rfc3339());
+
+            conn.execute(
+                "INSERT INTO cloud_members (id, owner_email, home_gym_id, home_gym_name, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 ON CONFLICT(id) DO UPDATE SET
+                    home_gym_name = ?4,
+                    first_name = ?5,
+                    last_name = ?6,
+                    email = ?7,
+                    phone = ?8,
+                    membership_type = ?9,
+                    status = ?10,
+                    face_vectors_json = ?11,
+                    updated_at = ?13,
+                    expires_at = ?14",
+                params![
+                    m.id,
+                    owner_email,
+                    m.home_gym_id.to_string(),
+                    m.home_gym_name,
+                    m.first_name,
+                    m.last_name,
+                    m.email,
+                    m.phone,
+                    m.membership_type,
+                    m.status,
+                    vectors_json,
+                    m.created_at.to_rfc3339(),
+                    m.updated_at.to_rfc3339(),
+                    expires_str,
+                ],
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    pub fn get_sister_branch_members(&self, owner_email: &str, exclude_gym_id: &Uuid) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, home_gym_id, home_gym_name, owner_email, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at
+             FROM cloud_members
+             WHERE owner_email = ?1 AND home_gym_id != ?2"
+        )?;
+
+        let rows = stmt.query_map(params![owner_email, exclude_gym_id.to_string()], |row| {
+            let id: String = row.get(0)?;
+            let home_gym_id_str: String = row.get(1)?;
+            let home_gym_id = Uuid::parse_str(&home_gym_id_str).unwrap_or_default();
+            let home_gym_name: String = row.get(2)?;
+            let owner_email: String = row.get(3)?;
+            let first_name: String = row.get(4)?;
+            let last_name: String = row.get(5)?;
+            let email: String = row.get(6).unwrap_or_default();
+            let phone: String = row.get(7).unwrap_or_default();
+            let membership_type: String = row.get(8)?;
+            let status: String = row.get(9)?;
+            let vectors_json: String = row.get(10)?;
+            let created_str: String = row.get(11)?;
+            let updated_str: String = row.get(12)?;
+            let expires_str: Option<String> = row.get(13).unwrap_or(None);
+
+            let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
+            let created_at = DateTime::parse_from_rfc3339(&created_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let expires_at = expires_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
+
+            Ok(gympos_shared::CloudMemberSyncItem {
+                id,
+                home_gym_id,
+                home_gym_name,
+                owner_email,
+                first_name,
+                last_name,
+                email,
+                phone,
+                membership_type,
+                status,
+                face_vectors,
+                created_at,
+                updated_at,
+                expires_at,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn insert_attendance_logs(&self, owner_email: &str, logs: &[gympos_shared::AttendanceRecord], gym_id: &Uuid) -> Result<usize> {
+        let conn = self.conn.lock();
+        let mut count = 0;
+        for l in logs {
+            conn.execute(
+                "INSERT INTO cloud_attendance (id, gym_id, owner_email, member_id, member_name, direction, timestamp, confidence, tailgate_flag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id) DO NOTHING",
+                params![
+                    l.id,
+                    gym_id.to_string(),
+                    owner_email,
+                    l.member_id,
+                    l.member_name,
+                    l.direction,
+                    l.timestamp.to_rfc3339(),
+                    l.confidence,
+                    if l.tailgate_flag { 1 } else { 0 }
+                ],
+            )?;
+            count += 1;
+        }
+        Ok(count)
     }
 }
