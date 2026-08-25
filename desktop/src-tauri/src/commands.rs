@@ -279,6 +279,28 @@ pub fn process_face_scan(
             }));
         }
 
+        // Strict Anti-Passback Validation:
+        // Cannot scan IN if already inside ('in'); Cannot scan OUT if outside ('out' or none)
+        let last_direction = state.db.get_member_last_direction(&m.member_id).unwrap_or(None);
+        if direction == "in" && last_direction.as_deref() == Some("in") {
+            return Ok(json!({
+                "matched": true,
+                "passback_violation": true,
+                "member_name": m.member_name,
+                "message": format!("Anti-Passback Denied: {} is already inside the gym. Must scan exit before entering again.", m.member_name),
+                "door_unlocked": false
+            }));
+        }
+        if direction == "out" && (last_direction.as_deref() == Some("out") || last_direction.is_none()) {
+            return Ok(json!({
+                "matched": true,
+                "passback_violation": true,
+                "member_name": m.member_name,
+                "message": format!("Anti-Passback Denied: {} is not currently checked in. Must scan entry first.", m.member_name),
+                "door_unlocked": false
+            }));
+        }
+
         // Log successful attendance (in or out)
         let log = state
             .db

@@ -620,6 +620,22 @@ impl Database {
         Ok(list)
     }
 
+    /// Queries the last recorded direction ('in' or 'out') for Anti-Passback validation
+    pub fn get_member_last_direction(&self, member_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT direction FROM attendance_logs 
+             WHERE member_id = ?1 
+             ORDER BY timestamp DESC LIMIT 1"
+        )?;
+        let mut rows = stmt.query_map(params![member_id], |row| row.get::<_, String>(0))?;
+        if let Some(r) = rows.next() {
+            Ok(Some(r?))
+        } else {
+            Ok(None)
+        }
+    }
+
     // --- Inter-Branch Multi-Gym Sync Helpers ---
 
     pub fn get_unsynced_members(&self, owner_email: &str, home_gym_id: &Uuid, home_gym_name: &str) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
