@@ -285,6 +285,11 @@ pub fn process_face_scan(
             .log_attendance(Some(&m.member_id), Some(&m.member_name), &direction, Some(m.confidence), false)
             .map_err(|e| e.to_string())?;
 
+        // Adaptive continuous learning: slightly adapt stored profile on high confidence match (>= 88%)
+        if m.confidence >= 0.88 && !m.is_expired {
+            state.face_store.adapt_profile(&m.member_id, &probe_vector, 0.05);
+        }
+
         // Unlock door if hardware is connected & enabled in license
         let mut unlocked = false;
         if let Some(claims) = state.license.current_claims() {

@@ -3,11 +3,35 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// L2-Normalizes a vector in-place: v = v / ||v||_2
+pub fn l2_normalize(vec: &mut [f32]) {
+    let sum_sq: f32 = vec.iter().map(|x| x * x).sum();
+    let norm = sum_sq.sqrt();
+    if norm > 1e-7 {
+        for x in vec.iter_mut() {
+            *x /= norm;
+        }
+    }
+}
+
+/// Computes the quality/entropy metric of a feature embedding
+pub fn calculate_vector_quality(vec: &[f32]) -> f32 {
+    if vec.is_empty() {
+        return 0.0;
+    }
+    let mean: f32 = vec.iter().sum::<f32>() / vec.len() as f32;
+    let variance: f32 = vec.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / vec.len() as f32;
+    let std_dev = variance.sqrt();
+    // High standard deviation indicates rich facial landmark feature variance
+    (std_dev * 2.5).min(1.0).max(0.0)
+}
+
 #[derive(Debug, Clone)]
 pub struct FaceEntry {
     pub member_id: String,
     pub member_name: String,
-    pub vectors: Vec<Vec<f32>>, // 1-3 angles (front, left, right)
+    pub vectors: Vec<Vec<f32>>, // Multi-angle anchors (front, left, right, up, down)
+    pub centroid: Vec<f32>,     // Weighted mean embedding for rapid 1-to-N screening
     pub expires_at: Option<DateTime<Utc>>, // None for regular members, Some(timestamp) for 8-hour walk-ins
 }
 
@@ -38,14 +62,36 @@ impl FaceVectorStore {
         self.upsert_with_expiry(member_id, member_name, vectors, None);
     }
 
-    /// Load or upsert face vectors with an optional expiration timestamp (e.g. 8-hour walk-in pass)
+    /// Load or upsert face vectors with L2 normalization, centroid clustering, and optional expiry
     pub fn upsert_with_expiry(
         &self,
         member_id: String,
         member_name: String,
-        vectors: Vec<Vec<f32>>,
+        mut vectors: Vec<Vec<f32>>,
         expires_at: Option<DateTime<Utc>>,
     ) {
+        // 1. L2 Normalize all input angle vectors
+        for vec in vectors.iter_mut() {
+            l2_normalize(vec);
+        }
+
+        // 2. Compute Centroid Vector (Average Representation)
+        let centroid = if !vectors.is_empty() {
+            let dim = vectors[0].len();
+            let mut mean_vec = vec![0.0f32; dim];
+            for v in &vectors {
+                for (i, val) in v.iter().enumerate() {
+                    if i < dim {
+                        mean_vec[i] += val;
+                    }
+                }
+            }
+            l2_normalize(&mut mean_vec);
+            mean_vec
+        } else {
+            vec![]
+        };
+
         let mut store = self.entries.write();
         store.insert(
             member_id.clone(),
@@ -53,9 +99,24 @@ impl FaceVectorStore {
                 member_id,
                 member_name,
                 vectors,
+                centroid,
                 expires_at,
             },
         );
+    }
+
+    /// Adaptively updates the stored embedding when a member unlocks with high confidence (Continuous Learning)
+    pub fn adapt_profile(&self, member_id: &str, live_probe: &[f32], alpha: f32) {
+        let mut store = self.entries.write();
+        if let Some(entry) = store.get_mut(member_id) {
+            if !entry.centroid.is_empty() && entry.centroid.len() == live_probe.len() {
+                // Exponential Moving Average: centroid_new = (1 - alpha)*centroid_old + alpha*probe
+                for (c, p) in entry.centroid.iter_mut().zip(live_probe.iter()) {
+                    *c = (1.0 - alpha) * (*c) + alpha * (*p);
+                }
+                l2_normalize(&mut entry.centroid);
+            }
+        }
     }
 
     /// Get a cloned entry by member_id
@@ -76,8 +137,16 @@ impl FaceVectorStore {
         store.clear();
     }
 
-    /// Match a probe vector against all registered vectors using Cosine Similarity.
+    /// Match a probe vector against all registered vectors using Cosine Metric with Centroid + Multi-Angle screening.
     pub fn match_vector(&self, probe: &[f32], threshold: f32) -> Option<MatchResult> {
+        if probe.is_empty() {
+            return None;
+        }
+
+        // Normalize probe vector
+        let mut normalized_probe = probe.to_vec();
+        l2_normalize(&mut normalized_probe);
+
         let store = self.entries.read();
         let now = Utc::now();
         let mut best_match: Option<MatchResult> = None;
@@ -86,8 +155,28 @@ impl FaceVectorStore {
         for entry in store.values() {
             let is_expired = entry.expires_at.map_or(false, |exp| now > exp);
 
+            // Fast Pre-screening via Centroid Vector
+            let centroid_score = if !entry.centroid.is_empty() {
+                cosine_similarity(&normalized_probe, &entry.centroid)
+            } else {
+                0.0
+            };
+
+            // If centroid matches well, or check all multi-angle vectors
+            if centroid_score > highest_score {
+                highest_score = centroid_score;
+                best_match = Some(MatchResult {
+                    member_id: entry.member_id.clone(),
+                    member_name: entry.member_name.clone(),
+                    confidence: centroid_score,
+                    matched_angle_index: 0,
+                    is_expired,
+                    expires_at: entry.expires_at,
+                });
+            }
+
             for (idx, target_vec) in entry.vectors.iter().enumerate() {
-                let score = cosine_similarity(probe, target_vec);
+                let score = cosine_similarity(&normalized_probe, target_vec);
                 if score > highest_score {
                     highest_score = score;
                     best_match = Some(MatchResult {
@@ -107,28 +196,18 @@ impl FaceVectorStore {
 }
 
 /// Compute cosine similarity between two float vectors.
-/// Cosine Similarity = (A · B) / (||A|| * ||B||)
+/// Since vectors are L2-normalized, (A · B) / (||A|| * ||B||) simplifies directly to the Dot Product (A · B)
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
 
     let mut dot_product = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
     for (x, y) in a.iter().zip(b.iter()) {
         dot_product += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
     }
 
-    let denominator = norm_a.sqrt() * norm_b.sqrt();
-    if denominator == 0.0 {
-        0.0
-    } else {
-        dot_product / denominator
-    }
+    dot_product.max(0.0).min(1.0)
 }
 
 #[cfg(test)]
