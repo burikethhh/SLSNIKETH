@@ -208,8 +208,10 @@ async function initCameraStreams() {
         }
         const v1Dash = document.getElementById('dash-cam1-entry');
         const v1Kiosk = document.getElementById('kiosk-cam1-entry');
+        const v1Test = document.getElementById('test-preview-cam1');
         if (v1Dash && streamCam1) { v1Dash.srcObject = streamCam1; v1Dash.play().catch(() => {}); }
         if (v1Kiosk && streamCam1) { v1Kiosk.srcObject = streamCam1; v1Kiosk.play().catch(() => {}); }
+        if (v1Test && streamCam1) { v1Test.srcObject = streamCam1; v1Test.play().catch(() => {}); }
         const o1Dash = document.getElementById('dash-cam1-standby');
         const o1Kiosk = document.getElementById('kiosk-cam1-standby');
         if (o1Dash) o1Dash.classList.add('hidden');
@@ -229,8 +231,10 @@ async function initCameraStreams() {
         }
         const v2Dash = document.getElementById('dash-cam2-exit');
         const v2Kiosk = document.getElementById('kiosk-cam2-exit');
+        const v2Test = document.getElementById('test-preview-cam2');
         if (v2Dash && streamCam2) { v2Dash.srcObject = streamCam2; v2Dash.play().catch(() => {}); }
         if (v2Kiosk && streamCam2) { v2Kiosk.srcObject = streamCam2; v2Kiosk.play().catch(() => {}); }
+        if (v2Test && streamCam2) { v2Test.srcObject = streamCam2; v2Test.play().catch(() => {}); }
         const o2Dash = document.getElementById('dash-cam2-standby');
         const o2Kiosk = document.getElementById('kiosk-cam2-standby');
         if (o2Dash) o2Dash.classList.add('hidden');
@@ -251,9 +255,11 @@ async function initCameraStreams() {
         const v3Dash = document.getElementById('dash-cam3-tailgate');
         const v3Kiosk = document.getElementById('kiosk-cam3-tailgate');
         const v3Roi = document.getElementById('roi-preview-video');
+        const v3Test = document.getElementById('test-preview-cam3');
         if (v3Dash && streamCam3) { v3Dash.srcObject = streamCam3; v3Dash.play().catch(() => {}); }
         if (v3Kiosk && streamCam3) { v3Kiosk.srcObject = streamCam3; v3Kiosk.play().catch(() => {}); }
         if (v3Roi && streamCam3) { v3Roi.srcObject = streamCam3; v3Roi.play().catch(() => {}); }
+        if (v3Test && streamCam3) { v3Test.srcObject = streamCam3; v3Test.play().catch(() => {}); }
         const o3Dash = document.getElementById('dash-cam3-standby');
         const o3Kiosk = document.getElementById('kiosk-cam3-standby');
         if (o3Dash) o3Dash.classList.add('hidden');
@@ -292,6 +298,40 @@ async function populateCameraDevices() {
         if (sel3) sel3.innerHTML = buildOptions(cfg.camera3_tailgate_device_id || "");
     } catch (e) {
         console.error("Error enumerating video devices:", e);
+    }
+}
+
+async function previewSelectedCamera(camNumber, deviceId) {
+    try {
+        const stream = await getStreamForDevice(deviceId);
+        if (camNumber === 1) {
+            streamCam1 = stream;
+            const el = document.getElementById('test-preview-cam1');
+            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
+        } else if (camNumber === 2) {
+            streamCam2 = stream;
+            const el = document.getElementById('test-preview-cam2');
+            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
+        } else if (camNumber === 3) {
+            streamCam3 = stream;
+            const el = document.getElementById('test-preview-cam3');
+            const roiEl = document.getElementById('roi-preview-video');
+            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
+            if (roiEl) { roiEl.srcObject = stream; roiEl.play().catch(() => {}); }
+        }
+    } catch (e) {
+        console.warn(`Failed to preview camera ${camNumber}:`, e);
+    }
+}
+
+async function triggerAlarmTest() {
+    try {
+        await invokeTauri('trigger_tailgate_alarm', {
+            reason: "Manual Hardware Siren & Buzzer Diagnostics Test"
+        });
+        showHudToast("Alarm Test Fired", "ESP32 buzzer relay active for 5000ms.", "danger");
+    } catch (e) {
+        alert("Alarm Test Error: " + e);
     }
 }
 
