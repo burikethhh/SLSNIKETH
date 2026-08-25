@@ -41,6 +41,23 @@ impl CloudDatabase {
                 disabled_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS cloud_licenses (
+                license_id TEXT PRIMARY KEY,
+                raw_token TEXT NOT NULL,
+                gym_id TEXT NOT NULL,
+                gym_name TEXT NOT NULL,
+                owner_email TEXT NOT NULL,
+                tier TEXT NOT NULL,
+                issued_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                max_members INTEGER NOT NULL,
+                hardware_lock_enabled INTEGER NOT NULL DEFAULT 1,
+                tailgate_detection_enabled INTEGER NOT NULL DEFAULT 1,
+                is_revoked INTEGER NOT NULL DEFAULT 0,
+                revoked_reason TEXT,
+                revoked_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS cloud_members (
                 id TEXT PRIMARY KEY,
                 owner_email TEXT NOT NULL,
@@ -179,6 +196,143 @@ impl CloudDatabase {
             )?;
         }
         Ok(())
+    }
+
+    // --- License Persistence & Revocation ---
+
+    pub fn insert_license(&self, claims: &gympos_shared::LicenseClaims, raw_token: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        let tier_str = format!("{:?}", claims.tier).to_lowercase();
+        conn.execute(
+            "INSERT INTO cloud_licenses (
+                license_id, raw_token, gym_id, gym_name, owner_email, tier,
+                issued_at, expires_at, max_members, hardware_lock_enabled,
+                tailgate_detection_enabled, is_revoked
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
+             ON CONFLICT(license_id) DO UPDATE SET
+                raw_token = ?2, gym_name = ?4, owner_email = ?5, tier = ?6,
+                expires_at = ?8, max_members = ?9, hardware_lock_enabled = ?10,
+                tailgate_detection_enabled = ?11",
+            params![
+                claims.license_id.to_string(),
+                raw_token,
+                claims.gym_id.to_string(),
+                claims.gym_name,
+                claims.owner_email,
+                tier_str,
+                claims.issued_at.to_rfc3339(),
+                claims.expires_at.to_rfc3339(),
+                claims.max_members,
+                if claims.hardware_lock_enabled { 1 } else { 0 },
+                if claims.tailgate_detection_enabled { 1 } else { 0 },
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_licenses(&self) -> Result<Vec<crate::models::CloudLicenseRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT license_id, raw_token, gym_id, gym_name, owner_email, tier,
+                    issued_at, expires_at, max_members, hardware_lock_enabled,
+                    tailgate_detection_enabled, is_revoked, revoked_reason, revoked_at
+             FROM cloud_licenses
+             ORDER BY issued_at DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let lic_id_str: String = row.get(0)?;
+            let raw_token: String = row.get(1)?;
+            let gym_id_str: String = row.get(2)?;
+            let gym_name: String = row.get(3)?;
+            let owner_email: String = row.get(4)?;
+            let tier_str: String = row.get(5)?;
+            let issued_str: String = row.get(6)?;
+            let expires_str: String = row.get(7)?;
+            let max_members: u32 = row.get(8)?;
+            let hw_lock: i32 = row.get(9)?;
+            let tailgate: i32 = row.get(10)?;
+            let is_revoked: i32 = row.get(11)?;
+            let revoked_reason: Option<String> = row.get(12).unwrap_or(None);
+            let revoked_at_str: Option<String> = row.get(13).unwrap_or(None);
+
+            let tier = match tier_str.to_lowercase().as_str() {
+                "pro" => LicenseTier::Pro,
+                "ultra" => LicenseTier::Ultra,
+                _ => LicenseTier::Basic,
+            };
+
+            let license_id = Uuid::parse_str(&lic_id_str).unwrap_or_default();
+            let gym_id = Uuid::parse_str(&gym_id_str).unwrap_or_default();
+            let issued_at = DateTime::parse_from_rfc3339(&issued_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let expires_at = DateTime::parse_from_rfc3339(&expires_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let revoked_at = revoked_at_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
+
+            Ok(crate::models::CloudLicenseRecord {
+                license_id,
+                raw_token,
+                gym_id,
+                gym_name,
+                owner_email,
+                tier,
+                issued_at,
+                expires_at,
+                max_members,
+                hardware_lock_enabled: hw_lock == 1,
+                tailgate_detection_enabled: tailgate == 1,
+                is_revoked: is_revoked == 1,
+                revoked_reason,
+                revoked_at,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn revoke_license(&self, license_id: &Uuid, reason: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE cloud_licenses
+             SET is_revoked = 1, revoked_reason = ?1, revoked_at = ?2
+             WHERE license_id = ?3",
+            params![reason, Utc::now().to_rfc3339(), license_id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn is_license_revoked(&self, license_id: &Uuid) -> Result<bool> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT is_revoked FROM cloud_licenses WHERE license_id = ?1")?;
+        let mut rows = stmt.query(params![license_id.to_string()])?;
+        if let Some(row) = rows.next()? {
+            let is_revoked: i32 = row.get(0)?;
+            Ok(is_revoked == 1)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn load_revoked_license_ids(&self) -> Result<HashSet<Uuid>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT license_id FROM cloud_licenses WHERE is_revoked = 1")?;
+        let rows = stmt.query_map([], |row| {
+            let id_str: String = row.get(0)?;
+            Ok(Uuid::parse_str(&id_str).unwrap_or_default())
+        })?;
+
+        let mut set = HashSet::new();
+        for r in rows {
+            set.insert(r?);
+        }
+        Ok(set)
     }
 
     // --- Inter-Branch Multi-Gym Sync ---

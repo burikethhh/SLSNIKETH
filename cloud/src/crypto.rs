@@ -134,6 +134,7 @@ mod tests {
             license_id: Uuid::new_v4(),
             gym_id: Uuid::new_v4(),
             gym_name: "Shadow Monarch Fitness".to_string(),
+            owner_email: "shadow@monarch.com".to_string(),
             tier: LicenseTier::Pro,
             issued_at: Utc::now(),
             expires_at: Utc::now() + Duration::days(30),
@@ -149,6 +150,7 @@ mod tests {
             .expect("Verification failed");
 
         assert_eq!(verified_claims.gym_name, "Shadow Monarch Fitness");
+        assert_eq!(verified_claims.owner_email, "shadow@monarch.com");
         assert_eq!(verified_claims.max_members, 500);
         assert_eq!(verified_claims.tier, LicenseTier::Pro);
     }

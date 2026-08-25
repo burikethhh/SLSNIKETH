@@ -35,16 +35,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
+    let admin_key = std::env::var("ADMIN_SECRET_KEY").unwrap_or_else(|_| "gympos_master_ceo_secret_2026".to_string());
+    tracing::info!("Master Admin Authentication active");
+
     let cloud_db = Arc::new(CloudDatabase::new("gympos_cloud.sqlite")?);
     let loaded_gyms = cloud_db.load_all_gyms().unwrap_or_default();
     let loaded_disabled = cloud_db.load_disabled_gyms().unwrap_or_default();
-    tracing::info!("Loaded {} gyms and {} revoked flags from SQLite", loaded_gyms.len(), loaded_disabled.len());
+    let loaded_revoked_licenses = cloud_db.load_revoked_license_ids().unwrap_or_default();
+    tracing::info!(
+        "Loaded {} gyms, {} disabled gyms, and {} revoked licenses from SQLite",
+        loaded_gyms.len(),
+        loaded_disabled.len(),
+        loaded_revoked_licenses.len()
+    );
 
     let state = Arc::new(AppState {
         signer,
         db: cloud_db,
         gyms: Arc::new(RwLock::new(loaded_gyms)),
         disabled_gyms: Arc::new(RwLock::new(loaded_disabled)),
+        revoked_licenses: Arc::new(RwLock::new(loaded_revoked_licenses)),
+        admin_key,
     });
 
     let cors = CorsLayer::new()
@@ -63,9 +74,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/health", get(routes::health_check))
         .route("/api/v1/health", get(routes::health_check))
+        .route("/api/v1/auth/admin-login", post(routes::admin_login))
         .route("/api/v1/licenses/public-key", get(routes::get_public_key))
+        .route("/api/v1/licenses", get(routes::list_licenses))
         .route("/api/v1/licenses/generate", post(routes::generate_license))
         .route("/api/v1/licenses/verify", post(routes::verify_license))
+        .route("/api/v1/licenses/revoke", post(routes::revoke_license_endpoint))
         .route("/api/v1/gyms/register", post(routes::register_gym))
         .route("/api/v1/gyms", get(routes::list_gyms))
         .route("/api/v1/gyms/update", post(routes::update_gym))
@@ -91,3 +105,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+

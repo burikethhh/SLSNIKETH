@@ -79,8 +79,22 @@ impl CloudSyncWorker {
                         sales: vec![],
                     };
 
-                    match client.post(&sync_url).json(&payload).send().await {
+                    let mut req_builder = client.post(&sync_url).json(&payload);
+                    if let Ok(Some(token)) = self.db.get_cached_license() {
+                        req_builder = req_builder.bearer_auth(token);
+                    }
+
+                    match req_builder.send().await {
                         Ok(resp) => {
+                            let status = resp.status();
+                            if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                                warn!("REMOTE ACCESS REVOKED (HTTP {}): Cloud rejected license. Locking down terminal.", status);
+                                self.license.revoke();
+                                let _ = self.db.clear_cached_license();
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                                continue;
+                            }
+
                             if resp.status().is_success() {
                                 // Reset backoff on success
                                 consecutive_failures = 0;
