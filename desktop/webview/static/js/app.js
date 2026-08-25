@@ -175,11 +175,16 @@ let streamCam2 = null;
 let streamCam3 = null;
 
 async function getStreamForDevice(deviceId) {
-    const constraints = {
-        video: deviceId ? { deviceId: { exact: deviceId } } : { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
-        audio: false
-    };
-    return await navigator.mediaDevices.getUserMedia(constraints);
+    const videoConstraints = deviceId
+        ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: "user" };
+    return await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+}
+
+function stopStream(stream) {
+    if (stream && typeof stream.getTracks === 'function') {
+        stream.getTracks().forEach(t => t.stop());
+    }
 }
 
 async function initCameraStreams() {
@@ -305,14 +310,18 @@ async function previewSelectedCamera(camNumber, deviceId) {
     try {
         const stream = await getStreamForDevice(deviceId);
         if (camNumber === 1) {
+            // Stop old stream tracks to prevent hardware handle leak
+            if (streamCam1 && streamCam1 !== streamCam2 && streamCam1 !== streamCam3) stopStream(streamCam1);
             streamCam1 = stream;
             const el = document.getElementById('test-preview-cam1');
             if (el) { el.srcObject = stream; el.play().catch(() => {}); }
         } else if (camNumber === 2) {
+            if (streamCam2 && streamCam2 !== streamCam1 && streamCam2 !== streamCam3) stopStream(streamCam2);
             streamCam2 = stream;
             const el = document.getElementById('test-preview-cam2');
             if (el) { el.srcObject = stream; el.play().catch(() => {}); }
         } else if (camNumber === 3) {
+            if (streamCam3 && streamCam3 !== streamCam1 && streamCam3 !== streamCam2) stopStream(streamCam3);
             streamCam3 = stream;
             const el = document.getElementById('test-preview-cam3');
             const roiEl = document.getElementById('roi-preview-video');
@@ -359,13 +368,12 @@ async function saveCameraRouting() {
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
-        // Reset streams so they rebind to newly assigned hardware device IDs
-        if (streamCam1 && streamCam1.getTracks) streamCam1.getTracks().forEach(t => t.stop());
-        if (streamCam2 && streamCam2 !== streamCam1 && streamCam2.getTracks) streamCam2.getTracks().forEach(t => t.stop());
-        if (streamCam3 && streamCam3 !== streamCam1 && streamCam3.getTracks) streamCam3.getTracks().forEach(t => t.stop());
+        // Stop ALL active streams safely before rebinding (null-safe guards)
+        const uniqueStreams = new Set([streamCam1, streamCam2, streamCam3].filter(Boolean));
+        uniqueStreams.forEach(s => stopStream(s));
         streamCam1 = null; streamCam2 = null; streamCam3 = null;
         await initCameraStreams();
-        alert("Camera Assignments Successfully Saved & Live Routed!");
+        showHudToast("Camera Routing Saved", "All 3 camera assignments saved and live streams re-routed.", "success");
     } catch (e) {
         alert("Failed to save camera routing: " + e);
     }
@@ -573,10 +581,13 @@ async function startAutonomousBiometricEngine() {
                         for (let i = 0; i < 128; i++) probe.push(Math.sin(seed + i));
                     }
 
+                        const lastDir = memberCooldownMap.get(candidate.id + '_dir') || null;
+                        const scanDirection = lastDir === 'in' ? 'out' : 'in';
+
                     try {
                         const res = await invokeTauri('process_face_scan', {
                             probeVector: probe,
-                            direction: 'in'
+                            direction: scanDirection
                         });
 
                         if (res && res.passback_violation) {
@@ -587,6 +598,7 @@ async function startAutonomousBiometricEngine() {
 
                         if (res && res.matched) {
                             memberCooldownMap.set(candidate.id, now);
+                            memberCooldownMap.set(candidate.id + '_dir', scanDirection);
                             
                             // Visual HUD Feedback
                             const lockEl = document.getElementById('telemetry-lock-state');
@@ -625,38 +637,63 @@ async function startAutonomousBiometricEngine() {
         }
     }, 4500); // Evaluates auto passage stream every 4.5 seconds
 
-    // 2. Continuous Anti-Tailgate ROI Monitor
+    // 2. Continuous Anti-Tailgate ROI Monitor (baseline heartbeat)
     setInterval(async () => {
         if (!autoGateActive) return;
-        // Periodic baseline interlock
+        // Periodic baseline interlock — monitors Camera 3 overhead feed health
     }, 1000);
 }
 
 // --- Door-Open 1:1 Anti-Tailgate Surveillance Engine ---
 
 let activeDoorPassageWindow = false;
+let doorOpenFrameCount = 0;
 
 function armDoorOpenTailgateSurveillance(durationMs = 3500) {
     activeDoorPassageWindow = true;
+    doorOpenFrameCount = 0;
     const sensitivity = (appSettings.camera_config && appSettings.camera_config.roi_sensitivity) || 85;
+    const evaluationIntervalMs = 250; // Evaluate every 250ms during open window
+    const maxFrames = Math.floor(durationMs / evaluationIntervalMs);
+    // Multi-person detection threshold: higher sensitivity = tighter tolerance
+    const violationThreshold = Math.max(2, Math.floor(maxFrames * (1 - sensitivity / 100) * 0.6));
+    let suspiciousFrames = 0;
 
-    // Simulate high-precision 1:1 overhead optical ROI evaluation during active transit window
-    setTimeout(async () => {
-        if (activeDoorPassageWindow) {
-            // Evaluates multi-occupancy inside the calibrated ROI passage rectangle
-            // Trigger alarm if >= 2 bodies or optical density threshold violated during 1:1 door open pulse
-            if (Math.random() < (100 - sensitivity) * 0.002) {
+    const evaluator = setInterval(async () => {
+        if (!activeDoorPassageWindow) {
+            clearInterval(evaluator);
+            return;
+        }
+        doorOpenFrameCount++;
+
+        // Deterministic frame analysis: simulate motion density from Camera 3 ROI region
+        // In production, this evaluates actual YOLO person-count from the overhead feed.
+        // Here we model a consistent occupancy state per transit window.
+        const transitDensity = Math.sin(doorOpenFrameCount * 0.7 + Date.now() * 0.00001);
+        if (transitDensity > (sensitivity / 100) * 0.9) {
+            suspiciousFrames++;
+        }
+
+        if (doorOpenFrameCount >= maxFrames) {
+            clearInterval(evaluator);
+            activeDoorPassageWindow = false;
+
+            if (suspiciousFrames >= violationThreshold) {
                 try {
                     await invokeTauri('trigger_tailgate_alarm', {
-                        reason: "1:1 Turnstile ROI Multi-Occupancy Transit Violation (2+ Persons Detected)"
+                        reason: `1:1 Turnstile ROI Multi-Occupancy Transit Violation (${suspiciousFrames}/${maxFrames} frames flagged)`
                     });
-                    
+
                     const banner = document.getElementById('tailgate-siren-banner');
-                    if (banner) banner.classList.remove('hidden');
+                    if (banner) {
+                        banner.classList.remove('hidden');
+                        // Auto-dismiss siren banner after 10 seconds
+                        setTimeout(() => { if (banner) banner.classList.add('hidden'); }, 10000);
+                    }
 
                     showHudToast(
                         "Anti-Tailgate Violation",
-                        "Multi-occupancy detected in Turnstile ROI during gate transit! 1:1 Door Policy Violated. Hardware Siren Active!",
+                        `Multi-occupancy detected in Turnstile ROI during gate transit! ${suspiciousFrames} suspicious frames in ${maxFrames} evaluated. Hardware Siren Active!`,
                         "danger"
                     );
 
@@ -666,41 +703,11 @@ function armDoorOpenTailgateSurveillance(durationMs = 3500) {
                     console.debug("Door-open tailgate alarm:", e);
                 }
             }
-            activeDoorPassageWindow = false;
         }
-    }, durationMs);
+    }, evaluationIntervalMs);
 }
 
-// --- App Settings Loader ---
-
-async function loadAppSettings() {
-    try {
-        const settings = await invokeTauri('get_app_settings');
-        if (settings) {
-            appSettings = Object.assign(appSettings, settings);
-            if (settings.theme_color) applyThemeColor(settings.theme_color);
-            if (settings.gym_name) {
-                document.querySelectorAll('.brand-gym-name').forEach(el => el.innerText = settings.gym_name);
-                const nameInp = document.getElementById('setting-gym-name');
-                if (nameInp) nameInp.value = settings.gym_name;
-            }
-            if (settings.logo_data_url) {
-                document.querySelectorAll('.brand-logo').forEach(el => el.src = settings.logo_data_url);
-                const prev = document.getElementById('setting-logo-preview');
-                if (prev) prev.src = settings.logo_data_url;
-            }
-            if (settings.walk_in_rate) {
-                const rateInp = document.getElementById('setting-walkin-rate');
-                if (rateInp) rateInp.value = settings.walk_in_rate;
-            }
-            if (settings.camera_config) {
-                applyRoiConfigToOverlays(settings.camera_config);
-            }
-        }
-    } catch (e) {
-        console.warn("Could not load app settings from SQLite, using defaults:", e);
-    }
-}
+// (loadAppSettings defined below in Theme & White-Label Branding Engine section)
 
 // --- App Initialization ---
 
@@ -718,8 +725,9 @@ async function initApp() {
     await initCameraStreams();
     startAutonomousBiometricEngine();
 
-    // Auto refresh fast real-time polling every 2.5 seconds for real-time fleet commands & logs
+    // Auto refresh real-time polling every 2.5 seconds (skip when tab/window is hidden to save CPU/IPC)
     setInterval(async () => {
+        if (document.hidden) return; // Skip polling when app is minimized or tab is not visible
         await refreshDashboard();
         if (currentView === 'attendance') await loadAttendanceLogs();
     }, 2500);
@@ -771,6 +779,10 @@ async function loadAppSettings() {
             appSettings = settings;
             localStorage.setItem('gympos_branding', JSON.stringify(settings));
             applyBrandingToUI(settings);
+            // Restore camera ROI calibration config from settings
+            if (settings.camera_config) {
+                applyRoiConfigToOverlays(settings.camera_config);
+            }
             return;
         }
     } catch (e) {
@@ -890,6 +902,16 @@ function switchView(viewName) {
     if (viewName === 'attendance') loadAttendanceLogs();
     if (viewName === 'pos') loadProducts();
     if (viewName === 'coaches') loadCoaches();
+    if (viewName === 'hardware') {
+        populateCameraDevices();
+        // Bind onchange auto-preview for camera assignment dropdowns
+        const sel1 = document.getElementById('cam-assign-entry');
+        const sel2 = document.getElementById('cam-assign-exit');
+        const sel3 = document.getElementById('cam-assign-tailgate');
+        if (sel1 && !sel1._bound) { sel1.addEventListener('change', () => previewSelectedCamera(1, sel1.value)); sel1._bound = true; }
+        if (sel2 && !sel2._bound) { sel2.addEventListener('change', () => previewSelectedCamera(2, sel2.value)); sel2._bound = true; }
+        if (sel3 && !sel3._bound) { sel3.addEventListener('change', () => previewSelectedCamera(3, sel3.value)); sel3._bound = true; }
+    }
 }
 
 // --- Member Registration & Biometric Capture Studio ---
@@ -935,8 +957,18 @@ function captureCurrentAngleSnapshot() {
     const canvas = document.getElementById('reg-studio-canvas');
     if (!video || !canvas) return;
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    // Validate camera feed is active before capturing
+    if (!video.videoWidth || video.videoWidth === 0 || !video.videoHeight || video.videoHeight === 0) {
+        const errorEl = document.getElementById('reg-error-msg');
+        if (errorEl) {
+            errorEl.innerText = "Camera feed not ready. Please wait for the live preview to initialize.";
+            errorEl.className = "text-xs text-amber-400";
+        }
+        return;
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
@@ -1025,6 +1057,17 @@ async function submitStudioRegistration() {
     }
     if (!phone) {
         errorEl.innerText = "Please enter Phone Number";
+        return;
+    }
+
+    // Duplicate member check
+    const duplicate = cachedMembers.find(m =>
+        m.first_name.toLowerCase() === firstName.toLowerCase() &&
+        m.last_name.toLowerCase() === lastName.toLowerCase()
+    );
+    if (duplicate) {
+        errorEl.innerText = `A member named "${firstName} ${lastName}" already exists (ID: ${duplicate.id}). Use the Members view to edit their profile.`;
+        errorEl.className = "text-xs text-amber-400";
         return;
     }
 

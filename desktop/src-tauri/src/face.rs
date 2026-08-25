@@ -14,7 +14,8 @@ pub fn l2_normalize(vec: &mut [f32]) {
     }
 }
 
-/// Computes the quality/entropy metric of a feature embedding
+/// Computes the quality/entropy metric of a feature embedding.
+/// Returns 0.0-1.0 where higher values indicate richer facial landmark variance.
 pub fn calculate_vector_quality(vec: &[f32]) -> f32 {
     if vec.is_empty() {
         return 0.0;
@@ -45,15 +46,24 @@ pub struct MatchResult {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// Tracks the last successful match to prevent rapid duplicate hardware pulses
+#[derive(Debug, Clone)]
+struct LastMatchRecord {
+    member_id: String,
+    timestamp: DateTime<Utc>,
+}
+
 #[derive(Clone)]
 pub struct FaceVectorStore {
     entries: Arc<RwLock<HashMap<String, FaceEntry>>>,
+    last_match: Arc<RwLock<Option<LastMatchRecord>>>,
 }
 
 impl FaceVectorStore {
     pub fn new() -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
+            last_match: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -137,10 +147,25 @@ impl FaceVectorStore {
         store.clear();
     }
 
-    /// Match a probe vector against all registered vectors using Cosine Metric with Centroid + Multi-Angle screening.
+    /// Returns the number of enrolled face profiles currently in memory
+    pub fn count(&self) -> usize {
+        self.entries.read().len()
+    }
+
+    /// Match a probe vector against all registered vectors using Cosine Metric
+    /// with Centroid + Multi-Angle screening, probe quality gating, and duplicate-scan cooldown.
     pub fn match_vector(&self, probe: &[f32], threshold: f32) -> Option<MatchResult> {
         if probe.is_empty() {
             return None;
+        }
+
+        // Quality gate: reject flat/corrupted probe embeddings for full feature vectors
+        if probe.len() >= 16 {
+            let probe_quality = calculate_vector_quality(probe);
+            if probe_quality < 0.15 {
+                tracing::debug!("Probe rejected: quality {:.3} below minimum threshold 0.15", probe_quality);
+                return None;
+            }
         }
 
         // Normalize probe vector
@@ -157,12 +182,12 @@ impl FaceVectorStore {
 
             // Fast Pre-screening via Centroid Vector
             let centroid_score = if !entry.centroid.is_empty() {
-                cosine_similarity(&normalized_probe, &entry.centroid)
+                cosine_similarity_fast(&normalized_probe, &entry.centroid)
             } else {
                 0.0
             };
 
-            // If centroid matches well, or check all multi-angle vectors
+            // If centroid matches well, update best match
             if centroid_score > highest_score {
                 highest_score = centroid_score;
                 best_match = Some(MatchResult {
@@ -175,8 +200,9 @@ impl FaceVectorStore {
                 });
             }
 
+            // Full multi-angle vector comparison
             for (idx, target_vec) in entry.vectors.iter().enumerate() {
-                let score = cosine_similarity(&normalized_probe, target_vec);
+                let score = cosine_similarity_fast(&normalized_probe, target_vec);
                 if score > highest_score {
                     highest_score = score;
                     best_match = Some(MatchResult {
@@ -191,23 +217,74 @@ impl FaceVectorStore {
             }
         }
 
+        // Duplicate-scan cooldown: if the same member was matched within 3 seconds, suppress
+        if let Some(ref matched) = best_match {
+            let last = self.last_match.read();
+            if let Some(ref record) = *last {
+                if record.member_id == matched.member_id {
+                    let elapsed = (now - record.timestamp).num_milliseconds();
+                    if elapsed < 3000 {
+                        tracing::debug!(
+                            "Duplicate scan suppressed for {} ({}ms since last match)",
+                            matched.member_name, elapsed
+                        );
+                        return None;
+                    }
+                }
+            }
+            drop(last);
+
+            // Record this match
+            let mut last_w = self.last_match.write();
+            *last_w = Some(LastMatchRecord {
+                member_id: matched.member_id.clone(),
+                timestamp: now,
+            });
+        }
+
         best_match
     }
 }
 
-/// Compute cosine similarity between two float vectors.
-/// Since vectors are L2-normalized, (A · B) / (||A|| * ||B||) simplifies directly to the Dot Product (A · B)
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+/// Compute cosine similarity between two L2-normalized float vectors.
+/// Uses 4-wide unrolled accumulation for SIMD-friendly throughput on 128-d embeddings.
+/// For 128-d vectors this cuts loop iterations from 128 to 32.
+pub fn cosine_similarity_fast(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
 
-    let mut dot_product = 0.0f32;
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot_product += x * y;
+    let len = a.len();
+    let chunks = len / 4;
+    let remainder = len % 4;
+
+    let mut acc0 = 0.0f32;
+    let mut acc1 = 0.0f32;
+    let mut acc2 = 0.0f32;
+    let mut acc3 = 0.0f32;
+
+    // 4-wide unrolled dot product
+    for i in 0..chunks {
+        let base = i * 4;
+        acc0 += a[base]     * b[base];
+        acc1 += a[base + 1] * b[base + 1];
+        acc2 += a[base + 2] * b[base + 2];
+        acc3 += a[base + 3] * b[base + 3];
     }
 
+    // Handle remaining elements
+    let base = chunks * 4;
+    for j in 0..remainder {
+        acc0 += a[base + j] * b[base + j];
+    }
+
+    let dot_product = acc0 + acc1 + acc2 + acc3;
     dot_product.max(0.0).min(1.0)
+}
+
+/// Legacy compatibility wrapper
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    cosine_similarity_fast(a, b)
 }
 
 #[cfg(test)]
@@ -218,7 +295,7 @@ mod tests {
     fn test_cosine_similarity_identical() {
         let v1 = vec![1.0, 2.0, 3.0];
         let v2 = vec![1.0, 2.0, 3.0];
-        let sim = cosine_similarity(&v1, &v2);
+        let sim = cosine_similarity_fast(&v1, &v2);
         assert!((sim - 1.0).abs() < 1e-5);
     }
 
@@ -226,8 +303,39 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let v1 = vec![1.0, 0.0, 0.0];
         let v2 = vec![0.0, 1.0, 0.0];
-        let sim = cosine_similarity(&v1, &v2);
+        let sim = cosine_similarity_fast(&v1, &v2);
         assert!((sim - 0.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_cosine_similarity_128d_unrolled() {
+        // Verify 4-wide unrolled accumulation gives correct result for 128-d vectors
+        let mut v1 = vec![0.0f32; 128];
+        let mut v2 = vec![0.0f32; 128];
+        for i in 0..128 {
+            v1[i] = (i as f32 * 0.1).sin();
+            v2[i] = (i as f32 * 0.1).sin();
+        }
+        l2_normalize(&mut v1);
+        l2_normalize(&mut v2);
+        let sim = cosine_similarity_fast(&v1, &v2);
+        assert!((sim - 1.0).abs() < 1e-4, "Expected ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn test_probe_quality_gating() {
+        let store = FaceVectorStore::new();
+        store.upsert(
+            "MEM-001".to_string(),
+            "Test User".to_string(),
+            vec![vec![0.5, 0.5, 0.5, 0.5]],
+        );
+
+        // A flat/degenerate probe should be rejected by quality gate
+        let flat_probe = vec![0.1; 128];
+        let match_res = store.match_vector(&flat_probe, 0.60);
+        // flat_probe has near-zero variance, quality gate should reject it
+        assert!(match_res.is_none(), "Flat probe should be rejected by quality gate");
     }
 
     #[test]
@@ -270,4 +378,24 @@ mod tests {
         assert!(match_res.is_some());
         assert!(match_res.unwrap().is_expired);
     }
+
+    #[test]
+    fn test_duplicate_scan_cooldown() {
+        let store = FaceVectorStore::new();
+        let vector = vec![0.5, 0.5, 0.5, 0.5];
+        store.upsert(
+            "MEM-002".to_string(),
+            "Jane Smith".to_string(),
+            vec![vector.clone()],
+        );
+
+        // First match should succeed
+        let first = store.match_vector(&vector, 0.60);
+        assert!(first.is_some(), "First match should succeed");
+
+        // Immediate second match should be suppressed by 3s cooldown
+        let second = store.match_vector(&vector, 0.60);
+        assert!(second.is_none(), "Duplicate scan within 3s should be suppressed");
+    }
 }
+

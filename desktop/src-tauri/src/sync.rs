@@ -22,7 +22,8 @@ impl CloudSyncWorker {
         }
     }
 
-    /// Spawns the background synchronization loop with real-time kill-switch polling & inter-branch sync
+    /// Spawns the background synchronization loop with real-time kill-switch polling & inter-branch sync.
+    /// Uses exponential backoff on consecutive failures (5s -> 15s -> 30s -> 60s cap).
     pub fn start_background_sync(self) {
         tauri::async_runtime::spawn(async move {
             info!("Cloud sync background worker active targeting: {}", self.cloud_url);
@@ -31,13 +32,20 @@ impl CloudSyncWorker {
                 .build()
                 .unwrap_or_default();
 
+            let mut consecutive_failures: u32 = 0;
+            let base_interval_secs: u64 = 5;
+
             loop {
-                // Poll every 5 seconds for responsive multi-branch sync & fleet commands
-                sleep(Duration::from_secs(5)).await;
+                // Exponential backoff: 5s -> 15s -> 30s -> 60s cap
+                let backoff_secs = match consecutive_failures {
+                    0 => base_interval_secs,
+                    1 => 15,
+                    2 => 30,
+                    _ => 60,
+                };
+                sleep(Duration::from_secs(backoff_secs)).await;
 
                 if let Some(claims) = self.license.current_claims() {
-                    let sync_url = format!("{}/api/v1/sync/push", self.cloud_url.trim_end_matches('/'));
-
                     // 1. Gather unsynced local members (registered at this branch)
                     let unsynced_members = self
                         .db
@@ -48,6 +56,17 @@ impl CloudSyncWorker {
                     // 2. Gather unsynced attendance records
                     let unsynced_att = self.db.get_unsynced_attendance().unwrap_or_default();
                     let unsynced_att_ids: Vec<String> = unsynced_att.iter().map(|a| a.id.clone()).collect();
+
+                    // 3. Skip empty payloads — no need to POST when nothing changed
+                    if unsynced_members.is_empty() && unsynced_att.is_empty() {
+                        // Still reset backoff on idle cycles (network is reachable, just nothing to send)
+                        if consecutive_failures > 0 {
+                            consecutive_failures = 0;
+                        }
+                        continue;
+                    }
+
+                    let sync_url = format!("{}/api/v1/sync/push", self.cloud_url.trim_end_matches('/'));
 
                     let payload = SyncPushPayload {
                         gym_id: claims.gym_id,
@@ -63,6 +82,9 @@ impl CloudSyncWorker {
                     match client.post(&sync_url).json(&payload).send().await {
                         Ok(resp) => {
                             if resp.status().is_success() {
+                                // Reset backoff on success
+                                consecutive_failures = 0;
+
                                 if let Ok(body) = resp.json::<SyncResponse>().await {
                                     // A. Mark local items as synced
                                     if !unsynced_member_ids.is_empty() {
@@ -93,10 +115,20 @@ impl CloudSyncWorker {
                                         let _ = self.db.clear_cached_license();
                                     }
                                 }
+                            } else {
+                                consecutive_failures = consecutive_failures.saturating_add(1);
+                                tracing::debug!(
+                                    "Cloud sync HTTP error (status {}), backoff stage: {}",
+                                    resp.status(), consecutive_failures
+                                );
                             }
                         }
                         Err(e) => {
-                            tracing::debug!("Cloud sync heartbeat pending: {}", e);
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            tracing::debug!(
+                                "Cloud sync heartbeat pending (attempt {}): {}",
+                                consecutive_failures, e
+                            );
                         }
                     }
                 }
@@ -104,3 +136,4 @@ impl CloudSyncWorker {
         });
     }
 }
+

@@ -46,14 +46,29 @@ impl HardwareManager {
         Ok(format!("Connected to ESP32 on {}", port_name))
     }
 
+    /// Send a serial command with connection health checking.
+    /// Auto-clears the connection on write failure (broken pipe, device disconnected).
     pub fn send_command(&self, cmd: &str) -> Result<(), String> {
         let mut port_guard = self.port.lock();
         if let Some(port) = port_guard.as_mut() {
             let formatted = format!("{}\n", cmd.trim());
-            port.write_all(formatted.as_bytes())
-                .map_err(|e| format!("Write to serial failed: {}", e))?;
-            port.flush().map_err(|e| format!("Flush error: {}", e))?;
-            Ok(())
+            match port.write_all(formatted.as_bytes()) {
+                Ok(_) => {
+                    if let Err(e) = port.flush() {
+                        // Flush failure indicates connection degradation
+                        tracing::warn!("ESP32 flush error (connection may be degraded): {}", e);
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    // Write failure: device likely disconnected — auto-clear connection
+                    tracing::warn!("ESP32 write failed, auto-disconnecting: {}", e);
+                    *port_guard = None;
+                    let mut name_guard = self.connected_port_name.lock();
+                    *name_guard = None;
+                    Err(format!("Hardware disconnected during write: {}. Port auto-cleared.", e))
+                }
+            }
         } else {
             Err("No active hardware COM port connection".to_string())
         }
@@ -71,9 +86,16 @@ impl HardwareManager {
         Ok(format!("Alarm strobe & buzzer triggered ({}ms)", duration_ms))
     }
 
+    /// Returns (is_connected, port_name)
     pub fn get_status(&self) -> (bool, Option<String>) {
         let name = self.connected_port_name.lock().clone();
         let connected = name.is_some();
         (connected, name)
     }
+
+    /// Convenience method for quick boolean connection check
+    pub fn is_connected(&self) -> bool {
+        self.connected_port_name.lock().is_some()
+    }
 }
+
