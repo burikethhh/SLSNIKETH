@@ -750,7 +750,7 @@ async function refreshFeed() {
                     ? `<img src="${photoUrl(ev.photo)}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
                     : `<div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-lg">${typeIcon}</div>`}
                 <div class="flex-1">
-                    <span class="font-medium text-gray-200">${ev.member_name||ev.message||'System'}</span>
+                    <span class="font-medium text-gray-200">${escHtml(ev.member_name||ev.message||'System')}</span>
                     ${ev.direction ? `<span class="text-gray-500 ml-1">${ev.direction}</span>` : ''}
                     ${ev.method ? `<span class="badge badge-blue ml-1">${ev.method}</span>` : ''}
                     ${ev.type === 'incident' ? '<span class="badge badge-red ml-1">ALERT</span>' : ''}
@@ -1007,8 +1007,8 @@ async function scanFace() {
                                 ? `<img src="${photoUrl(m.member.photo)}" alt="" class="w-10 h-10 rounded-full object-cover flex-shrink-0" onerror="this.style.display='none'">`
                                 : '<div class="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center flex-shrink-0 text-xs text-gray-400">?</div>'}
                             <div class="flex-1">
-                                <a href="/members/${m.member.id}" class="font-medium text-gray-200 hover:text-purple-400">${m.member.name}</a>
-                                <span class="badge ${statusClass} ml-1">${m.member.status}</span>
+                                <a href="/members/${escHtml(m.member.id)}" class="font-medium text-gray-200 hover:text-purple-400">${escHtml(m.member.name)}</a>
+                                <span class="badge ${statusClass} ml-1">${escHtml(m.member.status)}</span>
                                 <div class="text-xs text-gray-500">Confidence: ${(m.confidence * 100).toFixed(1)}%${expiryInfo}</div>
                             </div>
                         </div>`;

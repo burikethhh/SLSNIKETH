@@ -216,7 +216,7 @@ except Exception as _e:
 
 # -- License guard (multi-branch + 7d heartbeat + tamper) --
 try:
-    from license.validator import validate_license as _validate_lic
+    from license.validator import validate_license as _validate_lic, heartbeat_ok as _heartbeat_ok
     from starlette.responses import HTMLResponse as _HResp
     @app.middleware("http")
     async def _license_guard(request, call_next):
@@ -232,6 +232,13 @@ try:
                 reason = res.get("reason","expired")
                 html = f"<html><body style='background:#080b12;color:#c4cde0;font-family:Inter;padding:40px;text-align:center'><h1 style='color:#f87171'>GymPOS Locked</h1><p>License {reason} — contact CEO to renew. Grace expired.</p><p><a href='/license/activate' style='color:#7c3aed'>Activate License</a></p></body></html>"
                 return _HResp(html, status_code=403)
+            # 7-day heartbeat: refresh last_verify on every successful guard pass (cloud-online period)
+            # Mirrors Tauri sync.rs heartbeat_ok() after sync_push 200 — keeps kiosk unlocked while online
+            try:
+                if res.get("claims") and os.environ.get("LICENSE_PUBKEY"):
+                    _heartbeat_ok(project_root, res["claims"].get("gym_id",""))
+            except Exception:
+                pass
         except Exception as _le:
             logger.warning("license guard error %s — fail-closed", _le)
             return _HResp("<html><body style='background:#080b12;color:#f87171;padding:40px;text-align:center'><h1>License check failed</h1><p>Contact support.</p></body></html>", status_code=503)

@@ -41,17 +41,34 @@
 #include <LiquidCrystal_I2C.h>
 
 // ───────────── Lock Type ─────────────────────
-// false = solenoid (relay OFF = locked, relay ON = unlocked)
-// true  = magnetic lock (relay ON = locked, relay OFF = unlocked)
-static const bool MAG_LOCK = true;  // maglock (energized locked) per .env.example:22 — set false for solenoid
+// false = solenoid (relay OFF = locked, relay ON = unlocked) — fail-secure (power cut = locked)
+// true  = magnetic lock (relay ON = locked, relay OFF = unlocked) — FAIL-SAFE (power cut = unlocked, safety egress)
+// MAG_LOCK=true is required for maglock hardware per .env.example:22 — override via build flag -D MAG_LOCK=0 for solenoid builds.
+#ifndef MAG_LOCK
+static const bool MAG_LOCK = true;  // default: maglock energized-locked, verified fail-safe
+#else
+// MAG_LOCK overridden via PlatformIO build_flags (e.g., -D MAG_LOCK=0)
+#endif
 
 // ───────────── Pin Configuration ─────────────
+// All pins allow override via PlatformIO build_flags: -D LOCK_PIN=19 -D LCD_SDA_PIN=21 etc.
+// This enables per-gym hardware variants without editing firmware.
+#ifndef LOCK_PIN
 static const int LOCK_PIN       = 18;  // Relay control (solenoid or maglock)
-static const int SOLENOID_PIN   = LOCK_PIN; // alias for backward compatibility
+#endif
+static const int SOLENOID_PIN   = LOCK_PIN; // alias for backward compatibility (always mirrors LOCK_PIN)
+#ifndef LCD_SDA_PIN
 static const int LCD_SDA_PIN    = 21;  // I2C SDA (Wire default)
+#endif
+#ifndef LCD_SCL_PIN
 static const int LCD_SCL_PIN    = 22;  // I2C SCL (Wire default)
+#endif
+#ifndef BUZZER_PIN
 static const int BUZZER_PIN     = 25;  // 5V active buzzer
+#endif
+#ifndef STATUS_LED_PIN
 static const int STATUS_LED_PIN = 2;   // Built-in LED
+#endif
 
 // ───────────── I2C Scanner ───────────────────
 static uint8_t scanLcdAddress() {
