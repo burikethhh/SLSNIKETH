@@ -463,4 +463,21 @@ impl CloudDatabase {
         }
         Ok(count)
     }
+
+    // --- Analytics helpers (Stage 5.1) ---
+    pub fn count_cloud_members(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_members", [], |r| r.get(0)).unwrap_or(0);
+        Ok(n as usize)
+    }
+    pub fn count_attendance(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_attendance", [], |r| r.get(0)).unwrap_or(0);
+        Ok(n as usize)
+    }
+    pub fn count_tailgate_breaches(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1", [], |r| r.get(0)).unwrap_or(0);
+        Ok(n as usize)
+    }
 }

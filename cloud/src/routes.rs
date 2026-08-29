@@ -436,3 +436,44 @@ pub async fn remote_disable(
     ))
 }
 
+// --- Fleet Analytics & Aggregated Metrics (Stage 5.1) ---
+// Provides CEO dashboard with server-side ARR, active member counts, and security breach flags.
+pub async fn analytics_fleet(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let gyms = state.gyms.read().clone();
+    let revoked = state.revoked_licenses.read().len() + state.disabled_gyms.read().len();
+
+    // Monthly ARR via tier pricing (Basic $99 / Pro $199 / Ultra $349)
+    let mut mrr: f64 = 0.0;
+    let mut tier_breakdown = std::collections::HashMap::new();
+    for g in gyms.values() {
+        let price = g.tier.price_usd_per_month();
+        mrr += price;
+        *tier_breakdown.entry(format!("{:?}", g.tier).to_lowercase()).or_insert(0) += 1;
+    }
+
+    // Active member count across sister gyms + attendance tailgate flags
+    let total_cloud_members: usize = state.db.count_cloud_members().unwrap_or(0);
+    let total_attendance: usize = state.db.count_attendance().unwrap_or(0);
+    let breach_flags: usize = state.db.count_tailgate_breaches().unwrap_or(0);
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "total_gyms": gyms.len(),
+            "mrr_usd": mrr,
+            "mrr_formatted": format!("${:.2}", mrr),
+            "tier_breakdown": tier_breakdown,
+            "revoked_or_disabled": revoked,
+            "total_cloud_members": total_cloud_members,
+            "total_attendance_logs": total_attendance,
+            "security_breach_flags": breach_flags,
+            "server_time": Utc::now(),
+        })),
+    ))
+}
+

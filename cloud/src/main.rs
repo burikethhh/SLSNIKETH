@@ -87,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/sync/push", post(routes::sync_push))
         .route("/api/v1/sync/vectors", post(routes::sync_vectors))
         .route("/api/v1/remote/disable", post(routes::remote_disable))
+        .route("/api/v1/analytics/fleet", get(routes::analytics_fleet))
         .fallback_service(dashboard_service)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
