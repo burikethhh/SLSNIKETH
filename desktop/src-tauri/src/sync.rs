@@ -96,8 +96,9 @@ impl CloudSyncWorker {
                             }
 
                             if resp.status().is_success() {
-                                // Reset backoff on success
+                                // Reset backoff on success + refresh 7-day heartbeat (matches SLS123 validator.py: heartbeat_ok)
                                 consecutive_failures = 0;
+                                let _ = self.db.heartbeat_ok();
 
                                 if let Ok(body) = resp.json::<SyncResponse>().await {
                                     // A. Mark local items as synced

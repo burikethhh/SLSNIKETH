@@ -42,6 +42,40 @@ pub struct LicenseClaims {
     pub max_members: u32,
     pub hardware_lock_enabled: bool,
     pub tailgate_detection_enabled: bool,
+
+    // ---- Offline HWID binding + heartbeat + tamper-resistance (parity with SLS123 validator.py) ----
+    /// Device fingerprint (SHA256 of MAC+MachineGuid+disk serial). Empty = hardware lock not yet bound.
+    #[serde(default)]
+    pub hwid: String,
+    /// Last known public IP hint, recorded at activation for anomaly detection. Empty = not provided.
+    #[serde(default)]
+    pub ip_hint: String,
+    /// Unix epoch seconds at which the license expires (mirror of expires_at, for offline math).
+    #[serde(default)]
+    pub exp_unix: i64,
+    /// Unix epoch seconds at which the 3-day post-expiry grace window ends.
+    #[serde(default)]
+    pub grace_until: i64,
+}
+
+impl LicenseClaims {
+    /// Unix-seconds helper for offline expiry maths; falls back to `expires_at` when `exp_unix` is unset.
+    pub fn expiry_unix(&self) -> i64 {
+        if self.exp_unix > 0 {
+            self.exp_unix
+        } else {
+            self.expires_at.timestamp()
+        }
+    }
+
+    /// Unix-seconds helper for grace deadline; falls back to expiry + 3 days.
+    pub fn grace_unix(&self) -> i64 {
+        if self.grace_until > 0 {
+            self.grace_until
+        } else {
+            self.expiry_unix() + 3 * 24 * 3600
+        }
+    }
 }
 
 impl LicenseClaims {

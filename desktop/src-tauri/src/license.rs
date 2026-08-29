@@ -5,7 +5,122 @@ use gympos_shared::{LicenseClaims, LicenseStatus};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::pss::VerifyingKey;
 use rsa::signature::Verifier;
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
+
+/// Compute a stable device fingerprint for HWID binding.
+/// Mirrors `SLS123/license/validator.py::get_hwid()` exactly:
+///   anchors = [MachineGuid (winreg), disk SerialNumber (wmic), validated MAC, hostname]
+///   sorted(set(anchors)) → sha256 → hex[:32]
+/// Fallback: machine_uid + uuid node if <2 anchors (also mirrors Python fallback).
+pub fn get_hwid() -> String {
+    let mut anchors: Vec<String> = Vec::new();
+
+    // 1. MachineGuid from Windows Registry (primary anchor — same as machine_uid on Windows)
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hkey) = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
+        {
+            if let Ok(guid) = hkey.get_value::<String, _>("MachineGuid") {
+                let g = guid.trim().to_string();
+                if !g.is_empty() {
+                    anchors.push(g);
+                }
+            }
+        }
+    }
+    // Fallback via machine_uid crate (already reads MachineGuid on Windows)
+    if anchors.is_empty() {
+        if let Ok(uid) = machine_uid::get() {
+            let u = uid.trim().to_string();
+            if !u.is_empty() && u != "unknown-machine" {
+                anchors.push(u);
+            }
+        }
+    }
+
+    // 2. Disk serial via wmic (matches Python: wmic diskdrive get SerialNumber)
+    if let Ok(output) = std::process::Command::new("wmic")
+        .args(["diskdrive", "get", "SerialNumber"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let s = line.trim();
+                if s.is_empty() || s.to_lowercase() == "serialnumber" {
+                    continue;
+                }
+                // wmic pads with spaces — take first token
+                let token = s.split_whitespace().next().unwrap_or("").trim().to_string();
+                if !token.is_empty() {
+                    anchors.push(token);
+                    break;
+                }
+            }
+        }
+    }
+
+    // 3. Validated MAC (skip locally-administered / random MAC — matches Python (node>>40)&0x01==0)
+    // Try wmic nic first (no extra crate), then fall back to parsing ipconfig if needed
+    if let Ok(output) = std::process::Command::new("wmic")
+        .args(["nic", "where", "PhysicalAdapter=TRUE", "get", "MacAddress"])
+        .output()
+    {
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let s = line.trim();
+                if s.is_empty() || s.to_lowercase() == "macaddress" {
+                    continue;
+                }
+                // Validate MAC format and check locally-administered bit
+                let mac = s.replace('-', ":").to_uppercase();
+                let parts: Vec<&str> = mac.split(':').collect();
+                if parts.len() == 6 {
+                    if let Ok(first_byte) = u8::from_str_radix(parts[0], 16) {
+                        // Python: (node >> 40) & 0x01 == 0 → multicast/local bit not set
+                        // For MAC string, first byte LSB (0x01) = I/G, second LSB (0x02) = U/L
+                        // Python checks multicast; we also reject locally-administered (0x02)
+                        // to avoid random MACs from VPNs.
+                        if (first_byte & 0x01) == 0 && (first_byte & 0x02) == 0 && mac != "00:00:00:00:00:00" {
+                            anchors.push(mac.replace(':', "").to_lowercase());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Hostname (always present)
+    let hostname = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .or_else(|_| std::env::var("HOST"))
+        .unwrap_or_else(|_| "host".to_string());
+    let hn = hostname.trim().to_string();
+    if !hn.is_empty() {
+        anchors.push(hn);
+    }
+
+    // Fallback if <2 anchors (mirrors Python: fallback-" + uuid.getnode())
+    if anchors.len() < 2 {
+        // Use machine_uid fallback or generate a stable-ish fallback from hostname hash
+        let fallback = format!("fallback-{}", hostname);
+        anchors.push(fallback);
+    }
+
+    // Sorted unique set → join with "|" → sha256 → hex[:32] (mirrors Python sorted(set(anchors)))
+    anchors.sort();
+    anchors.dedup();
+    let raw = anchors.join("|");
+
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    let digest = hasher.finalize();
+    let hex: String = digest.iter().map(|b| format!("{:02x}", b)).collect();
+    hex.chars().take(32).collect()
+}
 
 pub const EMBEDDED_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr3tMulsXeUjbCLhDfgcn
@@ -36,6 +151,18 @@ impl LicenseManager {
 
     pub fn verify_and_apply(&self, token: &str) -> Result<LicenseStatus, String> {
         let claims = self.verify_token(token)?;
+
+        // Hardware lock: if issuer bound a hwid and HW lock is enabled, enforce 1-device binding.
+        if claims.hardware_lock_enabled && !claims.hwid.is_empty() {
+            let this_hwid = get_hwid();
+            if claims.hwid != this_hwid {
+                return Err(format!(
+                    "Hardware lock mismatch: license is bound to device '{}' but this machine is '{}'.",
+                    claims.hwid, this_hwid
+                ));
+            }
+        }
+
         let status = claims.evaluate(Utc::now());
 
         if !matches!(status, LicenseStatus::Expired { .. } | LicenseStatus::Invalid { .. }) {

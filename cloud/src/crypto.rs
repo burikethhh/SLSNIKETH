@@ -141,6 +141,10 @@ mod tests {
             max_members: 500,
             hardware_lock_enabled: true,
             tailgate_detection_enabled: true,
+            hwid: "deadbeef".to_string(),
+            ip_hint: "203.0.113.9".to_string(),
+            exp_unix: (Utc::now() + Duration::days(30)).timestamp(),
+            grace_until: (Utc::now() + Duration::days(33)).timestamp(),
         };
 
         let token = signer.sign_license(&claims).expect("Signing failed");

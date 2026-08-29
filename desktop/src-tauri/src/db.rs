@@ -42,7 +42,9 @@ impl Database {
             CREATE TABLE IF NOT EXISTS license_cache (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 raw_token TEXT NOT NULL,
-                cached_at TEXT NOT NULL
+                cached_at TEXT NOT NULL,
+                last_verify_unix INTEGER NOT NULL DEFAULT 0,
+                last_seen_unix INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS app_settings (
@@ -140,6 +142,8 @@ impl Database {
         let _ = conn.execute("ALTER TABLE members ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE members ADD COLUMN expires_at TEXT", []);
         let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN synced_to_cloud INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE license_cache ADD COLUMN last_verify_unix INTEGER NOT NULL DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE license_cache ADD COLUMN last_seen_unix INTEGER NOT NULL DEFAULT 0", []);
 
         Ok(())
     }
@@ -265,6 +269,45 @@ impl Database {
     pub fn clear_cached_license(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM license_cache", [])?;
+        Ok(())
+    }
+
+    /// Record a successful cloud verification → refresh the 7-day heartbeat.
+    pub fn heartbeat_ok(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO license_cache (id, raw_token, cached_at, last_verify_unix, last_seen_unix)
+             VALUES (1, '', '', ?1, ?1)
+             ON CONFLICT(id) DO UPDATE SET last_verify_unix = ?1, last_seen_unix = ?1",
+            params![now],
+        )?;
+        Ok(())
+    }
+
+    pub fn last_verify_unix(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT last_verify_unix FROM license_cache WHERE id = 1", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(v)
+    }
+
+    pub fn last_seen_unix(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let v: i64 = conn
+            .query_row("SELECT last_seen_unix FROM license_cache WHERE id = 1", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(v)
+    }
+
+    pub fn record_last_seen(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "UPDATE license_cache SET last_seen_unix = ?1 WHERE id = 1",
+            params![now],
+        )?;
         Ok(())
     }
 

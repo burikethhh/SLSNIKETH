@@ -128,6 +128,10 @@ pub async fn register_gym(
         max_members: payload.tier.max_members(),
         hardware_lock_enabled: true,
         tailgate_detection_enabled: true,
+        hwid: String::new(),
+        ip_hint: String::new(),
+        exp_unix: expires_at.timestamp(),
+        grace_until: expires_at.timestamp() + 3 * 24 * 3600,
     };
 
     let license_key = state.signer.sign_license(&claims).map_err(|e| {
@@ -231,6 +235,10 @@ pub async fn generate_license(
         max_members: payload.tier.max_members(),
         hardware_lock_enabled: payload.enable_lock.unwrap_or(true),
         tailgate_detection_enabled: payload.enable_tailgate.unwrap_or(true),
+        hwid: String::new(),
+        ip_hint: String::new(),
+        exp_unix: expires_at.timestamp(),
+        grace_until: expires_at.timestamp() + 3 * 24 * 3600,
     };
 
     let license_key = state.signer.sign_license(&claims).map_err(|e| {
