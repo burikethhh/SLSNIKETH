@@ -28,6 +28,14 @@ __pycache__/
 !routers/*.pyc
 !services/*.pyc
 
+# Debug artifacts / disassembly output
+*_disasm.txt
+*_disasm.log
+
+# One-shot scripts with hardcoded paths (should not be tracked)
+add_attendance_indexes.py
+check_plan.py
+
 # Electron
 electron/node_modules/
 electron/GymPOS.exe.bak
@@ -40,10 +48,11 @@ esp32/.pio/
 GymPOS.exe
 
 # OS / editor junk
+Thumbs.db
+Desktop.ini
 Microsoft Edge.lnk
-0
 .opencode/
+opencode.json
 opencode.bat
 opencode.cmd
 opencode.ps1
-opencode.json

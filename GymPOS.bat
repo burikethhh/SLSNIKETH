@@ -9,9 +9,10 @@ cd /d "%~dp0"
 ::
 ::  Hardware configuration for this PC
 ::  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-::  Cameras  : 2x EMEET SmartCam C60E 4K
-::    cam1   : Face scan / member recognition  (device index 0))
-::    cam2   : Tailgate / overhead monitor     (device index 1))
+::  Cameras  : 3x EMEET SmartCam C60E 4K
+::    cam1   : Face IN  / member recognition  (device index 1)
+::    cam2   : Face OUT / member exit         (device index 0)
+::    cam3   : Tailgate / overhead monitor    (device index 2)
 ::  ESP32    : Silicon Labs CP210x on COM3
 ::  RFID     : USB HID keyboard-emulation reader
 ::
@@ -20,6 +21,7 @@ cd /d "%~dp0"
 ::
 set CAM1_INDEX=1
 set CAM2_INDEX=0
+set CAM3_INDEX=2
 
 :: â”€â”€ Kill any process still holding port 8000 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8000.*LISTENING" 2^>nul') do (

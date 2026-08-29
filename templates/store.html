@@ -120,7 +120,7 @@ function renderSearch(products) {
             </div>
             <div class="text-right flex-shrink-0 ml-3">
                 <div class="text-green-400 font-bold text-sm">₱${parseFloat(p.price).toFixed(2)}</div>
-                <div class="text-xs ${p.stock <= 5 ? 'text-red-400' : 'text-gray-500'}">${p.stock} in stock</div>
+                <div class="text-xs ${p.stock <= (p.low_stock_threshold||5) ? 'text-red-400' : 'text-gray-500'}">${p.stock} in stock</div>
             </div>
         </div>
     `).join('');

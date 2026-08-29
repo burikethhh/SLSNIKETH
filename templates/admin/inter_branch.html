@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Inter-Branch Visits — Admin{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold" style="color:#c4b5fd;font-family:'Rajdhani',sans-serif;">Inter-Branch Visits</h1>
+    <span class="text-xs text-gray-500">Owner: {{ owner_email }} — {{ visits|length }} records</span>
+</div>
+
+<div class="card mb-4">
+    <form method="GET" class="flex gap-4 items-end flex-wrap">
+        <div>
+            <label class="text-xs text-gray-500">Visited Branch</label>
+            <select name="gym_filter" class="mt-1">
+                <option value="">All Branches</option>
+                {% for g in gyms %}
+                <option value="{{ g.gym_id }}" {% if gym_filter==g.gym_id %}selected{% endif %}>{{ g.gym_id }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">From</label>
+            <input type="date" name="date_from" value="{{ date_from or '' }}" class="mt-1">
+        </div>
+        <div>
+            <label class="text-xs text-gray-500">To</label>
+            <input type="date" name="date_to" value="{{ date_to or '' }}" class="mt-1">
+        </div>
+        <button type="submit" class="btn btn-primary">Filter</button>
+        <a href="/admin/inter-branch?export=csv&gym_filter={{ gym_filter }}&date_from={{ date_from }}&date_to={{ date_to }}" class="btn btn-outline">Export CSV</a>
+    </form>
+</div>
+
+<div class="card overflow-hidden">
+    <table>
+        <thead>
+            <tr><th>Time</th><th>Visitor</th><th>Home Branch</th><th>Visited Branch</th><th>Method</th></tr>
+        </thead>
+        <tbody>
+            {% for v in visits %}
+            <tr>
+                <td class="text-xs text-gray-400">{{ v.timestamp | to_local if v.timestamp else '' }}</td>
+                <td class="text-sm">Member #{{ v.member_id }} {% if v.member_name %}— {{ v.member_name }}{% endif %}</td>
+                <td><span class="badge badge-purple">{{ v.visitor_home_gym_id or v.home_gym }}</span></td>
+                <td><span class="badge badge-blue">{{ v.gym_id }}</span></td>
+                <td class="text-xs">{{ v.method or 'FACE' }}</td>
+            </tr>
+            {% endfor %}
+            {% if not visits %}
+            <tr><td colspan="5" class="text-center text-gray-500 py-8">No inter-branch visits</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+<div class="text-xs text-gray-600 mt-3">Discreet log — owner only. Retention 30d like clips.</div>
+{% endblock %}

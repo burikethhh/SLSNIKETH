@@ -20,7 +20,7 @@
     "appId": "com.sololeveling.gympos",
     "productName": "GymPOS",
     "directories": {
-      "output": "C:/GymPOS-build",
+      "output": "dist",
       "buildResources": "build"
     },
     "files": [

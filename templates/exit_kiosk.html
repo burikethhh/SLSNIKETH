@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Exit Kiosk — Solo Leveling Gym</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="/static/vendor/css/tailwind.min.css" rel="stylesheet">
+    <link href="/static/vendor/css/fonts.css" rel="stylesheet">
     <style>
         body { background: #0f0f14; color: #e5e7eb; font-family: system-ui, sans-serif; }
         .card { background: #1a1a2e; border: 1px solid #2d2d44; border-radius: 12px; padding: 1.5rem; }
@@ -41,7 +42,7 @@
             <div class="card flex items-center justify-between gap-4">
                 <div class="flex items-center gap-3">
                     {% if m.photo_path %}
-                    <img src="/photos/{{ m.photo_path.split('/')[-1] }}" class="w-12 h-12 rounded-full object-cover bg-gray-700" onerror="this.style.display='none'">
+                    <img src="{{ photo_url(m.photo_path) }}" data-fallback="/static/photos/{{ m.photo_path.split('/')[-1] }}" class="w-12 h-12 rounded-full object-cover bg-gray-700" onerror="this.style.display='none'">
                     {% else %}
                     <div class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-xl font-bold" style="color:#c4b5fd;">
                         {{ m.name[0].upper() }}

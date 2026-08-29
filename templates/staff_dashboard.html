@@ -568,6 +568,7 @@ function toggleSound() {
 }
 
 // ── Toast Notifications ────────────────────────────────────────
+function escHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function showToast(message, type) {
     const container = document.getElementById('toastContainer');
     const colors = {
@@ -581,7 +582,7 @@ function showToast(message, type) {
     const toast = document.createElement('div');
     toast.className = `border-l-3 rounded-r px-4 py-3 text-sm text-gray-200 shadow-lg transition-all transform ${colors[type] || colors.warn}`;
     toast.style.cssText = 'border-left-width:3px;animation:slideIn .3s ease-out;';
-    toast.innerHTML = `<span class="mr-1">${icons[type] || '📋'}</span> ${message}`;
+    toast.innerHTML = `<span class="mr-1">${icons[type] || '📋'}</span> ${escHtml(message)}`;
     container.appendChild(toast);
     setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 4000);
 }
@@ -716,7 +717,7 @@ async function refreshFeed() {
                     const evType = ev.type || (ev.alert === 'red' ? 'deny' : 'unlock');
                     playBeep(evType);
                     const msg = ev.member_name
-                        ? `${ev.member_name} — ${ev.message || ev.direction || evType}`
+                        ? `${escHtml(ev.member_name||'')} — ${ev.message || ev.direction || evType}`
                         : (ev.message || evType);
                     showToast(msg, evType);
                     totalEvents++;
@@ -755,7 +756,7 @@ async function refreshFeed() {
                     ${ev.type === 'incident' ? '<span class="badge badge-red ml-1">ALERT</span>' : ''}
                     ${ev.type === 'deny' ? '<span class="badge badge-red ml-1">DENIED</span>' : ''}
                     ${ev.type === 'manual_override' ? '<span class="badge badge-yellow ml-1">OVERRIDE</span>' : ''}
-                    ${ev.message && ev.member_name ? `<div class="text-xs text-gray-500 mt-0.5">${ev.message}</div>` : ''}
+                    ${ev.message && ev.member_name ? `<div class="text-xs text-gray-500 mt-0.5">${escHtml(ev.message||'')}</div>` : ''}
                 </div>
                 <span class="text-xs text-gray-500 whitespace-nowrap">${formatTime(ev.time)}</span>
             </div>`;

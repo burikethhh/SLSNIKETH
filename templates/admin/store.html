@@ -20,8 +20,8 @@
 {% elif request.query_params.get('error')=='in_use' %}<div class="alert-red mb-4">Cannot delete a product that has sales records.</div>
 {% elif request.query_params.get('error')=='negative_stock' %}<div class="alert-red mb-4">Cannot set stock below zero.</div>{% endif %}
 
-<!-- Low-stock alerts -->
-{% set low = products | selectattr('stock', 'le', 5) | selectattr('is_active', 'eq', 1) | list %}
+<!-- Low-stock alerts (per-product threshold) -->
+{% set low = namespace(items=[]) %}{% for p in products if p.is_active and p.stock <= p.low_stock_threshold %}{% set _ = low.items.append(p) %}{% endfor %}{% set low = low.items %}
 {% if low %}
 <div class="alert-yellow mb-4 text-sm">
     <strong>Low Stock Alert:</strong>

@@ -265,6 +265,7 @@ async function startBackend() {
       PYTHONUNBUFFERED: "1",           // flush logs immediately
       CAM1_INDEX: process.env.CAM1_INDEX || "1",
       CAM2_INDEX: process.env.CAM2_INDEX || "0",
+      CAM3_INDEX: process.env.CAM3_INDEX || "2",
     },
     windowsHide: true,                 // no console window for the child
     detached: false,

@@ -5,15 +5,29 @@ Solo Leveling Gym - Standalone Edition
 Bootstraps the compiled FastAPI application (main.pyc) then registers
 all extension routes on top of it.
 
-Default credentials after a fresh DB reset:
-  Admin login : admin / admin
-  Staff login : admin / admin
+Default credentials are generated randomly on first DB seed — check logs.
+Change immediately via Admin → Maintenance.
 """
-import importlib.util, sys, os, logging
+import importlib.util, sys, os, logging, secrets
 from datetime import datetime, timezone
 _os = os   # alias used inside closures throughout this module
 
 logger = logging.getLogger("gympos.extensions")
+
+# -- Secret key guard (C2) — refuse weak default --
+_WEAK_SECRETS = {"change-me-to-a-random-secret-key-in-production", "change-me-generate-with-python-c-secrets-token-urlsafe-32", ""}
+_env_secret = os.environ.get("SECRET_KEY", "")
+if _env_secret in _WEAK_SECRETS:
+    logger.warning("SECRET_KEY not set or weak — generating ephemeral key (set SECRET_KEY in .env for persistence)")
+    _env_secret = secrets.token_urlsafe(32)
+    os.environ["SECRET_KEY"] = _env_secret
+    # also try to inject into compiled config module if already loaded
+    try:
+        import config as _cfg
+        if getattr(_cfg, "settings", None) and getattr(_cfg.settings, "secret_key", "") in _WEAK_SECRETS:
+            _cfg.settings.secret_key = _env_secret
+    except Exception:
+        pass
 
 # -- Philippine Standard Time helpers (UTC+8) --
 try:
@@ -149,6 +163,16 @@ if app is None:
     print("ERROR: Could not find 'app' in main.pyc", file=sys.stderr)
     sys.exit(1)
 
+# -- Patch compiled SessionMiddleware secret if still weak --
+try:
+    import config as _cfg2
+    _sk = getattr(getattr(_cfg2, "settings", None), "secret_key", "")
+    if _sk in _WEAK_SECRETS and _env_secret not in _WEAK_SECRETS:
+        _cfg2.settings.secret_key = _env_secret
+        logger.info("Patched config.settings.secret_key from weak default")
+except Exception:
+    pass
+
 # -- Monkey-patch compiled log_activity to use PHT instead of UTC --
 try:
     import routers.admin as _ra
@@ -168,6 +192,115 @@ try:
     logger.info("Patched StaffActivity timestamp default → PHT")
 except Exception as _e:
     logger.warning("Could not patch log_activity: %s", _e)
+
+# -- CSRF lightweight guard (C3) — Origin check for POST --
+try:
+    from starlette.responses import JSONResponse as _JResp
+    @app.middleware("http")
+    async def _csrf_guard(request, call_next):
+        if request.method == "POST":
+            path = request.url.path
+            if path not in ("/login", "/admin/login"):
+                origin = request.headers.get("origin") or request.headers.get("referer") or ""
+                try:
+                    from urllib.parse import urlparse
+                    host = urlparse(origin).hostname or ""
+                except Exception:
+                    host = ""
+                if host not in ("127.0.0.1", "localhost"):
+                    return _JResp({"detail": "CSRF origin mismatch"}, status_code=403)
+        return await call_next(request)
+    logger.info("CSRF guard middleware added")
+except Exception as _e:
+    logger.warning("CSRF guard failed: %s", _e)
+
+# -- License guard (multi-branch + 7d heartbeat + tamper) --
+try:
+    from license.validator import validate_license as _validate_lic
+    from starlette.responses import HTMLResponse as _HResp
+    @app.middleware("http")
+    async def _license_guard(request, call_next):
+        # allow auth + license activation + static + health without license
+        p = request.url.path
+        if p.startswith("/static") or p in ("/login","/admin/login","/license/activate","/health","/docs","/openapi.json"):
+            return await call_next(request)
+        if p.startswith("/api/license"):
+            return await call_next(request)
+        try:
+            res = _validate_lic(project_root, os.environ.get("LICENSE_PUBKEY",""))
+            if res["status"] == "LOCKED":
+                reason = res.get("reason","expired")
+                html = f"<html><body style='background:#080b12;color:#c4cde0;font-family:Inter;padding:40px;text-align:center'><h1 style='color:#f87171'>GymPOS Locked</h1><p>License {reason} — contact CEO to renew. Grace expired.</p><p><a href='/license/activate' style='color:#7c3aed'>Activate License</a></p></body></html>"
+                return _HResp(html, status_code=403)
+        except Exception as _le:
+            logger.warning("license guard error %s — fail-closed", _le)
+            return _HResp("<html><body style='background:#080b12;color:#f87171;padding:40px;text-align:center'><h1>License check failed</h1><p>Contact support.</p></body></html>", status_code=503)
+        return await call_next(request)
+    logger.info("License guard middleware added")
+except Exception as _e:
+    logger.warning("License guard failed: %s", _e)
+
+# -- AuthZ guard (AAA) — IDOR + unauth APIs + per-gym —
+try:
+    @app.middleware("http")
+    async def _authz_guard(request, call_next):
+        p = request.url.path
+        # unauth APIs -> require login
+        if p.startswith("/api/esp32") or p in ("/api/rfid-scan","/api/live-feed","/api/hardware-status","/api/rfid-latest"):
+            if not request.session.get("user_id"):
+                from starlette.responses import JSONResponse as _JR
+                return _JR({"detail":"auth required"}, status_code=401)
+        # destructive DORs -> require admin
+        if p.startswith("/members/") and p.endswith("/delete"):
+            if request.session.get("role") != "admin":
+                from starlette.responses import JSONResponse as _JR2
+                return _JR2({"detail":"admin required"}, status_code=403)
+        if p.startswith("/admin/staff/") and "/delete" in p:
+            if request.session.get("role") != "admin":
+                from starlette.responses import JSONResponse as _JR3
+                return _JR3({"detail":"admin required"}, status_code=403)
+        if p.startswith("/store/sales/") and p.endswith("/delete"):
+            if request.session.get("role") != "admin":
+                from starlette.responses import JSONResponse as _JR4
+                return _JR4({"detail":"admin required"}, status_code=403)
+        # GET /admin/* already requires admin via routers, but enforce for direct pyc bypass
+        if p.startswith("/admin/") and p not in ("/admin/login",):
+            if not request.session.get("user_id"):
+                from starlette.responses import RedirectResponse as _RR
+                return _RR("/admin/login", status_code=303)
+        return await call_next(request)
+    logger.info("AuthZ guard added")
+except Exception as _e:
+    logger.warning("AuthZ guard failed: %s", _e)
+
+# -- Tier cap guard (Basic 200/Pro 500/Ultra 1000) — global dedup=1 --
+try:
+    from license.gates import can_register as _can_reg
+    @app.middleware("http")
+    async def _tier_guard(request, call_next):
+        pth = request.url.path
+        if request.method == "POST" and any(s in pth for s in ("/members/register", "/register/step", "/walkins", "/sales/walkin")):
+            try:
+                from license.validator import _db_path as _tdb
+                import sqlite3 as _sl2
+                _dbp = _tdb(project_root)
+                _c = _sl2.connect(_dbp, timeout=5)
+                _r = _c.execute("SELECT owner_email, max_members FROM cloud_licenses LIMIT 1").fetchone()
+                _c.close()
+                if _r and _r[1]:
+                    owner, maxm = _r[0] or "", int(_r[1])
+                    res = _can_reg(project_root, maxm, owner)
+                    if not res.get("allowed"):
+                        from starlette.responses import JSONResponse as _JR
+                        # allow renewals (path contains renew) but block new
+                        if "renew" not in pth:
+                            return _JR({"detail": f"Tier cap {res.get('count')}/{maxm} — upgrade required"}, status_code=403)
+            except Exception as _te:
+                pass
+        return await call_next(request)
+    logger.info("Tier guard added")
+except Exception as _e2:
+    logger.warning("Tier guard failed: %s", _e2)
 
 # -- Monkey-patch ManualOverride timestamp to use PHT instead of UTC --
 try:
@@ -290,24 +423,29 @@ def _force_camera_indices():
     try:
         cam1_idx = int(os.environ.get("CAM1_INDEX", "1"))
         cam2_idx = int(os.environ.get("CAM2_INDEX", "0"))
+        cam3_idx = int(os.environ.get("CAM3_INDEX", "2"))
         from services.access_control import access_control as _ac
         if not (hasattr(_ac, "cam1") and hasattr(_ac, "cam2")):
             return
+        has_cam3 = hasattr(_ac, "cam3")
 
         old1 = _ac.cam1.camera_index
         old2 = _ac.cam2.camera_index
+        old3 = _ac.cam3.camera_index if has_cam3 else None
 
-        if old1 == cam1_idx and old2 == cam2_idx:
-            logger.info("Camera indices already correct: cam1=%d cam2=%d", cam1_idx, cam2_idx)
+        if old1 == cam1_idx and old2 == cam2_idx and (not has_cam3 or old3 == cam3_idx):
+            logger.info("Camera indices already correct: cam1=%d cam2=%d%s", cam1_idx, cam2_idx, f" cam3={cam3_idx}" if has_cam3 else "")
             return
 
-        logger.info("Correcting camera indices: cam1 %d→%d  cam2 %d→%d",
-                    old1, cam1_idx, old2, cam2_idx)
+        logger.info("Correcting camera indices: cam1 %d→%d  cam2 %d→%d%s",
+                    old1, cam1_idx, old2, cam2_idx, f" cam3 {old3}→{cam3_idx}" if has_cam3 else "")
 
         # Step 1: stop both streams (threads clean up _ACTIVE_INDICES
         # using the current camera_index value — do NOT change index yet)
         _ac.cam1.stop()
         _ac.cam2.stop()
+        if has_cam3:
+            _ac.cam3.stop()
         _time.sleep(3)   # let thread teardowns complete
 
         # Step 2: clear any stale _ACTIVE_INDICES entries
@@ -325,13 +463,19 @@ def _force_camera_indices():
         _ac.cam2._consecutive_failures = 0
         _ac.cam1.camera_index = cam1_idx
         _ac.cam2.camera_index = cam2_idx
+        if has_cam3:
+            _ac.cam3._consecutive_failures = 0
+            _ac.cam3.camera_index = cam3_idx
 
         # Step 4: restart sequentially so DShow COM is not hit simultaneously
         _ac.cam1.start()
         _time.sleep(4)   # give cam1 time to claim its index
         _ac.cam2.start()
+        if has_cam3:
+            _time.sleep(4)
+            _ac.cam3.start()
 
-        logger.info("Camera restart complete: cam1=%d cam2=%d", cam1_idx, cam2_idx)
+        logger.info("Camera restart complete: cam1=%d cam2=%d%s", cam1_idx, cam2_idx, f" cam3={cam3_idx}" if has_cam3 else "")
 
     except Exception as e:
         logger.warning("startup camera fix failed: %s", e)
@@ -382,14 +526,46 @@ def _robust_attendance_insert(db_path: str, member_id: int = None,
         logger.warning("Attendance insert: no person ID provided")
         return False
 
+    # hardened: include gym_id + visitor cols + retry
+    try:
+        current_gym = "default"
+        owner = ""
+        try:
+            import sqlite3 as _sq_tmp
+            _c = _sq_tmp.connect(db_path, timeout=5)
+            _r = _c.execute("SELECT gym_id, owner_email FROM cloud_licenses LIMIT 1").fetchone()
+            if _r:
+                current_gym, owner = _r[0] or "default", _r[1] or ""
+            _c.close()
+        except Exception:
+            pass
+        # visitor check
+        is_vis = 0
+        home_gym = ""
+        home_owner = ""
+        if member_id is not None:
+            try:
+                import sqlite3 as _sq2
+                _c2 = _sq2.connect(db_path, timeout=5)
+                _mr = _c2.execute("SELECT gym_id, owner_email FROM members WHERE id=?", (member_id,)).fetchone()
+                if _mr:
+                    home_gym, home_owner = _mr[0] or "", _mr[1] or ""
+                    if home_gym and home_gym != current_gym:
+                        is_vis = 1
+                _c2.close()
+            except Exception:
+                pass
+    except Exception:
+        current_gym, is_vis, home_gym, home_owner, owner = "default", 0, "", "", ""
+
     for attempt in range(max_retries):
         conn = None
         try:
             conn = _sq4.connect(db_path, timeout=10.0)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
-                f"INSERT INTO attendance ({fk_col}, direction, method, timestamp) VALUES (?,?,?,?)",
-                (fk_val, direction, method, ts)
+                f"INSERT INTO attendance ({fk_col}, direction, method, timestamp, gym_id, is_interbranch, visitor_home_gym_id, visitor_home_owner) VALUES (?,?,?,?,?,?,?,?)",
+                (fk_val, direction, method, ts, current_gym, is_vis, home_gym, home_owner)
             )
             conn.commit()
             conn.close()
@@ -398,7 +574,7 @@ def _robust_attendance_insert(db_path: str, member_id: int = None,
             logger.debug("Attendance insert blocked: %s", e)
             try:
                 if conn: conn.close()
-            except:
+            except Exception:
                 pass
             return True
         except _sq4.OperationalError as e:
@@ -407,74 +583,19 @@ def _robust_attendance_insert(db_path: str, member_id: int = None,
                 _t4.sleep(0.2 * (attempt + 1))
                 try:
                     if conn: conn.close()
-                except:
+                except Exception:
                     pass
                 continue
             logger.warning("Attendance insert DB error (attempt %d): %s", attempt + 1, e)
             try:
                 if conn: conn.close()
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.warning("Attendance insert error (attempt %d): %s", attempt + 1, e)
             try:
                 if conn: conn.close()
-            except:
-                pass
-            break
-    return False
-
-    for attempt in range(max_retries):
-        conn = None
-        try:
-            conn = _sq4.connect(db_path, timeout=10.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            row = conn.execute(
-                f"SELECT id FROM attendance WHERE {fk_col}=? AND direction=? AND date(timestamp)=? ORDER BY id DESC LIMIT 1",
-                (fk_val, direction, today)
-            ).fetchone()
-            if row:
-                conn.close()
-                return True
-            conn.execute(
-                f"INSERT INTO attendance ({fk_col}, direction, method, timestamp) VALUES (?,?,?,?)",
-                (fk_val, direction, method, ts)
-            )
-            conn.commit()
-            conn.close()
-            return True
-        except _sq4.OperationalError as e:
-            err_msg = str(e).lower()
-            if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
-                _t4.sleep(0.2 * (attempt + 1))
-                try:
-                    if conn: conn.close()
-                except:
-                    pass
-                continue
-            logger.warning("Attendance insert DB error (attempt %d): %s", attempt + 1, e)
-            try:
-                if conn: conn.close()
-            except:
-                pass
-        except _sq4.IntegrityError as e:
-            if "duplicate" in str(e).lower():
-                try:
-                    if conn: conn.close()
-                except:
-                    pass
-                return True
-            logger.warning("Attendance insert integrity error: %s", e)
-            try:
-                if conn: conn.close()
-            except:
-                pass
-            break
-        except Exception as e:
-            logger.warning("Attendance insert error (attempt %d): %s", attempt + 1, e)
-            try:
-                if conn: conn.close()
-            except:
+            except Exception:
                 pass
             break
     return False
@@ -489,14 +610,26 @@ def _ensure_attendance_logged(member_id: int, db_path: str) -> bool:
     import time as _t
     ts = _now_utc().isoformat()
     max_retries = 5
+    # inter-branch gym
+    try:
+        import sqlite3 as _sq_tmp3
+        _c3 = _sq_tmp3.connect(db_path, timeout=5)
+        _r3 = _c3.execute("SELECT gym_id FROM cloud_licenses LIMIT 1").fetchone()
+        _cg3 = _r3[0] if _r3 else "default"
+        _mr3 = _c3.execute("SELECT gym_id, owner_email FROM members WHERE id=?", (member_id,)).fetchone()
+        _hg3, _ho3 = (_mr3[0] or "", _mr3[1] or "") if _mr3 else ("", "")
+        _is_vis3 = 1 if _hg3 and _hg3 != _cg3 else 0
+        _c3.close()
+    except Exception:
+        _cg3, _hg3, _ho3, _is_vis3 = "default", "", "", 0
     for attempt in range(max_retries):
         conn = None
         try:
             conn = _sq.connect(db_path, timeout=10.0)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
-                "INSERT INTO attendance (member_id, direction, method, timestamp) VALUES (?, 'IN', 'FACE', ?)",
-                (member_id, ts)
+                "INSERT INTO attendance (member_id, direction, method, timestamp, gym_id, is_interbranch, visitor_home_gym_id, visitor_home_owner) VALUES (?, 'IN', 'FACE', ?, ?, ?, ?, ?)",
+                (member_id, ts, _cg3, _is_vis3, _hg3, _ho3)
             )
             conn.commit()
             conn.close()
@@ -506,7 +639,7 @@ def _ensure_attendance_logged(member_id: int, db_path: str) -> bool:
             logger.info("Attendance insert blocked for member %d: %s", member_id, e)
             try:
                 if conn: conn.close()
-            except:
+            except Exception:
                 pass
             return True
         except _sq.OperationalError as e:
@@ -515,19 +648,19 @@ def _ensure_attendance_logged(member_id: int, db_path: str) -> bool:
                 _t.sleep(0.2 * (attempt + 1))
                 try:
                     if conn: conn.close()
-                except:
+                except Exception:
                     pass
                 continue
             logger.warning("Attendance log DB error (attempt %d): %s", attempt + 1, e)
             try:
                 if conn: conn.close()
-            except:
+            except Exception:
                 pass
         except Exception as e:
             logger.warning("Attendance log error (attempt %d): %s", attempt + 1, e)
             try:
                 if conn: conn.close()
-            except:
+            except Exception:
                 pass
             break
     return False
@@ -868,7 +1001,7 @@ def _face_detect_build_sf_roster(db_path: str) -> dict:
 def _start_enhanced_tailgate():
     """Enhanced YOLO anti-tailgate daemon thread — overhead camera edition.
 
-    Camera orientation: cam2 is mounted overhead, looking straight down at the
+    Camera orientation: cam3 is mounted overhead, looking straight down at the
     entrance. It sees the top of people's heads and their shoulders — NOT full
     bodies. All tuning below accounts for this:
 
@@ -900,11 +1033,11 @@ def _start_enhanced_tailgate():
     _MONITOR_WINDOW_S = 7.0    # 7 s watch window after door opens
     _ALERT_COOLDOWN_S = 5.0    # min gap between back-to-back alarms
     _POLL_INTERVAL_S  = 0.12   # ~8 FPS — fast enough to catch heads passing through
-    _ROI_RELOAD_S     = 30.0   # re-read cam2_roi.json every 30 s
+    _ROI_RELOAD_S     = 30.0   # re-read cam3_roi.json every 30 s
 
     # ── ROI pixel-mask helpers ────────────────────────────────────
     def _load_roi_points(roi_path):
-        """Read cam2_roi.json → list of {x,y} % dicts, or None on failure."""
+        """Read cam3_roi.json → list of {x,y} % dicts, or None on failure."""
         import json as _json
         try:
             with open(roi_path, "r") as _f:
@@ -931,8 +1064,8 @@ def _start_enhanced_tailgate():
              for p in roi_pts],
             dtype=_npm.int32,
         )
-        mask = _npm.zeros((frame_h, frame_w, 3), dtype=_npm.uint8)
-        _cv2m.fillPoly(mask, [pixel_pts], (255, 255, 255))
+        mask = _npm.zeros((frame_h, frame_w), dtype=_npm.uint8)
+        _cv2m.fillPoly(mask, [pixel_pts], 255)
         return mask
 
     def _loop():
@@ -960,7 +1093,7 @@ def _start_enhanced_tailgate():
         # ROI pixel-mask state
         roi_path        = _osroi.path.join(
                               _osroi.path.dirname(_osroi.path.abspath(__file__)),
-                              "cam2_roi.json")
+                              "cam3_roi.json")
         roi_pts         = None   # list of {x,y} % dicts
         roi_mask        = None   # numpy uint8 pixel mask (h,w,3)
         roi_mask_shape  = None   # (h, w) the mask was built for
@@ -986,11 +1119,12 @@ def _start_enhanced_tailgate():
                 frames_above = 0
                 continue
 
-            # Need cam2 running
-            if _ac.cam2.status != "running":
+            # Need cam3 running (tailgate overhead)
+            tail_cam = getattr(_ac, "cam3", getattr(_ac, "cam2", None))
+            if tail_cam is None or tail_cam.status != "running":
                 continue
 
-            frame = _ac.cam2.get_latest_frame()
+            frame = tail_cam.get_latest_frame()
             if frame is None:
                 continue
 
@@ -1022,7 +1156,7 @@ def _start_enhanced_tailgate():
                             "Tailgate pixel mask built: %dx%d, %d vertices",
                             fw, fh, len(roi_pts)
                         )
-                    frame = _cv2roi.bitwise_and(frame, roi_mask)
+                    frame = _cv2roi.bitwise_and(frame, frame, mask=roi_mask)
                 except Exception as _roi_err:
                     logger.debug("ROI mask error (skipping): %s", _roi_err)
             else:
@@ -1123,6 +1257,31 @@ def _start_enhanced_tailgate():
 
 _start_enhanced_tailgate()
 
+# ── 30-day clip prune ────────────────────────────────────────────────
+def _start_clip_prune():
+    def _loop():
+        import time as _t
+        while True:
+            _t.sleep(3600)  # check hourly
+            try:
+                clips_dir = os.path.join(project_root, "static", "clips")
+                if not os.path.isdir(clips_dir):
+                    continue
+                cutoff = _t.time() - 30 * 24 * 3600
+                for fn in os.listdir(clips_dir):
+                    fp = os.path.join(clips_dir, fn)
+                    try:
+                        if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+                            os.remove(fp)
+                            logger.info("Pruned old clip %s", fn)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("clip prune error %s", e)
+    _threading.Thread(target=_loop, daemon=True, name="clip-prune").start()
+
+_start_clip_prune()
+
 
 def _start_staff_familiar_face_loop():
     """Spawn the parallel face-recognition daemon for staff, familiars AND members.
@@ -1155,7 +1314,10 @@ def _start_staff_familiar_face_loop():
         import sqlite3 as _sq_sig
         try:
             conn = _sq_sig.connect(db_path)
-            r1 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(updated_at),'') FROM members WHERE face_vector IS NOT NULL").fetchone()
+            try:
+                r1 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(updated_at),'') FROM members WHERE face_vector IS NOT NULL").fetchone()
+            except Exception:
+                r1 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0) FROM members WHERE face_vector IS NOT NULL").fetchone()
             r2 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(created_at),'') FROM staff WHERE face_vector IS NOT NULL AND is_active=1 AND role != 'admin'").fetchone()
             r3 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(created_at),'') FROM familiars WHERE face_vector IS NOT NULL AND is_active=1").fetchone()
             conn.close()
@@ -1241,10 +1403,16 @@ def _start_staff_familiar_face_loop():
                     if row:
                         conn.close()
                         return
+                    # gym_id for branch isolation
+                    try:
+                        _cg = conn.execute("SELECT gym_id FROM cloud_licenses LIMIT 1").fetchone()
+                        _cgv2 = _cg[0] if _cg else "default"
+                    except Exception:
+                        _cgv2 = "default"
                     conn.execute(
                         "INSERT INTO attendance "
-                        "(member_id, direction, method, timestamp) VALUES (?,?,?,?)",
-                        (db_id, "IN", "FACE", ts)
+                        "(member_id, direction, method, timestamp, gym_id) VALUES (?,?,?,?,?)",
+                        (db_id, "IN", "FACE", ts, _cgv2)
                     )
                 elif person_type == "staff":
                     row = conn.execute(
@@ -1281,13 +1449,13 @@ def _start_staff_familiar_face_loop():
                     _t3.sleep(0.2 * (attempt + 1))
                     try:
                         if conn: conn.close()
-                    except:
+                    except Exception:
                         pass
                     continue
                 logger.warning("Attendance IN DB error (attempt %d): %s", attempt + 1, e)
                 try:
                     if conn: conn.close()
-                except:
+                except Exception:
                     pass
                 break
             except _sq3.IntegrityError as e:
@@ -1295,20 +1463,20 @@ def _start_staff_familiar_face_loop():
                     logger.debug("Attendance IN duplicate for %s id=%d", person_type, db_id)
                     try:
                         if conn: conn.close()
-                    except:
+                    except Exception:
                         pass
                     return
                 logger.warning("Attendance IN integrity error: %s", e)
                 try:
                     if conn: conn.close()
-                except:
+                except Exception:
                     pass
                 break
             except Exception as e:
                 logger.warning("Attendance IN error (attempt %d): %s", attempt + 1, e)
                 try:
                     if conn: conn.close()
-                except:
+                except Exception:
                     pass
                 break
 
@@ -1373,12 +1541,13 @@ def _start_staff_familiar_face_loop():
             if frame is None:
                 continue
 
-            # Extract live face vector via persistent temp file (avoids create/delete I/O)
+            # Extract live face vector via persistent temp file (avoids create/delete I/O) — thread-safe
             live_vec = None
             try:
                 if not _cv2.imwrite(_persistent_tmp_path, frame):
                     continue
-                result = _frml.extract_face_vector(_persistent_tmp_path)
+                with _FACE_ML_LOCK:
+                    result = _frml.extract_face_vector(_persistent_tmp_path)
                 if result is None:
                     continue
                 # extract_face_vector returns EITHER:
@@ -1491,18 +1660,17 @@ def _start_staff_familiar_face_loop():
                     ).fetchone()
 
                 if _last:
-                    _m = (_last[1] or "").upper()
-                    _eff = "IN" if _m == "FACE" else ("OUT" if _m == "RFID" else _last[0].upper())
+                    _eff = _last[0].upper()
                     logger.debug("Cycle gate — %s (key=%s) last=%s/%s effective=%s",
-                                 name, best_key, _last[0], _m, _eff)
+                                 name, best_key, _last[0], _last[1], _eff)
                     if _eff == "IN":
                         first_fg = name.split()[0] if name else ptype.title()
                         try:
-                            _sb.send_command(f"LCD:RFID to exit|{first_fg}")
+                            _sb.send_command(f"LCD:Face to exit|{first_fg}")
                         except Exception:
                             pass
-                        logger.info("Face BLOCKED — %s already inside (last=%s/%s), need RFID-OUT",
-                                    name, _last[0], _m)
+                        logger.info("Face BLOCKED — %s already inside (last=%s/%s), need FACE-OUT",
+                                    name, _last[0], _last[1])
                         presence.pop(best_key, None)
                         _gate_skip = True
                 else:
@@ -1596,6 +1764,489 @@ def _start_staff_familiar_face_loop():
     logger.info("Staff+familiar parallel face loop thread started")
 
 _start_staff_familiar_face_loop()
+
+def _start_face_out_loop():
+    """Spawn the parallel face-recognition daemon for staff, familiars AND members.
+    All person types use the attendance-table cycle: FACE-IN → FACE-OUT → FACE-IN.
+    The compiled _entry_loop is blocked for all members via _face_cooldown=MAX
+    so this loop is the sole handler for member face recognition.
+    """
+    import pickle, tempfile
+    import numpy as _np
+
+    _STAFF_KEY_OFFSET  = 10000     # staff_id 1 → key 10001
+    _THRESHOLD         = 0.65      # SFace cosine similarity minimum
+    _FPS               = 8         # 8 frames/sec (was 3, increased for responsiveness)
+    _LIVENESS_FRAMES   = 2         # consecutive frames needed before entry
+    _LIVENESS_GAP_S    = 1.5       # max gap (s) between liveness frames
+    _ROSTER_TTL_S      = 30.0      # rebuild roster every 30 seconds (signature-based, only when DB changes)
+
+    _cosine_sim_fn    = _cosine_sim
+    _unpack_vector_fn = _unpack_face_vector
+
+    # Persistent temp file for face extraction (avoids create/delete overhead every frame)
+    _persistent_tmp_fd, _persistent_tmp_path = tempfile.mkstemp(suffix=".jpg", prefix="sf_face_out_", dir=tempfile.gettempdir())
+    os.close(_persistent_tmp_fd)
+
+    # Roster signature cache — only rebuild when DB actually changes
+    _roster_sig = None
+
+    def _get_roster_signature(db_path: str) -> str:
+        """Compute a lightweight signature to detect DB changes."""
+        import sqlite3 as _sq_sig
+        try:
+            conn = _sq_sig.connect(db_path)
+            try:
+                r1 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(updated_at),'') FROM members WHERE face_vector IS NOT NULL").fetchone()
+            except Exception:
+                r1 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0) FROM members WHERE face_vector IS NOT NULL").fetchone()
+            r2 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(created_at),'') FROM staff WHERE face_vector IS NOT NULL AND is_active=1 AND role != 'admin'").fetchone()
+            r3 = conn.execute("SELECT COUNT(*), COALESCE(MAX(id),0), COALESCE(MAX(created_at),'') FROM familiars WHERE face_vector IS NOT NULL AND is_active=1").fetchone()
+            conn.close()
+            return f"{r1}{r2}{r3}"
+        except Exception:
+            return None
+
+    def _build_roster(db_path: str) -> dict:
+        """
+        Query staff, familiars AND regular members with face_vector IS NOT NULL.
+        Key space:
+          members   → member_id           (1..N, positive)
+          staff     → 10000 + staff_id
+          familiars → -familiar_id
+        """
+        import sqlite3 as _sq3
+        roster: dict = {}
+        try:
+            conn = _sq3.connect(db_path)
+
+            # Regular & student & senior members: active, has face_vector, not expired
+            for row in conn.execute(
+                "SELECT id, name, face_vector, photo_path FROM members "
+                "WHERE face_vector IS NOT NULL AND status='active' "
+                "AND member_type IN ('regular', 'student', 'senior') "
+                "AND (expiry_date IS NULL OR expiry_date >= date('now'))"
+            ).fetchall():
+                mid, mname, fv, mphoto = row
+                vec = _unpack_vector_fn(fv)
+                if vec is not None and len(vec) == 128:
+                    roster[mid] = (mname or "Member", vec, "member", mid, mphoto or "")
+
+            # Staff: role != 'admin', is_active=1, has face_vector
+            for row in conn.execute(
+                "SELECT id, username, display_name, face_vector, photo_path FROM staff "
+                "WHERE face_vector IS NOT NULL AND is_active=1 AND role != 'admin'"
+            ).fetchall():
+                sid, uname, dname, fv, sphoto = row
+                vec = _unpack_vector_fn(fv)
+                if vec is not None and len(vec) == 128:
+                    key = _STAFF_KEY_OFFSET + sid
+                    roster[key] = (dname or uname, vec, "staff", sid, sphoto or "")
+
+            # Familiars: is_active=1, has face_vector
+            for row in conn.execute(
+                "SELECT id, name, face_vector, photo_path FROM familiars "
+                "WHERE face_vector IS NOT NULL AND is_active=1"
+            ).fetchall():
+                fid, fname, fv, fphoto = row
+                vec = _unpack_vector_fn(fv)
+                if vec is not None and len(vec) == 128:
+                    key = -fid
+                    roster[key] = (fname, vec, "familiar", fid, fphoto or "")
+
+            conn.close()
+        except Exception as e:
+            logger.warning("Roster build error: %s", e)
+        if roster:
+            logger.info("Face roster: %d entries (%s)",
+                        len(roster),
+                        ", ".join(f"{v[0]}({v[2]})" for v in roster.values()))
+        return roster
+
+    def _log_attendance_in(person_key: int, person_type: str, db_id: int,
+                           db_path: str):
+        """Insert attendance IN record (member, staff, or familiar) with retry."""
+        import sqlite3 as _sq3
+        import time as _t3
+        ts = _now_utc().isoformat()
+        today = _now_utc().strftime("%Y-%m-%d")
+        max_retries = 5
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = _sq3.connect(db_path, timeout=10.0)
+                conn.execute("PRAGMA journal_mode=WAL")
+                # Check for existing IN today
+                if person_type == "member":
+                    row = conn.execute(
+                        "SELECT id FROM attendance WHERE member_id=? AND direction='OUT' AND date(timestamp)=? LIMIT 1",
+                        (db_id, today)
+                    ).fetchone()
+                    if row:
+                        conn.close()
+                        return
+                    try:
+                        _cg = conn.execute("SELECT gym_id FROM cloud_licenses LIMIT 1").fetchone()
+                        _cgv2 = _cg[0] if _cg else "default"
+                    except Exception:
+                        _cgv2 = "default"
+                    conn.execute(
+                        "INSERT INTO attendance "
+                        "(member_id, direction, method, timestamp, gym_id) VALUES (?,?,?,?,?)",
+                        (db_id, "OUT", "FACE", ts, _cgv2)
+                    )
+                elif person_type == "staff":
+                    row = conn.execute(
+                        "SELECT id FROM attendance WHERE staff_id=? AND direction='OUT' AND date(timestamp)=? LIMIT 1",
+                        (db_id, today)
+                    ).fetchone()
+                    if row:
+                        conn.close()
+                        return
+                    conn.execute(
+                        "INSERT INTO attendance "
+                        "(staff_id, direction, method, timestamp) VALUES (?,?,?,?)",
+                        (db_id, "OUT", "FACE", ts)
+                    )
+                else:  # familiar
+                    row = conn.execute(
+                        "SELECT id FROM attendance WHERE familiar_id=? AND direction='OUT' AND date(timestamp)=? LIMIT 1",
+                        (db_id, today)
+                    ).fetchone()
+                    if row:
+                        conn.close()
+                        return
+                    conn.execute(
+                        "INSERT INTO attendance "
+                        "(familiar_id, direction, method, timestamp) VALUES (?,?,?,?)",
+                        (db_id, "OUT", "FACE", ts)
+                    )
+                conn.commit()
+                conn.close()
+                return
+            except _sq3.OperationalError as e:
+                err_msg = str(e).lower()
+                if ("locked" in err_msg or "busy" in err_msg) and attempt < max_retries - 1:
+                    _t3.sleep(0.2 * (attempt + 1))
+                    try:
+                        if conn: conn.close()
+                    except Exception:
+                        pass
+                    continue
+                logger.warning("Attendance OUT DB error (attempt %d): %s", attempt + 1, e)
+                try:
+                    if conn: conn.close()
+                except Exception:
+                    pass
+                break
+            except _sq3.IntegrityError as e:
+                if "duplicate" in str(e).lower():
+                    logger.debug("Attendance OUT duplicate for %s id=%d", person_type, db_id)
+                    try:
+                        if conn: conn.close()
+                    except Exception:
+                        pass
+                    return
+                logger.warning("Attendance OUT integrity error: %s", e)
+                try:
+                    if conn: conn.close()
+                except Exception:
+                    pass
+                break
+            except Exception as e:
+                logger.warning("Attendance OUT error (attempt %d): %s", attempt + 1, e)
+                try:
+                    if conn: conn.close()
+                except Exception:
+                    pass
+                break
+
+
+    def _loop():
+        """The actual daemon loop."""
+        import cv2 as _cv2
+        from services.access_control import access_control as _ac
+        from services.camera_context import CameraContext
+        from services.camera_context import camera_context as _ctx
+        from services.face_recognition_ml import face_recognition_ml as _frml
+        from services.serial_bridge import serial_bridge as _sb
+
+        # Resolve the database path once
+        solo = _os.environ.get("SOLO_DATA_DIR", "").rstrip("/\\")
+        db_path = (_os.path.join(solo, "gym.db") if solo
+                   else _os.path.join(
+                       _os.path.dirname(_os.path.abspath(__file__)), "gym.db"))
+
+        roster: dict = {}
+        roster_built_at: float = 0.0
+        presence: dict = {}          # person_key → (count, last_seen_mono)
+        last_seq: int = -1
+        frame_interval = 1.0 / _FPS
+        nonlocal _roster_sig
+
+        logger.info("Staff+familiar face loop started (threshold=%.2f, liveness=%d)",
+                    _THRESHOLD, _LIVENESS_FRAMES)
+
+        while True:
+            _time_module.sleep(frame_interval)
+
+            # Skip when camera is borrowed by a registration page
+            if _ctx.current != CameraContext.IDLE:
+                continue
+
+            # Rebuild roster periodically — signature-based, skip if DB unchanged
+            now = _time_module.time()
+            if now - roster_built_at > _ROSTER_TTL_S:
+                new_sig = _get_roster_signature(db_path)
+                if new_sig != _roster_sig:
+                    roster = _build_roster(db_path)
+                    roster_built_at = now
+                    _roster_sig = new_sig
+                    # Invalidate face recognition roster cache so new
+                    # staff/familiar vectors are picked up by all matchers
+                    try:
+                        from services.face_recognition import face_service
+                        face_service.invalidate_roster_cache()
+                    except Exception:
+                        pass
+
+            if not roster:
+                continue
+
+            # Get latest cam1 frame — non-destructive read
+            seq, _ = _ac.cam2.get_latest_jpeg_seq()
+            if seq == last_seq:
+                continue
+            last_seq = seq
+            frame = _ac.cam2.get_latest_frame()
+            if frame is None:
+                continue
+
+            # Extract live face vector via persistent temp file (avoids create/delete I/O) — thread-safe
+            live_vec = None
+            try:
+                if not _cv2.imwrite(_persistent_tmp_path, frame):
+                    continue
+                with _FACE_ML_LOCK:
+                    result = _frml.extract_face_vector(_persistent_tmp_path)
+                if result is None:
+                    continue
+                # extract_face_vector returns EITHER:
+                #   tuple: (ndarray, meta_dict)  — old/current API
+                #   dict:  {"vector": ndarray, ...} — alternate format
+                if isinstance(result, (tuple, list)):
+                    live_vec = _np.array(result[0], dtype=_np.float32).flatten()
+                elif isinstance(result, dict):
+                    live_vec = _np.array(result["vector"], dtype=_np.float32).flatten()
+                else:
+                    live_vec = _np.array(result, dtype=_np.float32).flatten()
+                if len(live_vec) != 128:
+                    continue
+            except Exception:
+                continue
+
+            # Vectorized cosine similarity against all roster entries at once
+            now_mono = _time_module.monotonic()
+            best_key, best_score = None, 0.0
+            try:
+                # Stack all stored vectors into a single matrix for batch comparison
+                keys = list(roster.keys())
+                stored_matrix = _np.array([roster[k][1] for k in keys], dtype=_np.float32)
+                # Normalize live vector
+                live_norm = _np.linalg.norm(live_vec)
+                if live_norm > 0:
+                    live_norm_vec = live_vec / live_norm
+                else:
+                    continue
+                # Normalize all stored vectors
+                stored_norms = _np.linalg.norm(stored_matrix, axis=1, keepdims=True)
+                stored_norms[stored_norms == 0] = 1.0  # avoid division by zero
+                stored_norm_matrix = stored_matrix / stored_norms
+                # Batch cosine similarity: dot product of normalized vectors
+                scores = stored_norm_matrix @ live_norm_vec
+                # Find best match above threshold
+                above_thresh = scores > _THRESHOLD
+                if _np.any(above_thresh):
+                    best_idx = _np.argmax(scores)
+                    best_score = float(scores[best_idx])
+                    best_key = keys[best_idx]
+            except Exception:
+                # Fallback to sequential comparison if vectorized fails
+                for key, (name, stored_vec, ptype, db_id, _ph) in roster.items():
+                    try:
+                        score = _cosine_sim_fn(live_vec, stored_vec)
+                        if score > _THRESHOLD and score > best_score:
+                            best_score, best_key = score, key
+                    except Exception:
+                        continue
+
+            # Prune stale presence entries for anyone not seen this frame
+            for k in list(presence.keys()):
+                cnt, last_mono = presence[k]
+                if now_mono - last_mono > _LIVENESS_GAP_S:
+                    presence.pop(k, None)
+
+            if best_key is None:
+                continue
+
+            name, stored_vec, ptype, db_id, photo_path = roster[best_key]
+
+            # Update liveness counter
+            cnt, last_mono = presence.get(best_key, (0, now_mono))
+            if now_mono - last_mono > _LIVENESS_GAP_S:
+                cnt = 0   # gap too long — reset
+            presence[best_key] = (cnt + 1, now_mono)
+
+            # Liveness gate
+            if presence[best_key][0] < _LIVENESS_FRAMES:
+                logger.debug("Liveness: %s %d/%d frames",
+                             name, presence[best_key][0], _LIVENESS_FRAMES)
+                continue
+
+            # ── Re-arm delay gate: block face scan for 5s after RFID OUT ──
+            now_mono_check = _time_module.monotonic()
+            rearm_deadline = _face_rearm_until.get(best_key, 0.0)
+            if rearm_deadline > 0 and now_mono_check < rearm_deadline:
+                remaining = rearm_deadline - now_mono_check
+                logger.debug("Re-arm gate — %s blocked for %.1fs more (RFID exit grace)",
+                             name, remaining)
+                presence.pop(best_key, None)
+                continue
+
+            # ── Batch DB checks: cycle gate + expiry (single connection) ──
+            _gate_skip = False
+            try:
+                import sqlite3 as _sq_batch
+                _today = _now_utc().strftime("%Y-%m-%d")
+                _conn = _sq_batch.connect(db_path)
+
+                # Cycle gate: if last record today = IN, must RFID-OUT first
+                if ptype == "member":
+                    _last = _conn.execute(
+                        "SELECT direction, method FROM attendance "
+                        "WHERE member_id=? AND date(timestamp)=? ORDER BY id DESC LIMIT 1",
+                        (db_id, _today)
+                    ).fetchone()
+                elif ptype == "staff":
+                    _last = _conn.execute(
+                        "SELECT direction, method FROM attendance "
+                        "WHERE staff_id=? AND date(timestamp)=? ORDER BY id DESC LIMIT 1",
+                        (db_id, _today)
+                    ).fetchone()
+                else:  # familiar
+                    _last = _conn.execute(
+                        "SELECT direction, method FROM attendance "
+                        "WHERE familiar_id=? AND date(timestamp)=? ORDER BY id DESC LIMIT 1",
+                        (db_id, _today)
+                    ).fetchone()
+
+                if _last:
+                    _eff = _last[0].upper()
+                    logger.debug("Cycle gate — %s (key=%s) last=%s/%s effective=%s",
+                                 name, best_key, _last[0], _last[1], _eff)
+                    if _eff == "OUT":
+                        first_fg = name.split()[0] if name else ptype.title()
+                        try:
+                            _sb.send_command(f"LCD:Already out|{first_fg}")
+                        except Exception:
+                            pass
+                        logger.info("Face OUT BLOCKED — %s already outside (last=%s/%s)",
+                                    name, _last[0], _last[1])
+                        presence.pop(best_key, None)
+                        _gate_skip = True
+                else:
+                    logger.info("Face OUT BLOCKED — %s no IN today, need FACE-IN", name)
+                    presence.pop(best_key, None)
+                    _gate_skip = True
+
+                # Real-time expiry check (members only) — only if cycle gate passed
+                if not _gate_skip and ptype == "member":
+                    _ok_ex = _conn.execute(
+                        "SELECT 1 FROM members "
+                        "WHERE id=? AND status='active' "
+                        "AND (expiry_date IS NULL OR expiry_date >= ?)",
+                        (db_id, _today)
+                    ).fetchone()
+                    if not _ok_ex:
+                        # Auto-update status in DB so UI shows correct status
+                        _conn.execute(
+                            "UPDATE members SET status='expired' WHERE id=? "
+                            "AND status IN ('active', 'frozen')",
+                            (db_id,)
+                        )
+                        _conn.commit()
+                        logger.info("Face DENIED — member id=%s auto-marked expired", db_id)
+                        first_ex = name.split()[0] if name else "Member"
+                        try:
+                            _sb.send_command("DENY:Membership Expired")
+                            _sb.send_command("BEEP")
+                            _sb.send_command(f"LCD:Expired|{first_ex}")
+                        except Exception:
+                            pass
+                        logger.info("Face DENIED — %s membership expired", name)
+                        presence.pop(best_key, None)
+                        roster.pop(best_key, None)
+                        _gate_skip = True
+
+                _conn.close()
+            except Exception as _batch_e:
+                logger.warning("Batch DB check error for %s: %s", name, _batch_e)
+
+            if _gate_skip:
+                continue
+
+            # ── GRANT ENTRY ─────────────────────────────────────────
+            logger.info("Face GRANT — %s (%s) key=%s score=%.3f method=FACE",
+                        name, ptype, best_key, best_score)
+            ok = _sb.send_command("UNLOCK")
+            first = name.split()[0] if name else ptype.title()
+            _sb.send_command(f"LCD:Welcome!|{first}")
+
+            # Log attendance
+            _log_attendance_in(best_key, ptype, db_id, db_path)
+
+            # Arm tailgate monitor via shared helper (7s window = door open duration)
+            _arm_tailgate(7.0)
+
+            # Push to live feed — use ptype ("staff" / "familiar") as event type
+            # and include the real photo_path so the dashboard shows the person's photo.
+            try:
+                _ac._push_event({
+                    "type":        ptype,       # "staff" or "familiar"
+                    "message":     f"Welcome, {name}",
+                    "member_name": name,
+                    "photo":       photo_path,  # real photo from roster
+                    "alert":       "green",
+                    "direction":   "IN",
+                    "method":      "FACE",
+                    "time":        _to_local(_now_utc()),
+                })
+            except Exception:
+                pass
+
+            logger.info("Face entry: %s (%s) key=%s score=%.3f unlock=%s",
+                        name, ptype, best_key, best_score, ok)
+
+            # Reset presence so the same person doesn't immediately
+            # trigger a second entry if they linger in the camera frame
+            presence.pop(best_key, None)
+
+    def _loop_with_cleanup():
+        """Wrapper to ensure persistent temp file cleanup on exit."""
+        try:
+            _loop()
+        finally:
+            try:
+                os.unlink(_persistent_tmp_path)
+            except Exception:
+                pass
+
+    t = _threading.Thread(target=_loop_with_cleanup, daemon=True, name="sf-face-loop")
+    t.start()
+    logger.info("Staff+familiar parallel face loop thread started")
+
+_start_face_out_loop()
+
 
 
 def _start_expiry_check_loop():
@@ -3429,6 +4080,10 @@ async def create_product(request: Request,
                          db: Session = Depends(get_db)):
     if request.session.get("role") != "admin":
         return RedirectResponse("/admin/login", status_code=303)
+    if price < 0 or stock < 0 or low_stock_threshold < 0:
+        return RedirectResponse("/admin/store?error=invalid", status_code=303)
+    price = round(float(price), 2)
+    stock = int(stock)
     dup = db.execute(text("SELECT id FROM store_products WHERE name = :n"), {"n": name.strip()}).fetchone()
     if dup:
         return RedirectResponse("/admin/store?error=dup", status_code=303)
@@ -3461,6 +4116,9 @@ async def update_product(pid: int, request: Request,
                          db: Session = Depends(get_db)):
     if request.session.get("role") != "admin":
         return RedirectResponse("/admin/login", status_code=303)
+    if price < 0 or low_stock_threshold < 0:
+        return RedirectResponse("/admin/store?error=invalid", status_code=303)
+    price = round(float(price), 2)
     old = db.execute(text("SELECT name FROM store_products WHERE id=:id"), {"id": pid}).fetchone()
     old_name = old[0] if old else "Unknown"
     db.execute(text(
@@ -3487,30 +4145,32 @@ async def restock_product(pid: int, request: Request,
                           qty: int = Form(...), db: Session = Depends(get_db)):
     if request.session.get("role") != "admin":
         return RedirectResponse("/admin/login", status_code=303)
-    current = db.execute(text(
-        "SELECT stock, name FROM store_products WHERE id=:id"
-    ), {"id": pid}).fetchone()
-    if not current:
-        return RedirectResponse("/admin/store?error=not_found", status_code=303)
-    current_stock, product_name = current[0], current[1]
-    new_stock = current_stock + qty
-    if new_stock < 0:
-        logger.warning("Stock adjust denied: %s (id=%d) current=%d qty=%d would be %d",
-                       product_name, pid, current_stock, qty, new_stock)
+    if qty == 0:
+        return RedirectResponse("/admin/store?error=invalid_qty", status_code=303)
+    qty = max(-1000, min(qty, 1000))
+    # atomic adjust: stock=stock+qty only if result >=0
+    res = db.execute(text(
+        "UPDATE store_products SET stock = stock + :qty, updated_at = :now WHERE id = :id AND stock + :qty >= 0"
+    ), {"qty": qty, "now": _now_utc(), "id": pid})
+    if res.rowcount == 0:
+        db.rollback()
+        # check existence
+        exists = db.execute(text("SELECT 1 FROM store_products WHERE id=:id"), {"id": pid}).fetchone()
+        if not exists:
+            return RedirectResponse("/admin/store?error=not_found", status_code=303)
         return RedirectResponse("/admin/store?error=negative_stock", status_code=303)
-    db.execute(text(
-        "UPDATE store_products SET stock = :new_stock, updated_at = :now WHERE id = :id"
-    ), {"new_stock": new_stock, "now": _now_utc(), "id": pid})
     db.commit()
+    row = db.execute(text("SELECT name, stock FROM store_products WHERE id=:id"), {"id": pid}).fetchone()
+    pname = row[0] if row else str(pid)
+    nstock = row[1] if row else 0
     action = "added" if qty > 0 else "removed"
-    logger.info("Stock %s %d for %s (id=%d): %d -> %d",
-                action, abs(qty), product_name, pid, current_stock, new_stock)
+    logger.info("Stock %s %d for %s (id=%d): new stock %d", action, abs(qty), pname, pid, nstock)
     try:
         db.execute(text(
             "INSERT INTO staff_activities (staff_id,action,target_type,target_id,details,timestamp) "
             "VALUES (:sid,'restock_product','store_product',:tid,:det,:ts)"
         ), {"sid": request.session.get("user_id"), "tid": pid,
-            "det": f"{action.title()} {abs(qty)} stock for {product_name}: {current_stock} \u2192 {new_stock}",
+            "det": f"{action.title()} {abs(qty)} stock for {pname}: new {nstock}",
             "ts": _now_utc()})
         db.commit()
     except Exception:
@@ -3609,31 +4269,36 @@ async def store_sell(request: Request,
     # SQLite has coarse-grained locking — without this, two simultaneous
     # sales of the same product could both pass the stock check before
     # either decrements, resulting in negative stock.
+    # validate inputs
+    if payment_method not in ("cash", "gcash", "bank"):
+        payment_method = "cash"
+    qty = max(1, min(qty, 1000))
     with _store_sell_lock:
         product = db.execute(text(
             "SELECT id, name, price, stock, is_active FROM store_products WHERE id=:id"
         ), {"id": product_id}).fetchone()
         if not product or not product[4]:
             return RedirectResponse("/store?error=inactive", status_code=303)
-        if product[3] < qty:
+        # atomic stock guard: decrement only if enough stock
+        now = _now_utc()
+        res = db.execute(text(
+            "UPDATE store_products SET stock=stock-:q, updated_at=:now WHERE id=:id AND stock>=:q"
+        ), {"q": qty, "now": now, "id": product_id})
+        if res.rowcount == 0:
+            db.rollback()
             return RedirectResponse("/store?error=stock", status_code=303)
 
         staff = db.execute(text("SELECT display_name FROM staff WHERE id=:id"), {"id": user_id}).fetchone()
         staff_name = staff[0] if staff else ""
         total = product[2] * qty
-        now = _now_utc()
 
-        # Atomic: insert sale + decrement stock in one transaction
         db.execute(text(
             "INSERT INTO store_sales (product_id,product_name,quantity,unit_price,total_amount,"
             "payment_method,staff_id,staff_name,notes,created_at) "
             "VALUES (:pid,:pname,:qty,:up,:tot,:pm,:sid,:sname,:notes,:now)"
         ), {"pid": product[0], "pname": product[1], "qty": qty, "up": product[2],
             "tot": total, "pm": payment_method, "sid": user_id,
-            "sname": staff_name, "notes": notes.strip(), "now": now})
-        db.execute(text(
-            "UPDATE store_products SET stock=stock-:q, updated_at=:now WHERE id=:id"
-        ), {"q": qty, "now": now, "id": product_id})
+            "sname": staff_name, "notes": notes.strip()[:200], "now": now})
         db.commit()
 
     return RedirectResponse("/store?sold=1", status_code=303)
@@ -4068,8 +4733,9 @@ async def admin_activity_page(request: Request,
     if staff_filter > 0:
         q = q.filter(_SA.staff_id == staff_filter)
     if action_filter:
-        q = q.filter(_SA.action.like(f"%{action_filter}%"))
-    activities = q.order_by(_SA.timestamp.desc()).all()
+        af_esc = action_filter.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")[:100]
+        q = q.filter(_SA.action.like(f"%{af_esc}%", escape="\\"))
+    activities = q.order_by(_SA.timestamp.desc()).limit(500).all()
     staff_list = db.query(_Staff).order_by(_Staff.display_name, _Staff.username).all()
     return templates.TemplateResponse(request, "admin/activity.html", {
         "activities": activities,
@@ -4077,6 +4743,82 @@ async def admin_activity_page(request: Request,
         "staff_filter": staff_filter,
         "action_filter": action_filter,
     })
+
+
+@app.get("/admin/inter-branch")
+async def inter_branch_page(request: Request,
+                            gym_filter: str = "", date_from: str = "", date_to: str = "",
+                            export: str = "", db: Session = Depends(get_db)):
+    if request.session.get("role") != "admin":
+        return RedirectResponse("/admin/login", status_code=303)
+    try:
+        from license.validator import _db_path as _lic_db
+        import sqlite3 as _sl
+        _dbp = _lic_db(project_root)
+        _conn = _sl.connect(_dbp, timeout=5)
+        _row = _conn.execute("SELECT owner_email, gym_id FROM cloud_licenses LIMIT 1").fetchone()
+        _conn.close()
+        owner_email = _row[0] if _row else ""
+        current_gym = _row[1] if _row else "default"
+    except Exception:
+        owner_email, current_gym = "", "default"
+    if not owner_email:
+        return templates.TemplateResponse(request, "admin/inter_branch.html", {"visits": [], "gyms": [], "owner_email": "", "gym_filter": gym_filter, "date_from": date_from, "date_to": date_to })
+    try:
+        _log_activity(db, request.session.get("user_id") or 0, "view_inter_branch", "attendance", 0, f"owner={owner_email} gym={current_gym} filter={gym_filter}")
+    except Exception:
+        pass
+    gyms = []
+    try:
+        import sqlite3 as _s2
+        _c2 = _s2.connect(_lic_db(project_root), timeout=5)
+        gyms = [{"gym_id": r[0]} for r in _c2.execute("SELECT gym_id FROM gyms WHERE owner_email=?", (owner_email,)).fetchall()]
+        if not gyms:
+            gyms = [{"gym_id": current_gym}]
+        _c2.close()
+    except Exception:
+        gyms = [{"gym_id": current_gym}]
+    q = "SELECT a.member_id, a.gym_id, a.visitor_home_gym_id, a.timestamp, a.method, m.name as member_name, a.visitor_home_gym_id as home_gym, m.gym_id as home_gym2 FROM attendance a LEFT JOIN members m ON m.id=a.member_id WHERE (a.is_interbranch=1 OR (m.gym_id IS NOT NULL AND a.gym_id != m.gym_id)) AND (a.visitor_home_owner=:oe OR m.owner_email=:oe)"
+    params = {"oe": owner_email}
+    if gym_filter:
+        q += " AND a.gym_id=:gf"
+        params["gf"] = gym_filter
+    if date_from:
+        q += " AND date(a.timestamp) >= :df"
+        params["df"] = date_from
+    if date_to:
+        q += " AND date(a.timestamp) <= :dt"
+        params["dt"] = date_to
+    q += " ORDER BY a.timestamp DESC LIMIT 500"
+    try:
+        rows = db.execute(text(q), params).fetchall()
+        visits = [dict(r._mapping) if hasattr(r, "_mapping") else dict(r) for r in rows]
+    except Exception:
+        visits = []
+    if export == "csv":
+        import csv, io
+        from starlette.responses import StreamingResponse
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["time","member_id","member_name","home_gym","visited_gym","method"])
+        for v in visits:
+            w.writerow([v.get("timestamp"), v.get("member_id"), v.get("member_name"), v.get("visitor_home_gym_id"), v.get("gym_id"), v.get("method")])
+        out.seek(0)
+        return StreamingResponse(iter([out.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=inter_branch.csv"})
+    return templates.TemplateResponse(request, "admin/inter_branch.html", {"visits": visits, "gyms": gyms, "owner_email": owner_email, "gym_filter": gym_filter, "date_from": date_from, "date_to": date_to})
+
+
+@app.on_event("startup")
+async def _ensure_audit_append_only():
+    try:
+        from database.connection import SessionLocal as _SAL
+        _db = _SAL()
+        _db.execute(text("CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON staff_activities BEGIN SELECT RAISE(ABORT, 'audit append-only'); END"))
+        _db.execute(text("CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON staff_activities BEGIN SELECT RAISE(ABORT, 'audit append-only'); END"))
+        _db.commit()
+        _db.close()
+    except Exception:
+        pass
 
 
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -6296,13 +7038,14 @@ async def reset_data_override(request: Request,
                 "SELECT 1 FROM staff WHERE username='admin'"
             )).fetchone()
             if not existing:
-                pw_hash = _bc_r.hashpw(b"admin", _bc_r.gensalt()).decode()
+                _raw_pw = secrets.token_urlsafe(12)
+                pw_hash = _bc_r.hashpw(_raw_pw.encode(), _bc_r.gensalt()).decode()
                 _db2.execute(_text2(
                     "INSERT INTO staff (username, password_hash, display_name, role, is_active, created_at) "
                     "VALUES ('admin', :pw, 'Administrator', 'admin', 1, :now)"
                 ), {"pw": pw_hash, "now": _now_utc()})
                 _db2.commit()
-                logger.info("Default admin account seeded (password: admin)")
+                logger.warning("Default admin seeded — password: %s — CHANGE IMMEDIATELY via /admin/maintenance", _raw_pw)
             _db2.close()
         except Exception as _se:
             logger.warning("Seed admin error: %s", _se)
@@ -6380,9 +7123,12 @@ async def members_list_override(
         )
 
         if q:
+            # escape %/_ and bind param to prevent LIKE injection
+            q_esc = q.replace("\\","\\\\").replace("%","\\%").replace("_","\\_")[:100]
+            like_q = f"%{q_esc}%"
             query = query.filter(
-                Member.name.ilike(f"%{q}%") |
-                Member.uid.ilike(f"%{q}%")
+                Member.name.ilike(like_q, escape="\\") |
+                Member.uid.ilike(like_q, escape="\\")
             )
 
         if status == "active":

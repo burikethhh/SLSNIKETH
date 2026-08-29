@@ -40,8 +40,14 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
+// ───────────── Lock Type ─────────────────────
+// false = solenoid (relay OFF = locked, relay ON = unlocked)
+// true  = magnetic lock (relay ON = locked, relay OFF = unlocked)
+static const bool MAG_LOCK = true;  // maglock (energized locked) per .env.example:22 — set false for solenoid
+
 // ───────────── Pin Configuration ─────────────
-static const int SOLENOID_PIN   = 18;  // Solenoid relay (5V relay, INPUT mode trick)
+static const int LOCK_PIN       = 18;  // Relay control (solenoid or maglock)
+static const int SOLENOID_PIN   = LOCK_PIN; // alias for backward compatibility
 static const int LCD_SDA_PIN    = 21;  // I2C SDA (Wire default)
 static const int LCD_SCL_PIN    = 22;  // I2C SCL (Wire default)
 static const int BUZZER_PIN     = 25;  // 5V active buzzer
@@ -151,7 +157,7 @@ void lcdShowIdle() {
   lcd->write(0);  // lock icon
   lcd->print(" GYMPOS READY");
   lcd->setCursor(0, 1);
-  lcd->print("Scan face/RFID");
+  lcd->print("Scan face");
 }
 
 void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000) {
@@ -170,16 +176,17 @@ void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs 
 }
 
 // ───────────── Lock / Unlock ─────────────────
-// INPUT mode trick: 5V relay can't be turned off by 3.3V HIGH (leaks current).
-// Instead: INPUT = high impedance (like disconnecting wire) = relay OFF = locked
-//          OUTPUT LOW = pulls relay IN to GND = relay ON = unlocked
+// Solenoid: INPUT trick — INPUT = locked, OUTPUT LOW = unlocked
+// Maglock : inverted  — OUTPUT LOW = locked (energized), INPUT = unlocked (power cut)
 void setLocked(bool locked) {
   isLocked = locked;
-  if (locked) {
-    pinMode(SOLENOID_PIN, INPUT);     // relay OFF → solenoid OUT (locked)
+  bool relayOn = MAG_LOCK ? locked : !locked;
+  // relayOn == true means relay energized (OUTPUT LOW)
+  if (relayOn) {
+    pinMode(LOCK_PIN, OUTPUT);
+    digitalWrite(LOCK_PIN, LOW);
   } else {
-    pinMode(SOLENOID_PIN, OUTPUT);
-    digitalWrite(SOLENOID_PIN, LOW);  // relay ON → solenoid IN (unlocked)
+    pinMode(LOCK_PIN, INPUT);  // high-impedance = relay OFF
   }
   digitalWrite(STATUS_LED_PIN, locked ? LOW : HIGH);
 }

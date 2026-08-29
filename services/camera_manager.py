@@ -183,6 +183,16 @@ class CameraStream:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout)
         self._thread = None
+        # pop index + shutdown executor to avoid STA thread leak
+        with _ACTIVE_LOCK:
+            if _ACTIVE_INDICES.get(self._camera_index) == self.label:
+                _ACTIVE_INDICES.pop(self._camera_index, None)
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        # recreate executor for next start()
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"dshow-{self.label}")
 
     def force_release(self):
         """Aggressively release the camera handle for browser access."""
@@ -196,6 +206,9 @@ class CameraStream:
                     pass
                 time.sleep(0.3)
             self._cap = None
+        with _ACTIVE_LOCK:
+            if _ACTIVE_INDICES.get(self._camera_index) == self.label:
+                _ACTIVE_INDICES.pop(self._camera_index, None)
 
     # â”€â”€ frame access â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def get_latest_frame(self):
@@ -517,12 +530,14 @@ class CameraStream:
                 _ACTIVE_INDICES.pop(self._camera_index, None)
 
             if self._running:
-                backoff = 2
+                import random, zoneinfo
+                self._consecutive_failures = min(self._consecutive_failures + 1, 6)
+                backoff = min(2 ** self._consecutive_failures, self._max_backoff) + random.uniform(0, 0.5)
                 self._restart_count += 1
-                import zoneinfo; _pht = zoneinfo.ZoneInfo("Asia/Manila")
+                _pht = zoneinfo.ZoneInfo("Asia/Manila")
                 self._last_restart = __import__("datetime").datetime.now(_pht).isoformat()
                 self._status = "reconnecting"
-                logger.info("[%s] Watchdog restart #%d, backoff %ds",
+                logger.info("[%s] Watchdog restart #%d, backoff %.1fs",
                             self.label, self._restart_count, backoff)
                 self._wait(backoff)
 
@@ -613,15 +628,18 @@ def detect_cameras(max_check: int = 5) -> list[dict]:
         import os as _os
         _cam1_idx = int(_os.environ.get("CAM1_INDEX", "1"))
         _cam2_idx = int(_os.environ.get("CAM2_INDEX", "0"))
+        _cam3_idx = int(_os.environ.get("CAM3_INDEX", "2"))
         def _sort_key(c):
             if c["index"] == _cam1_idx:
-                return 0   # cam1 device â†’ first
+                return 0   # cam1 device → first
             if c["index"] == _cam2_idx:
-                return 1   # cam2 device â†’ second
-            return 2
+                return 1   # cam2 device → second
+            if c["index"] == _cam3_idx:
+                return 2   # cam3 device → third
+            return 3
         cameras.sort(key=_sort_key)
-        logger.info("detect_cameras: sorted %d camera(s) by config order (cam1=%d, cam2=%d)",
-                    len(cameras), _cam1_idx, _cam2_idx)
+        logger.info("detect_cameras: sorted %d camera(s) by config order (cam1=%d, cam2=%d, cam3=%d)",
+                    len(cameras), _cam1_idx, _cam2_idx, _cam3_idx)
     except Exception as e:
         logger.debug("detect_cameras sort skipped: %s", e)
 
