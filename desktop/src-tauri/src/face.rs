@@ -1,13 +1,27 @@
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 /// L2-Normalizes a vector in-place: v = v / ||v||_2
+/// Guards against NaN/Inf — invalid vectors are zeroed and left unnormalized.
 pub fn l2_normalize(vec: &mut [f32]) {
+    if !vec.iter().all(|x| x.is_finite()) {
+        // Corrupted embedding (NaN/Inf) — zero out to ensure cosine = 0 (no match)
+        for x in vec.iter_mut() {
+            *x = 0.0;
+        }
+        return;
+    }
     let sum_sq: f32 = vec.iter().map(|x| x * x).sum();
+    if !sum_sq.is_finite() {
+        for x in vec.iter_mut() {
+            *x = 0.0;
+        }
+        return;
+    }
     let norm = sum_sq.sqrt();
-    if norm > 1e-7 {
+    if norm > 1e-7 && norm.is_finite() {
         for x in vec.iter_mut() {
             *x /= norm;
         }
@@ -56,15 +70,31 @@ struct LastMatchRecord {
 #[derive(Clone)]
 pub struct FaceVectorStore {
     entries: Arc<RwLock<HashMap<String, FaceEntry>>>,
-    last_match: Arc<RwLock<Option<LastMatchRecord>>>,
+    last_match: Arc<Mutex<Option<LastMatchRecord>>>,
 }
 
 impl FaceVectorStore {
     pub fn new() -> Self {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
-            last_match: Arc::new(RwLock::new(None)),
+            last_match: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Removes expired walk-in entries from memory (8-hour purge janitor).
+    /// Call periodically (e.g., on each match or via 60s timer) to prevent memory leak & scan slowdown.
+    pub fn purge_expired(&self) -> usize {
+        let now = Utc::now();
+        let mut store = self.entries.write();
+        let before = store.len();
+        store.retain(|_, entry| {
+            if let Some(exp) = entry.expires_at {
+                now <= exp
+            } else {
+                true
+            }
+        });
+        before.saturating_sub(store.len())
     }
 
     /// Load or upsert a member's face vectors into memory (permanent)
@@ -73,6 +103,7 @@ impl FaceVectorStore {
     }
 
     /// Load or upsert face vectors with L2 normalization, centroid clustering, and optional expiry
+    /// Rejects NaN/Inf vectors — returns without inserting if any vector is corrupted.
     pub fn upsert_with_expiry(
         &self,
         member_id: String,
@@ -80,6 +111,13 @@ impl FaceVectorStore {
         mut vectors: Vec<Vec<f32>>,
         expires_at: Option<DateTime<Utc>>,
     ) {
+        // Sanitize: reject any vector containing NaN/Inf or absurd magnitude
+        for vec in &vectors {
+            if !vec.iter().all(|x| x.is_finite() && x.abs() < 1e4) || vec.is_empty() {
+                tracing::warn!("Rejecting upsert for {}: vector contains NaN/Inf or empty", member_id);
+                return;
+            }
+        }
         // 1. L2 Normalize all input angle vectors
         for vec in vectors.iter_mut() {
             l2_normalize(vec);
@@ -172,8 +210,11 @@ impl FaceVectorStore {
         let mut normalized_probe = probe.to_vec();
         l2_normalize(&mut normalized_probe);
 
-        let store = self.entries.read();
         let now = Utc::now();
+        // Note: expired walk-ins are retained briefly to allow `is_expired` reporting
+        // (see test_walk_in_8_hour_expiry). Purge is explicit via `purge_expired()` called
+        // periodically by a 60s janitor timer (not on every match) to avoid breaking that contract.
+        let store = self.entries.read();
         let mut best_match: Option<MatchResult> = None;
         let mut highest_score: f32 = threshold;
 
@@ -217,9 +258,10 @@ impl FaceVectorStore {
             }
         }
 
-        // Duplicate-scan cooldown: if the same member was matched within 3 seconds, suppress
+        // Duplicate-scan cooldown (atomic): if the same member was matched within 3 seconds, suppress
+        // Uses Mutex for atomic check-and-set, eliminating race under concurrent frame evaluation.
         if let Some(ref matched) = best_match {
-            let last = self.last_match.read();
+            let mut last = self.last_match.lock();
             if let Some(ref record) = *last {
                 if record.member_id == matched.member_id {
                     let elapsed = (now - record.timestamp).num_milliseconds();
@@ -232,11 +274,8 @@ impl FaceVectorStore {
                     }
                 }
             }
-            drop(last);
-
-            // Record this match
-            let mut last_w = self.last_match.write();
-            *last_w = Some(LastMatchRecord {
+            // Record this match atomically
+            *last = Some(LastMatchRecord {
                 member_id: matched.member_id.clone(),
                 timestamp: now,
             });
@@ -279,6 +318,9 @@ pub fn cosine_similarity_fast(a: &[f32], b: &[f32]) -> f32 {
     }
 
     let dot_product = acc0 + acc1 + acc2 + acc3;
+    if !dot_product.is_finite() {
+        return 0.0;
+    }
     dot_product.max(0.0).min(1.0)
 }
 

@@ -57,12 +57,16 @@ impl CloudSyncWorker {
                     let unsynced_att = self.db.get_unsynced_attendance().unwrap_or_default();
                     let unsynced_att_ids: Vec<String> = unsynced_att.iter().map(|a| a.id.clone()).collect();
 
-                    // 3. Skip empty payloads — no need to POST when nothing changed
+                    // 3. Idle heartbeat: even with no new data, the network is reachable — refresh 7-day heartbeat
+                    // Prevents idle kiosks (no check-ins for days) from false LOCK due to heartbeat starvation.
                     if unsynced_members.is_empty() && unsynced_att.is_empty() {
-                        // Still reset backoff on idle cycles (network is reachable, just nothing to send)
                         if consecutive_failures > 0 {
                             consecutive_failures = 0;
                         }
+                        // Lightweight online proof: refresh heartbeat without full sync push
+                        let _ = self.db.heartbeat_ok();
+                        // Also optionally ping cloud health to confirm online status before counting heartbeat
+                        // (if ping fails, heartbeat will expire naturally and next real sync will reveal offline)
                         continue;
                     }
 

@@ -20,7 +20,21 @@ pub struct AppContext {
 }
 
 fn check_license_active(state: &AppContext) -> Result<(), String> {
-    match state.license.current_status() {
+    // 1. Clock tamper check (mirrors SLS123 validator.py:232 `now < last_seen -60`)
+    let now_unix = chrono::Utc::now().timestamp();
+    let last_seen = state.db.last_seen_unix().unwrap_or(0);
+    if crate::license::is_clock_tampered(now_unix, last_seen) {
+        state.license.revoke();
+        let _ = state.db.clear_cached_license();
+        return Err("Access Denied: System clock tamper detected (rollback). License locked — online re-verification required.".to_string());
+    }
+    // 2. Heartbeat window check (7 days, mirrors validator.py:228 `now - last_verify > 7*86400`)
+    let last_verify = state.db.last_verify_unix().unwrap_or(0);
+    if crate::license::is_heartbeat_expired(now_unix, last_verify) {
+        return Err("Access Denied: Offline heartbeat expired (7 days without online verification). Connect to internet to re-verify license.".to_string());
+    }
+
+    let result = match state.license.current_status() {
         LicenseStatus::Valid { .. } | LicenseStatus::GracePeriod { .. } => Ok(()),
         LicenseStatus::Expired { expired_at } => Err(format!(
             "Access Denied: Gym subscription expired on {}. System is locked out.",
@@ -30,7 +44,13 @@ fn check_license_active(state: &AppContext) -> Result<(), String> {
         LicenseStatus::Unlicensed => {
             Err("Access Denied: Gym is unlicensed. Please activate a license key to operate.".to_string())
         }
+    };
+
+    // 3. On successful active check, bump last_seen (mirrors validator.py:241 `last_seen=now`)
+    if result.is_ok() {
+        let _ = state.db.record_last_seen();
     }
+    result
 }
 
 // --- App Settings (White-Label Branding) ---
@@ -62,6 +82,8 @@ pub fn get_license_status(state: State<'_, AppContext>) -> serde_json::Value {
 pub fn apply_license_key(key: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     let status = state.license.verify_and_apply(&key)?;
     state.db.set_cached_license(&key).map_err(|e| e.to_string())?;
+    // Fresh online verification → reset 7-day heartbeat (mirrors validator.py install_license last_verify=now)
+    let _ = state.db.heartbeat_ok();
     Ok(json!({
         "success": true,
         "status": status

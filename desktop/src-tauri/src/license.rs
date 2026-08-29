@@ -122,6 +122,20 @@ pub fn get_hwid() -> String {
     hex.chars().take(32).collect()
 }
 
+/// 7-day heartbeat window (seconds) — must re-verify online within this period, mirrors `validator.py:19` HEARTBEAT_SECONDS
+pub const HEARTBEAT_SECONDS: i64 = 7 * 24 * 3600;
+/// Clock tamper grace (seconds) — if now < last_seen - 60s, treat as rollback tamper, immediate LOCK
+pub const TAMPER_GRACE_SECONDS: i64 = 60;
+
+/// Pure helper: returns true if system clock was rolled back (tamper).
+pub fn is_clock_tampered(now_unix: i64, last_seen_unix: i64) -> bool {
+    last_seen_unix != 0 && now_unix < last_seen_unix - TAMPER_GRACE_SECONDS
+}
+/// Pure helper: returns true if heartbeat window expired (offline too long).
+pub fn is_heartbeat_expired(now_unix: i64, last_verify_unix: i64) -> bool {
+    last_verify_unix != 0 && now_unix - last_verify_unix > HEARTBEAT_SECONDS
+}
+
 pub const EMBEDDED_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr3tMulsXeUjbCLhDfgcn
 3oMMqFhV1dl/qiNHRiq4Ci0Rz42bORrv8GTXtVme4FPIhnRlgKPqVunjUM9tqHXA

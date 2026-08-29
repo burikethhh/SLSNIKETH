@@ -347,42 +347,61 @@ pub async fn sync_push(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<SyncPushPayload>,
-) -> impl IntoResponse {
-    // 1. Verify Bearer token license if provided in Authorization header
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // 1. Strict Bearer license authentication — reject unauthenticated sync pushes (CRITICAL: prevents fake member injection)
     let auth_token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")));
+        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "Missing license Bearer token — sync requires valid GPOS license", "code": "LICENSE_REQUIRED" })),
+            )
+        })?;
 
-    let mut is_disabled = state.disabled_gyms.read().contains(&payload.gym_id);
+    let claims = verify_license_token(auth_token, state.signer.public_key_pem()).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": format!("Invalid license token: {}", e), "code": "LICENSE_INVALID" })),
+        )
+    })?;
 
-    if let Some(token) = auth_token {
-        if let Ok(claims) = verify_license_token(token, state.signer.public_key_pem()) {
-            if claims.gym_id == payload.gym_id {
-                let is_revoked = state.revoked_licenses.read().contains(&claims.license_id)
-                    || state.db.is_license_revoked(&claims.license_id).unwrap_or(false);
-                let is_expired = Utc::now() > (claims.expires_at + Duration::days(3));
-                if is_revoked || is_expired {
-                    is_disabled = true;
-                }
-            }
-        } else {
-            // Malformed/unverifiable token on sync
-            is_disabled = true;
-        }
+    // Enforce trusted owner/gym binding — payload must match token claims (prevents cross-owner pollution)
+    if claims.gym_id != payload.gym_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Gym ID mismatch: token gym_id does not match payload gym_id", "code": "GYM_MISMATCH" })),
+        ));
+    }
+    if claims.owner_email != payload.owner_email {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "Owner email mismatch: token owner does not match payload", "code": "OWNER_MISMATCH" })),
+        ));
     }
 
-    // 2. Ingest newly added/updated members and face vectors from this branch
-    let processed_members = state.db.upsert_cloud_members(&payload.owner_email, &payload.members).unwrap_or(0);
+    let mut is_disabled = state.disabled_gyms.read().contains(&payload.gym_id);
+    // Check revocation/expiry via verified claims (trusted, not payload)
+    let is_revoked = state.revoked_licenses.read().contains(&claims.license_id)
+        || state.db.is_license_revoked(&claims.license_id).unwrap_or(false);
+    let is_expired = Utc::now() > (claims.expires_at + Duration::days(3));
+    if is_revoked || is_expired {
+        is_disabled = true;
+    }
 
-    // 3. Ingest attendance records from this branch
-    let processed_att = state.db.insert_attendance_logs(&payload.owner_email, &payload.attendance_logs, &payload.gym_id).unwrap_or(0);
+    let trusted_owner = claims.owner_email.clone();
+    // 2. Ingest newly added/updated members and face vectors from this branch (using trusted owner)
+    let processed_members = state.db.upsert_cloud_members(&trusted_owner, &payload.members).unwrap_or(0);
+
+    // 3. Ingest attendance records from this branch (using trusted owner)
+    let processed_att = state.db.insert_attendance_logs(&trusted_owner, &payload.attendance_logs, &payload.gym_id).unwrap_or(0);
     let processed_vec = payload.face_vectors.len();
 
-    // 4. Query all inter-branch members from sister gyms under the same owner
-    let sister_branch_members = state.db.get_sister_branch_members(&payload.owner_email, &payload.gym_id).unwrap_or_default();
+    // 4. Query all inter-branch members from sister gyms under the same owner (trusted)
+    let sister_branch_members = state.db.get_sister_branch_members(&trusted_owner, &payload.gym_id).unwrap_or_default();
 
-    (
+    Ok((
         StatusCode::OK,
         Json(SyncResponse {
             processed_attendance: processed_att,
@@ -392,7 +411,7 @@ pub async fn sync_push(
             sister_branch_members,
             server_time: Utc::now(),
         }),
-    )
+    ))
 }
 
 pub async fn sync_vectors(

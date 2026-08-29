@@ -955,13 +955,29 @@ impl Database {
 
         let tx = conn.transaction()?;
 
-        // Deduct inventory stock
+        // Deduct inventory stock — atomic check: fail if requested qty exceeds available stock
         for item in items {
             if item.quantity > 0 {
-                tx.execute(
-                    "UPDATE products SET stock = MAX(0, stock - ?1) WHERE id = ?2",
+                // Verify sufficient stock first, then deduct atomically with guard `stock >= qty`
+                let current_stock: i32 = tx
+                    .query_row("SELECT stock FROM products WHERE id = ?1", params![item.product_id], |r| r.get(0))
+                    .unwrap_or(0);
+                if current_stock < item.quantity as i32 {
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "Insufficient stock for {}: have {}, requested {}",
+                        item.product_id, current_stock, item.quantity
+                    )));
+                }
+                let changed = tx.execute(
+                    "UPDATE products SET stock = stock - ?1 WHERE id = ?2 AND stock >= ?1",
                     params![item.quantity, item.product_id],
                 )?;
+                if changed == 0 {
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "Concurrent stock depletion for {} during checkout",
+                        item.product_id
+                    )));
+                }
             }
         }
 
