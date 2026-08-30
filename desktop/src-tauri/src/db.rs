@@ -590,6 +590,63 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_interbranch_members(&self) -> Result<Vec<Member>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let face_json: String = row.get::<_, Option<String>>(5).unwrap_or(None).unwrap_or_else(|| "[]".to_string());
+            let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&face_json).unwrap_or_default();
+            let created_str: String = row.get(8)?;
+            let expires_str: Option<String> = row.get::<_, Option<String>>(9).unwrap_or(None);
+            let created_at = DateTime::parse_from_rfc3339(&created_str).map(|d| d.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now());
+            Ok(Member {
+                id: row.get(0)?,
+                first_name: row.get(1)?,
+                last_name: row.get(2)?,
+                email: row.get::<_, Option<String>>(3).unwrap_or(None).unwrap_or_default(),
+                phone: row.get::<_, Option<String>>(4).unwrap_or(None).unwrap_or_default(),
+                membership_type: row.get(7)?,
+                status: row.get(6)?,
+                face_vectors,
+                created_at,
+                expires_at: expires_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r?); }
+        Ok(out)
+    }
+
+    pub fn list_interbranch_members_detailed(&self) -> Result<Vec<serde_json::Value>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at, home_gym_id, home_gym_name FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let face_json: String = row.get::<_, Option<String>>(5).unwrap_or(None).unwrap_or_else(|| "[]".to_string());
+            let vectors: Vec<Vec<f32>> = serde_json::from_str(&face_json).unwrap_or_default();
+            Ok(serde_json::json!({
+                "id": row.get::<_, String>(0)?,
+                "first_name": row.get::<_, String>(1)?,
+                "last_name": row.get::<_, String>(2)?,
+                "email": row.get::<_, Option<String>>(3).unwrap_or(None).unwrap_or_default(),
+                "phone": row.get::<_, Option<String>>(4).unwrap_or(None).unwrap_or_default(),
+                "status": row.get::<_, String>(6)?,
+                "membership_type": row.get::<_, String>(7)?,
+                "created_at": row.get::<_, String>(8)?,
+                "expires_at": row.get::<_, Option<String>>(9).unwrap_or(None),
+                "home_gym_id": row.get::<_, Option<String>>(10).unwrap_or(None).unwrap_or_default(),
+                "home_gym_name": row.get::<_, Option<String>>(11).unwrap_or(None).unwrap_or_default(),
+                "vector_count": vectors.len(),
+            }))
+        })?;
+        let mut out = Vec::new();
+        for r in rows { out.push(r?); }
+        Ok(out)
+    }
+
     // --- Attendance & Gate Logs ---
 
     pub fn log_attendance(

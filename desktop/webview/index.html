@@ -199,6 +199,12 @@
                     </svg>
                     <span>Members</span>
                 </div>
+                <div class="nav-item" onclick="switchView('interbranch')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path>
+                    </svg>
+                    <span>Inter-Branch Sync</span>
+                </div>
                 <div class="nav-item" onclick="switchView('register')">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path>
@@ -576,6 +582,64 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- 3A. INTER-BRANCH SYNC & CROSS-LOCATION ACCESS VIEW -->
+            <div id="view-interbranch" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Inter-Branch Network & Cross-Location Access</h2>
+                        <p class="text-xs text-slate-400">Sister-branch synced members via <span class="font-mono text-purple-400">owner_email</span> cloud clustering — face vectors, check-ins & branch heartbeat</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="loadInterbranchMembers()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            <span>Refresh Sync</span>
+                        </button>
+                        <span id="interbranch-sync-badge" class="px-3 py-1.5 rounded-full text-xs font-mono bg-purple-950/60 border border-purple-500/30 text-purple-300">Sync: idle</span>
+                    </div>
+                </div>
+                <!-- Metric cards -->
+                <div class="grid grid-cols-4 gap-4">
+                    <div class="glass-panel p-4 border border-purple-500/20 flex items-center gap-3">
+                        <div class="icon-box bg-purple-950/80 border border-purple-500/30 text-purple-300"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg></div>
+                        <div><div class="text-xs text-purple-400">Sister Branches</div><div id="ib-stat-branches" class="text-2xl font-bold brand text-purple-200">0</div><div class="text-[10px] text-purple-400/60">Owner-isolated clusters</div></div>
+                    </div>
+                    <div class="glass-panel p-4 border border-blue-500/20 flex items-center gap-3">
+                        <div class="icon-box bg-blue-950/80 border border-blue-500/30 text-blue-300"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"></path></svg></div>
+                        <div><div class="text-xs text-blue-400">Synced Members</div><div id="ib-stat-members" class="text-2xl font-bold brand text-blue-200">0</div><div class="text-[10px] text-blue-400/60">Cross-location face vectors</div></div>
+                    </div>
+                    <div class="glass-panel p-4 border border-emerald-500/20 flex items-center gap-3">
+                        <div class="icon-box bg-emerald-950/80 border border-emerald-500/30 text-emerald-300"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                        <div><div class="text-xs text-emerald-400">Inter-Branch Check-ins Today</div><div id="ib-stat-checkins" class="text-2xl font-bold brand text-emerald-300">0</div><div class="text-[10px] text-emerald-400/60">Visitor entries flagged</div></div>
+                    </div>
+                    <div class="glass-panel p-4 border border-slate-700/60 flex items-center gap-3">
+                        <div class="icon-box bg-slate-800 border border-slate-600 text-slate-300"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></div>
+                        <div><div class="text-xs text-slate-400">Cloud Sync Heartbeat</div><div id="ib-stat-heartbeat" class="text-sm font-bold brand text-slate-200">Checking...</div><div class="text-[10px] text-slate-500">Last sister sync</div></div>
+                    </div>
+                </div>
+                <!-- Search & branch filter -->
+                <div class="flex items-center gap-3">
+                    <div class="flex-1 relative">
+                        <input type="text" id="ib-search-input" oninput="filterInterbranchList()" class="input-dark pl-9 text-xs" placeholder="Search by name, email, home branch...">
+                        <svg class="w-4 h-4 text-slate-500 absolute left-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </div>
+                    <select id="ib-branch-filter" onchange="filterInterbranchList()" class="input-dark w-56 text-xs">
+                        <option value="all">All Sister Branches</option>
+                    </select>
+                </div>
+                <!-- Directory table -->
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr><th class="p-3">Member ID</th><th class="p-3">Full Name</th><th class="p-3">Home Gym Branch</th><th class="p-3">Tier / Status</th><th class="p-3">Vectors</th><th class="p-3">Sync</th><th class="p-3 text-right">Action</th></tr>
+                        </thead>
+                        <tbody id="interbranch-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr><td colspan="7" class="p-4 text-center text-slate-500">No sister-branch members synced yet. Members from other gyms under the same owner will appear here.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="text-[11px] text-slate-500">Synced via <span class="font-mono text-purple-400">/api/v1/sync/push</span> — owner-isolated, home_gym_id tagged, auto-ingested by <span class="font-mono">CloudSyncWorker</span>. Visitors are flagged <span class="px-1.5 py-0.5 rounded bg-amber-950/50 border border-amber-500/30 text-amber-300">Inter-Branch Visitor</span> in Gate Logs.</div>
             </div>
 
             <!-- 3B. DEDICATED MEMBER REGISTRATION & BIOMETRIC STUDIO VIEW -->

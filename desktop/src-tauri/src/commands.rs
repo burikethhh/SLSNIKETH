@@ -145,6 +145,23 @@ pub fn trigger_tailgate_alarm(reason: Option<String>, state: State<'_, AppContex
 }
 
 #[tauri::command]
+pub fn list_interbranch_members(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    let detailed = state.db.list_interbranch_members_detailed().map_err(|e| e.to_string())?;
+    // Also return local gym context for client-side filtering if needed
+    let local_gym_id = state.license.current_claims().map(|c| c.gym_id.to_string()).unwrap_or_default();
+    Ok(json!({
+        "local_gym_id": local_gym_id,
+        "members": detailed,
+        "count": detailed.len(),
+        "local_gym_name": state.license.current_claims().map(|c| c.gym_name).unwrap_or_else(|| app_settings_fallback_gym_name(&state))
+    }))
+}
+
+fn app_settings_fallback_gym_name(state: &AppContext) -> String {
+    state.db.get_app_settings().map(|s| s.gym_name).unwrap_or_else(|_| "Local Gym".to_string())
+}
+
+#[tauri::command]
 pub fn get_dashboard_summary(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     let member_count = state.db.count_members().map_err(|e| e.to_string())?;
     let today_checkins = state.db.count_today_checkins().unwrap_or(0);

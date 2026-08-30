@@ -77,6 +77,7 @@ pub fn run() {
             commands::trigger_tailgate_alarm,
             commands::get_dashboard_summary,
             commands::list_members,
+            commands::list_interbranch_members,
             commands::get_member,
             commands::register_member,
             commands::update_member,

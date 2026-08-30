@@ -886,7 +886,7 @@ function switchView(viewName) {
     document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
 
     const navItems = document.querySelectorAll('.nav-item');
-    const views = ['dashboard', 'attendance', 'members', 'register', 'walkins', 'pos', 'coaches', 'branding', 'hardware'];
+    const views = ['dashboard', 'attendance', 'members', 'interbranch', 'register', 'walkins', 'pos', 'coaches', 'branding', 'hardware'];
     const idx = views.indexOf(viewName);
     if (idx !== -1 && navItems[idx]) navItems[idx].classList.add('active');
 
@@ -897,6 +897,7 @@ function switchView(viewName) {
 
     if (viewName === 'dashboard') refreshDashboard();
     if (viewName === 'members') loadMembers();
+    if (viewName === 'interbranch') loadInterbranchMembers();
     if (viewName === 'register') initStudioCamera();
     if (viewName === 'walkins') loadWalkIns();
     if (viewName === 'attendance') loadAttendanceLogs();
@@ -1403,6 +1404,91 @@ function filterMembersList() {
                 </td>
             </tr>
         `;
+    }).join('');
+}
+
+let cachedInterbranch = [];
+let interbranchMeta = { local_gym_id: '', local_gym_name: '' };
+
+async function loadInterbranchMembers() {
+    const tbody = document.getElementById('interbranch-tbody');
+    const badge = document.getElementById('interbranch-sync-badge');
+    try {
+        let res;
+        try {
+            res = await invokeTauri('list_interbranch_members');
+        } catch (e) {
+            // Fallback: derive from cachedMembers where home_gym_name differs from local
+            const local = appSettings.gym_name || 'Titan Fitness & Performance';
+            const filtered = cachedMembers.filter(m => m.home_gym_name && m.home_gym_name !== local);
+            res = { members: filtered.map(m => ({
+                id: m.id, first_name: m.first_name, last_name: m.last_name,
+                email: m.email || '', phone: m.phone || '', status: m.status || 'active',
+                membership_type: m.membership_type || 'regular', created_at: m.created_at || new Date().toISOString(),
+                home_gym_id: m.home_gym_id || '', home_gym_name: m.home_gym_name || '',
+                vector_count: (m.face_vectors || []).length
+            })), count: filtered.length, local_gym_name: local, local_gym_id: '' };
+        }
+        // IPC returns { members, count, local_gym_id, local_gym_name }
+        const list = Array.isArray(res) ? res : (res.members || []);
+        const localName = res.local_gym_name || appSettings.gym_name || '';
+        interbranchMeta = { local_gym_id: res.local_gym_id || '', local_gym_name: localName };
+        cachedInterbranch = list;
+        // Populate branch filter dropdown
+        const branchSel = document.getElementById('ib-branch-filter');
+        if (branchSel) {
+            const branches = [...new Set(list.map(m => m.home_gym_name).filter(Boolean))].sort();
+            branchSel.innerHTML = '<option value="all">All Sister Branches</option>' + branches.map(b => `<option value="${b.replace(/"/g,'&quot;')}">${b}</option>`).join('');
+        }
+        if (badge) badge.innerText = `Sync: ${list.length} sister members`;
+        filterInterbranchList();
+        // Update metric cards
+        const branchesEl = document.getElementById('ib-stat-branches');
+        const membersEl = document.getElementById('ib-stat-members');
+        const hbEl = document.getElementById('ib-stat-heartbeat');
+        if (branchesEl) branchesEl.innerText = new Set(list.map(m=>m.home_gym_name).filter(Boolean)).size;
+        if (membersEl) membersEl.innerText = list.length;
+        if (hbEl) hbEl.innerText = list.length > 0 ? 'Active (synced)' : 'Idle';
+        // Inter-branch check-ins today: count attendance where member is visitor
+        try {
+            const logs = await invokeTauri('list_recent_attendance', { limit: 50 });
+            const visitorLogs = (logs||[]).filter(l => {
+                const mem = cachedMembers.find(m=>m.id===l.member_id);
+                return mem && mem.home_gym_name && mem.home_gym_name !== (appSettings.gym_name||'');
+            });
+            const chkEl = document.getElementById('ib-stat-checkins');
+            if (chkEl) chkEl.innerText = visitorLogs.filter(v => new Date(v.timestamp).toDateString() === new Date().toDateString()).length;
+        } catch(_){}
+    } catch (e) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-red-400">Load failed: ${String(e)}</td></tr>`;
+        if (badge) badge.innerText = 'Sync: error';
+    }
+}
+
+function filterInterbranchList() {
+    const search = (document.getElementById('ib-search-input')?.value || '').toLowerCase().trim();
+    const branch = document.getElementById('ib-branch-filter')?.value || 'all';
+    const tbody = document.getElementById('interbranch-tbody');
+    if (!tbody) return;
+    let filtered = cachedInterbranch;
+    if (branch !== 'all') filtered = filtered.filter(m => m.home_gym_name === branch);
+    if (search) filtered = filtered.filter(m => (`${m.first_name} ${m.last_name} ${m.email||''} ${m.home_gym_name||''}`.toLowerCase().includes(search)) || (m.id||'').toLowerCase().includes(search));
+    if (filtered.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No sister-branch members matching filter.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filtered.map(m => {
+        const statusCls = m.status === 'active' ? 'bg-emerald-950 text-emerald-400 border-emerald-800' : 'bg-amber-950 text-amber-300 border-amber-800';
+        const isLocalVisitor = m.home_gym_name && m.home_gym_name !== (appSettings.gym_name||'');
+        return `<tr class="hover:bg-slate-800/30 transition">
+            <td class="p-3 font-mono text-blue-300">${m.id}</td>
+            <td class="p-3"><div class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</div><div class="text-[10px] text-slate-500">${m.email||'--'}</div></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60">${m.home_gym_name||'—'}</span><div class="text-[10px] font-mono text-slate-500">${(m.home_gym_id||'').slice(0,8)}</div></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] border font-semibold uppercase ${statusCls}">${m.membership_type||'regular'} · ${m.status||'active'}</span></td>
+            <td class="p-3 text-center"><span class="font-mono text-slate-200">${m.vector_count||0}</span><span class="text-[10px] text-slate-500"> vectors</span></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950/50 text-emerald-300 border border-emerald-800">Synced</span></td>
+            <td class="p-3 text-right"><button onclick="switchView('members'); setTimeout(()=>{document.getElementById('member-search-input').value='${(m.first_name+" "+m.last_name).replace(/'/g,"\\'")}'; filterMembersList();}, 100)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700">View Profile</button></td>
+        </tr>`;
     }).join('');
 }
 
@@ -2068,9 +2154,15 @@ async function loadAttendanceLogs() {
                 </span>`;
             }
 
+            // Inter-branch visitor detection via cachedMembers home_gym_name vs local gym
+            const interMember = l.member_id ? cachedMembers.find(m=>m.id===l.member_id) : null;
+            const isInterbranchVisitor = !!(interMember && interMember.home_gym_name && interMember.home_gym_name !== (appSettings.gym_name||'') && !isOverride);
+
             let flagBadge = '<span class="text-slate-500 text-[10px]">Normal</span>';
             if (isTailgate) {
                 flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>';
+            } else if (isInterbranchVisitor) {
+                flagBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-purple-950 text-purple-300 border border-purple-800 font-bold" title="Home: ${interMember.home_gym_name}"><span>📍 Inter-Branch Visitor</span><span class="font-mono text-[9px]">[${interMember.home_gym_name}]</span></span>`;
             } else if (isOverride) {
                 flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-400 border border-amber-700 font-semibold"><span>UNPAID / MANUAL PULSE</span></span>';
             } else if (isWalkIn) {
@@ -2080,9 +2172,9 @@ async function loadAttendanceLogs() {
             const timeFormatted = new Date(l.timestamp).toLocaleTimeString();
 
             return `
-                <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : '')}">
+                <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : (isInterbranchVisitor ? 'bg-purple-950/20 border-l-2 border-purple-500' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : ''))}">
                     <td class="p-3 font-mono text-blue-300">${l.id}</td>
-                    <td class="p-3 font-semibold text-slate-200">${l.member_name || 'Unidentified Person'}</td>
+                    <td class="p-3 font-semibold text-slate-200">${l.member_name || 'Unidentified Person'}${isInterbranchVisitor ? ` <span class="text-[9px] text-purple-400">[${interMember.home_gym_name}]</span>` : ''}</td>
                     <td class="p-3">${dirBadge}</td>
                     <td class="p-3 text-slate-400">${l.confidence ? (l.confidence * 100).toFixed(1) + '%' : '--'}</td>
                     <td class="p-3">${flagBadge}</td>
