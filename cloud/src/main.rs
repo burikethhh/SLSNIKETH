@@ -89,6 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/remote/disable", post(routes::remote_disable))
         .route("/api/v1/analytics/fleet", get(routes::analytics_fleet))
         // Owner Multi-Branch Portal & Remote Catalog Bridge
+        .route("/portal", get(serve_portal_html))
+        .route("/portal.html", get(serve_portal_html))
         .route("/api/v1/owner/auth/register", post(routes::owner_register))
         .route("/api/v1/owner/auth/login", post(routes::owner_login))
         .route("/api/v1/owner/branches", get(routes::owner_get_branches))
@@ -115,4 +117,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     Ok(())
 }
+
+async fn serve_portal_html() -> impl axum::response::IntoResponse {
+    let path = if std::path::Path::new("cloud/dashboard/portal.html").exists() {
+        "cloud/dashboard/portal.html"
+    } else {
+        "dashboard/portal.html"
+    };
+    match tokio::fs::read_to_string(path).await {
+        Ok(html) => (
+            axum::http::StatusCode::OK,
+            [("content-type", "text/html; charset=utf-8")],
+            html,
+        ),
+        Err(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            [("content-type", "text/plain")],
+            "Portal not found".to_string(),
+        ),
+    }
+}
+
 

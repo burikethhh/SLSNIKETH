@@ -153,7 +153,7 @@
                     <div class="pulse-dot"></div>
                     <span class="text-xs text-slate-300 font-medium">Branch:</span>
                     <select id="portal-branch-selector" onchange="switchBranchFilter()" class="bg-transparent text-xs text-purple-300 font-semibold focus:outline-none cursor-pointer">
-                        <option value="all">🌐 All Branches (Consolidated)</option>
+                        <option value="all">All Branches (Consolidated)</option>
                     </select>
                 </div>
 
@@ -169,12 +169,12 @@
         <!-- Tab Navigation Bar -->
         <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
             <div class="flex space-x-2 bg-slate-950/60 p-1.5 rounded-lg border border-slate-800">
-                <button onclick="switchPortalTab('overview')" id="tab-overview" class="tab-btn active">📊 Revenue & Analytics</button>
-                <button onclick="switchPortalTab('keys')" id="tab-keys" class="tab-btn">🔑 Multi-Branch Keys</button>
-                <button onclick="switchPortalTab('catalog')" id="tab-catalog" class="tab-btn">🛒 POS Products & Pricing</button>
-                <button onclick="switchPortalTab('plans')" id="tab-plans" class="tab-btn">💳 Membership Plans</button>
-                <button onclick="switchPortalTab('promos')" id="tab-promos" class="tab-btn">🎟️ Promo Vouchers</button>
-                <button onclick="switchPortalTab('transactions')" id="tab-transactions" class="tab-btn">🧾 Live POS Feed</button>
+                <button onclick="switchPortalTab('overview')" id="tab-overview" class="tab-btn active">Revenue & Analytics</button>
+                <button onclick="switchPortalTab('keys')" id="tab-keys" class="tab-btn">Multi-Branch Keys</button>
+                <button onclick="switchPortalTab('catalog')" id="tab-catalog" class="tab-btn">POS Products & Pricing</button>
+                <button onclick="switchPortalTab('plans')" id="tab-plans" class="tab-btn">Membership Plans</button>
+                <button onclick="switchPortalTab('promos')" id="tab-promos" class="tab-btn">Promo Vouchers</button>
+                <button onclick="switchPortalTab('transactions')" id="tab-transactions" class="tab-btn">Live POS Feed</button>
             </div>
 
             <div class="flex items-center space-x-2">
@@ -711,11 +711,11 @@
 
         function populateBranchSelector(branches) {
             const selector = document.getElementById('portal-branch-selector');
-            selector.innerHTML = '<option value="all">🌐 All Branches (Consolidated)</option>';
+            selector.innerHTML = '<option value="all">All Branches (Consolidated)</option>';
             branches.forEach(b => {
                 const opt = document.createElement('option');
                 opt.value = b.gym_id;
-                opt.textContent = `📍 ${b.name}`;
+                opt.textContent = b.name;
                 selector.appendChild(opt);
             });
         }
@@ -991,7 +991,7 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert(`✅ Success: ${data.saved_count} products saved and queued to sync to all branch POS terminals on next heartbeat!`);
+                    alert(`Success: ${data.saved_count} products saved and queued to sync to all branch POS terminals on next heartbeat!`);
                 } else {
                     alert(data.error || 'Failed to save products');
                 }
@@ -1026,7 +1026,7 @@
                             <span class="text-xs text-slate-400">/ month</span>
                         </div>
                         <ul class="space-y-1.5 text-xs text-slate-300 mb-4">
-                            ${p.benefits.map(b => `<li class="flex items-center space-x-1.5"><span class="text-purple-400">✔</span><span>${escapeHtml(b)}</span></li>`).join('')}
+                            ${p.benefits.map(b => `<li class="flex items-center space-x-1.5"><span class="text-purple-400 font-bold">•</span><span>${escapeHtml(b)}</span></li>`).join('')}
                         </ul>
                     </div>
                     <div class="pt-3 border-t border-slate-800 text-[11px] text-slate-500">
@@ -1054,7 +1054,7 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert(`✅ Success: ${data.saved_count} membership plans saved and queued for kiosk sync!`);
+                    alert(`Success: ${data.saved_count} membership plans saved and queued for kiosk sync!`);
                 } else {
                     alert(data.error || 'Failed to save plans');
                 }
@@ -1145,7 +1145,7 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
-                    alert(`✅ Success: ${data.saved_count} promo vouchers saved and distributed to POS terminals!`);
+                    alert(`Success: ${data.saved_count} promo vouchers saved and distributed to POS terminals!`);
                 } else {
                     alert(data.error || 'Failed to save promos');
                 }
@@ -1156,7 +1156,7 @@
         }
 
         function testKeyHealth(gymId) {
-            alert(`✅ Terminal Verified: Branch ${gymId} is active, HWID hardware lock validated, and last sync timestamp is within 7-day heartbeat window.`);
+            alert(`Terminal Verified: Branch ${gymId} is active, HWID hardware lock validated, and last sync timestamp is within 7-day heartbeat window.`);
         }
 
         function escapeHtml(str) {
