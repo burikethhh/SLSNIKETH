@@ -1,0 +1,14 @@
+{
+  "name": "gympos-saas-e2e",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "pw:install": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "http-server": "^14.1.1"
+  }
+}

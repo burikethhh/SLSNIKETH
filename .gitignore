@@ -21,3 +21,8 @@ bin/
 
 # Keys
 *.pem
+
+# Test reports and outputs
+playwright-report/
+test-results/
+
