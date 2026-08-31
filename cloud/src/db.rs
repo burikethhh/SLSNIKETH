@@ -762,6 +762,10 @@ impl CloudDatabase {
 
     pub fn get_owner_branches(&self, owner_email: &str) -> Result<Vec<OwnerBranchSummary>> {
         let conn = self.conn.lock();
+        Self::get_owner_branches_internal(&conn, owner_email)
+    }
+
+    fn get_owner_branches_internal(conn: &Connection, owner_email: &str) -> Result<Vec<OwnerBranchSummary>> {
         let mut stmt = conn.prepare(
             "SELECT g.id, g.name, g.tier, g.is_active,
                     l.raw_token, l.expires_at, l.issued_at
@@ -846,7 +850,7 @@ impl CloudDatabase {
             |r| r.get(0),
         ).unwrap_or_else(|_| "Gym Group".to_string());
 
-        let branches = self.get_owner_branches(owner_email)?;
+        let branches = Self::get_owner_branches_internal(&conn, owner_email)?;
         let total_branches = branches.len();
         let total_active_members: u32 = branches.iter().map(|b| b.active_members).sum();
 
