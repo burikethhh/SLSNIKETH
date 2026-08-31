@@ -172,8 +172,40 @@
                 </svg>
                 <span>License</span>
             </button>
+
+            <!-- Auto-Updater Button -->
+            <button id="btn-update-checker" onclick="checkUpdatesManual()" class="px-2.5 py-1.5 rounded-lg text-xs bg-purple-950/60 hover:bg-purple-900/80 text-purple-200 border border-purple-500/30 transition flex items-center gap-1.5" title="Check for Application Updates">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+                <span id="app-version-badge">v0.1.0</span>
+            </button>
         </div>
     </header>
+
+    <!-- Global Auto-Updater Banner (Floating) -->
+    <div id="update-alert-banner" class="mx-4 mb-1 p-3 rounded-lg bg-gradient-to-r from-purple-950/90 via-indigo-950/90 to-purple-950/90 border border-purple-500/50 shadow-xl flex items-center justify-between z-20 hidden">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-purple-900/60 border border-purple-500/40 flex items-center justify-center text-purple-300">
+                <svg class="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+            </div>
+            <div>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-bold text-white font-rajdhani tracking-wide">SYSTEM UPDATE AVAILABLE:</span>
+                    <span id="update-banner-version" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/20 text-purple-200 border border-purple-500/40">v1.0.0</span>
+                    <span id="update-banner-mandatory" class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/40 hidden">MANDATORY</span>
+                </div>
+                <div id="update-banner-notes" class="text-[11px] text-purple-300/80 line-clamp-1">New features and security hardening available.</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <button onclick="openUpdateModal()" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-900/50 hover:bg-purple-800 text-purple-200 border border-purple-500/30">View Changelog</button>
+            <button onclick="triggerUpdateInstall()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                <span>Update Now</span>
+            </button>
+        </div>
+    </div>
 
     <!-- Main Workspace Area -->
     <div class="flex flex-1 mx-4 my-3 gap-4 overflow-hidden z-10">
@@ -1762,6 +1794,54 @@
                 </button>
                 <button onclick="closeBookSessionModal()" class="px-4 py-2.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
                     Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Auto-Updater Modal -->
+    <div id="update-details-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 hidden">
+        <div class="glass-panel p-6 max-w-lg w-full space-y-4 border border-purple-500/50 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-purple-900/40 pb-3">
+                <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-purple-900/60 border border-purple-500/40 flex items-center justify-center text-purple-300">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-white font-rajdhani">GymPOS Terminal Update</h3>
+                        <div class="text-xs text-purple-400 font-mono">Current: <span id="modal-current-version">v0.1.0</span> → Target: <span id="modal-target-version" class="text-emerald-400 font-bold">v1.0.0</span></div>
+                    </div>
+                </div>
+                <button onclick="closeUpdateModal()" class="text-slate-400 hover:text-white text-lg font-bold">&times;</button>
+            </div>
+
+            <div class="space-y-2">
+                <div class="text-xs text-purple-300 font-semibold">Release Changelog & Security Notes:</div>
+                <div id="modal-release-notes" class="p-3 rounded bg-purple-950/40 border border-purple-900/50 text-xs text-slate-200 font-sans whitespace-pre-wrap max-h-48 overflow-y-auto">
+                    Loading release details...
+                </div>
+            </div>
+
+            <!-- Download Progress Bar (Hidden by default) -->
+            <div id="update-progress-container" class="space-y-1 hidden">
+                <div class="flex justify-between text-xs text-purple-300 font-mono">
+                    <span id="update-status-text">Downloading verified binary asset...</span>
+                    <span id="update-progress-pct">0%</span>
+                </div>
+                <div class="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                    <div id="update-progress-bar" class="bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-300 w-0"></div>
+                </div>
+            </div>
+
+            <div id="update-error-text" class="text-xs text-red-400 hidden"></div>
+
+            <div class="flex gap-2 pt-2">
+                <button id="btn-modal-install" onclick="triggerUpdateInstall()" class="brand-btn flex-1 py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    <span>Download & Apply Update</span>
+                </button>
+                <button onclick="closeUpdateModal()" class="px-4 py-2.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300">
+                    Later
                 </button>
             </div>
         </div>

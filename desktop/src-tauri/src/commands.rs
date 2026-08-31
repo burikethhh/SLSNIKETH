@@ -537,3 +537,36 @@ pub fn void_walk_in(id: String, state: State<'_, AppContext>) -> Result<(), Stri
     state.face_store.remove(&temp_id);
     Ok(())
 }
+
+// --- Auto-Updater Commands ---
+
+#[tauri::command]
+pub async fn check_for_updates(
+    channel: Option<String>,
+    state: State<'_, AppContext>,
+) -> Result<gympos_shared::UpdateCheckResponse, String> {
+    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+    let updater = crate::updater::AutoUpdater::new(cloud_url);
+
+    let gym_id = state.license.current_claims().map(|c| c.gym_id);
+    updater.check_for_updates(gym_id, channel).await
+}
+
+#[tauri::command]
+pub async fn download_and_install_update(
+    download_url: String,
+    sha256: String,
+) -> Result<String, String> {
+    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+    let updater = crate::updater::AutoUpdater::new(cloud_url);
+
+    let tmp_path = updater.download_and_verify(&download_url, &sha256).await?;
+    crate::updater::AutoUpdater::apply_update_and_restart(&tmp_path)?;
+    Ok("Update applying and restarting...".to_string())
+}
+
+#[tauri::command]
+pub fn get_app_version() -> Result<String, String> {
+    Ok(crate::updater::CURRENT_APP_VERSION.to_string())
+}
+

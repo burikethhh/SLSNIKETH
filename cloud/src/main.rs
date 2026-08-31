@@ -99,6 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/owner/catalog/products", post(routes::owner_save_products))
         .route("/api/v1/owner/catalog/plans", post(routes::owner_save_plans))
         .route("/api/v1/owner/catalog/promos", post(routes::owner_save_promos))
+        // Scalable Auto-Updater & Release Controller
+        .route("/api/v1/updates/check", get(routes::check_for_updates))
+        .route("/api/v1/updates/publish", post(routes::publish_release_endpoint))
+        .route("/api/v1/updates/releases", get(routes::list_releases_endpoint))
         .fallback_service(dashboard_service)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

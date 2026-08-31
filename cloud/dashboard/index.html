@@ -270,7 +270,96 @@
             </div>
         </div>
 
+        <!-- 3. Fleet Release & Auto-Updater Scalability Controller -->
+        <div class="glass-panel p-5 space-y-4 border border-purple-900/40">
+            <div class="flex items-center justify-between border-b border-purple-900/40 pb-3">
+                <div class="flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    <div>
+                        <h2 class="text-base font-bold text-purple-200 brand">Fleet Releases & Scalable Auto-Updater</h2>
+                        <p class="text-xs text-purple-400/70">Deploy versioned binaries, configure staged rollout percentages, and trigger fleet updates</p>
+                    </div>
+                </div>
+                <button onclick="togglePublishReleaseForm()" class="btn-purple px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                    <span>Publish New Release</span>
+                </button>
+            </div>
+
+            <!-- Publish Release Form (Expandable) -->
+            <div id="publish-release-form" class="p-4 rounded-lg bg-purple-950/30 border border-purple-500/20 space-y-3 hidden">
+                <div class="grid grid-cols-3 gap-3">
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Target Version</label>
+                        <input type="text" id="rel-version" placeholder="e.g. 1.0.0" class="input-dark font-mono text-xs">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Release Channel</label>
+                        <select id="rel-channel" class="input-dark text-xs">
+                            <option value="stable">Stable (Production Fleet)</option>
+                            <option value="beta">Beta (Early Adopter Gyms)</option>
+                            <option value="nightly">Nightly (Dev/Staging)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Staged Rollout (%)</label>
+                        <input type="number" id="rel-rollout" min="1" max="100" value="100" class="input-dark text-xs">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">GitHub / CDN Download URL</label>
+                        <input type="url" id="rel-download-url" placeholder="https://github.com/burikethhh/SLSNIKETH/releases/download/v1.0.0/GymPOS.exe" class="input-dark font-mono text-xs">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-purple-300 mb-1">Binary SHA-256 Checksum</label>
+                        <input type="text" id="rel-sha256" placeholder="SHA-256 hash for integrity verification" class="input-dark font-mono text-xs">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs text-purple-300 mb-1">Release Notes / Changelog</label>
+                    <textarea id="rel-notes" rows="2" placeholder="Describe the new features and security hardening..." class="input-dark text-xs"></textarea>
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                    <label class="flex items-center gap-2 text-xs text-purple-300 cursor-pointer">
+                        <input type="checkbox" id="rel-mandatory" class="rounded bg-purple-900 border-purple-500 text-purple-600 focus:ring-0">
+                        <span>Mandatory Update (Locks POS terminals until updated)</span>
+                    </label>
+                    <div class="flex gap-2">
+                        <button onclick="submitPublishRelease()" class="btn-purple px-4 py-1.5 rounded-lg text-xs font-bold">Deploy Release to Fleet</button>
+                        <button onclick="togglePublishReleaseForm()" class="px-3 py-1.5 rounded-lg text-xs bg-slate-800 text-slate-300 hover:bg-slate-700">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Releases Fleet Table -->
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs">
+                    <thead>
+                        <tr class="text-purple-400/80 border-b border-purple-900/40">
+                            <th class="pb-2">Version</th>
+                            <th class="pb-2">Channel</th>
+                            <th class="pb-2">Rollout</th>
+                            <th class="pb-2">Binary Hash</th>
+                            <th class="pb-2">Enforcement</th>
+                            <th class="pb-2">Published At</th>
+                            <th class="pb-2 text-right">Asset Link</th>
+                        </tr>
+                    </thead>
+                    <tbody id="releases-tbody" class="divide-y divide-purple-900/20">
+                        <tr>
+                            <td colspan="7" class="py-4 text-center text-purple-400/50">No releases deployed yet. Use 'Publish New Release' to seed updates.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
     </div>
+
 
     <!-- Output Generated License Modal -->
     <div id="license-output-modal" class="fixed inset-0 z-50 bg-black bg-opacity-75 flex items-center justify-center p-4 hidden">
@@ -727,6 +816,103 @@
             txt.select();
             navigator.clipboard.writeText(txt.value);
             alert("License key copied to clipboard!");
+        }
+
+        // --- Release Controller JS ---
+        let deployedReleases = [];
+
+        function togglePublishReleaseForm() {
+            const el = document.getElementById('publish-release-form');
+            if (el) el.classList.toggle('hidden');
+        }
+
+        async function fetchReleases() {
+            try {
+                const res = await fetch('/api/v1/updates/releases', { headers: getAdminHeaders() });
+                if (res.ok) {
+                    deployedReleases = await res.json();
+                    renderReleases();
+                }
+            } catch (e) {
+                console.error("Failed to fetch releases:", e);
+            }
+        }
+
+        function renderReleases() {
+            const tbody = document.getElementById('releases-tbody');
+            if (!tbody) return;
+
+            if (deployedReleases.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="py-4 text-center text-purple-400/50">No releases deployed yet. Use \'Publish New Release\' to seed updates.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = deployedReleases.map(r => `
+                <tr class="hover:bg-purple-950/20 transition">
+                    <td class="py-3 font-mono font-bold text-purple-200">${r.version}</td>
+                    <td class="py-3">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${r.channel === 'stable' ? 'text-emerald-400 border-emerald-500/40 bg-emerald-950/40' : 'text-amber-400 border-amber-500/40 bg-amber-950/40'}">${r.channel}</span>
+                    </td>
+                    <td class="py-3">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold text-blue-300 bg-blue-950/40 border border-blue-500/40">${r.rollout_percentage}%</span>
+                    </td>
+                    <td class="py-3 font-mono text-[10px] text-purple-400/80">${r.sha256 ? r.sha256.substring(0, 12) + '...' : 'None'}</td>
+                    <td class="py-3">
+                        ${r.is_mandatory 
+                            ? '<span class="text-[10px] font-bold text-red-400 bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded">MANDATORY</span>'
+                            : '<span class="text-[10px] font-bold text-purple-300 bg-purple-950/60 border border-purple-800/60 px-2 py-0.5 rounded">OPTIONAL</span>'}
+                    </td>
+                    <td class="py-3 text-[11px] text-purple-300">${new Date(r.created_at).toLocaleDateString()}</td>
+                    <td class="py-3 text-right">
+                        <a href="${r.download_url}" target="_blank" class="px-2 py-1 rounded text-[11px] font-bold bg-purple-900/40 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Download Asset</a>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function submitPublishRelease() {
+            const version = document.getElementById('rel-version').value.trim();
+            const channel = document.getElementById('rel-channel').value;
+            const rollout = parseInt(document.getElementById('rel-rollout').value) || 100;
+            const downloadUrl = document.getElementById('rel-download-url').value.trim();
+            const sha256 = document.getElementById('rel-sha256').value.trim();
+            const notes = document.getElementById('rel-notes').value.trim();
+            const isMandatory = document.getElementById('rel-mandatory').checked;
+
+            if (!version || !downloadUrl) {
+                return alert("Please enter Target Version and Download URL.");
+            }
+
+            try {
+                const res = await fetch('/api/v1/updates/publish', {
+                    method: 'POST',
+                    headers: getAdminHeaders(),
+                    body: JSON.stringify({
+                        version: version,
+                        channel: channel,
+                        rollout_percentage: rollout,
+                        download_url: downloadUrl,
+                        sha256: sha256,
+                        release_notes: notes,
+                        is_mandatory: isMandatory
+                    })
+                });
+
+                if (res.ok) {
+                    alert(`Release ${version} (${channel}) published successfully!`);
+                    togglePublishReleaseForm();
+                    await fetchReleases();
+                } else {
+                    const err = await res.json();
+                    alert("Failed to publish release: " + (err.error || res.statusText));
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        async function refreshAllData() {
+            await Promise.all([fetchGyms(), fetchLicenses(), fetchReleases()]);
         }
 
         document.addEventListener('DOMContentLoaded', refreshAllData);

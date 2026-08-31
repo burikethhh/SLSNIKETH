@@ -4,11 +4,12 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use axum::extract::Query;
 use chrono::{Duration, Utc};
 use gympos_shared::{
     FaceVectorSyncItem, LicenseClaims, OwnerLoginRequest, OwnerLoginResponse,
-    OwnerRegisterRequest, SavePlansRequest, SaveProductsRequest, SavePromosRequest,
-    SyncPushPayload, SyncResponse,
+    OwnerRegisterRequest, PublishReleaseRequest, ReleaseInfo, SavePlansRequest, SaveProductsRequest,
+    SavePromosRequest, SyncPushPayload, SyncResponse, UpdateCheckRequest, UpdateCheckResponse,
 };
 use parking_lot::RwLock;
 use serde_json::json;
@@ -716,5 +717,112 @@ pub async fn owner_save_promos(
         })),
     ))
 }
+
+// --- Auto-Updater & Release Controller (Fleet Scalability) ---
+
+pub async fn check_for_updates(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<UpdateCheckRequest>,
+) -> impl IntoResponse {
+    let channel = params.channel.unwrap_or_else(|| "stable".to_string());
+    let current_ver = params.current_version.trim().to_string();
+
+    let release_opt = state.db.get_latest_release(&channel).unwrap_or(None);
+
+    match release_opt {
+        Some(rel) => {
+            let mut eligible = true;
+
+            // Staged Rollout percentage check
+            if rel.rollout_percentage < 100 {
+                if let Some(gym_id) = params.gym_id {
+                    let mut hasher = sha2::Sha256::new();
+                    use sha2::Digest;
+                    hasher.update(format!("{}:{}", gym_id, rel.version).as_bytes());
+                    let hash_bytes = hasher.finalize();
+                    let bucket = (hash_bytes[0] as u32) % 100;
+                    if bucket >= rel.rollout_percentage {
+                        eligible = false;
+                    }
+                }
+            }
+
+            let is_newer = eligible && (rel.version.trim() != current_ver);
+
+            (
+                StatusCode::OK,
+                Json(UpdateCheckResponse {
+                    update_available: is_newer,
+                    current_version: current_ver,
+                    latest_version: rel.version,
+                    channel: rel.channel,
+                    download_url: rel.download_url,
+                    sha256: rel.sha256,
+                    release_notes: rel.release_notes,
+                    is_mandatory: rel.is_mandatory,
+                    rollout_percentage: rel.rollout_percentage,
+                    server_time: Utc::now(),
+                }),
+            )
+        }
+        None => {
+            // Fallback response pointing to GitHub Releases
+            (
+                StatusCode::OK,
+                Json(UpdateCheckResponse {
+                    update_available: false,
+                    current_version: current_ver.clone(),
+                    latest_version: current_ver,
+                    channel,
+                    download_url: "https://github.com/burikethhh/SLSNIKETH/releases/latest".to_string(),
+                    sha256: String::new(),
+                    release_notes: "Up to date".to_string(),
+                    is_mandatory: false,
+                    rollout_percentage: 100,
+                    server_time: Utc::now(),
+                }),
+            )
+        }
+    }
+}
+
+pub async fn publish_release_endpoint(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<PublishReleaseRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+
+    let release_info = ReleaseInfo {
+        version: payload.version.trim().to_string(),
+        channel: payload.channel.trim().to_lowercase(),
+        min_supported_version: payload.min_supported_version.unwrap_or_else(|| "0.1.0".to_string()),
+        download_url: payload.download_url.trim().to_string(),
+        sha256: payload.sha256.trim().to_string(),
+        release_notes: payload.release_notes,
+        rollout_percentage: payload.rollout_percentage.unwrap_or(100).min(100),
+        is_mandatory: payload.is_mandatory.unwrap_or(false),
+        created_at: Utc::now(),
+    };
+
+    state.db.publish_release(&release_info).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to publish release: {}", e) })),
+        )
+    })?;
+
+    Ok((StatusCode::CREATED, Json(release_info)))
+}
+
+pub async fn list_releases_endpoint(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    verify_admin_auth(&headers, &state.admin_key)?;
+    let list = state.db.list_releases().unwrap_or_default();
+    Ok((StatusCode::OK, Json(list)))
+}
+
 
 

@@ -2413,4 +2413,138 @@ async function submitLicenseKey() {
     }
 }
 
+// --- Auto-Updater Client Logic ---
+
+let availableUpdate = null;
+
+async function checkAppVersion() {
+    try {
+        const ver = await invokeTauri('get_app_version');
+        const badge = document.getElementById('app-version-badge');
+        if (badge && ver) badge.innerText = `v${ver}`;
+        const curModal = document.getElementById('modal-current-version');
+        if (curModal && ver) curModal.innerText = `v${ver}`;
+    } catch (e) {
+        console.warn("get_app_version not available in mock/preview mode:", e);
+    }
+}
+
+async function checkForUpdatesSilent() {
+    try {
+        const res = await invokeTauri('check_for_updates', { channel: 'stable' });
+        if (res && res.update_available) {
+            availableUpdate = res;
+            showUpdateBanner(res);
+        }
+    } catch (e) {
+        console.log("Silent update check skipped:", e);
+    }
+}
+
+async function checkUpdatesManual() {
+    const btn = document.getElementById('btn-update-checker');
+    const origText = btn ? btn.innerHTML : '';
+    if (btn) btn.innerHTML = '<span>Checking...</span>';
+
+    try {
+        const res = await invokeTauri('check_for_updates', { channel: 'stable' });
+        if (res && res.update_available) {
+            availableUpdate = res;
+            showUpdateBanner(res);
+            openUpdateModal();
+        } else {
+            alert(`GymPOS is up to date (${res ? res.current_version : 'Latest'})!`);
+        }
+    } catch (e) {
+        alert("Update check error: " + e);
+    } finally {
+        if (btn) btn.innerHTML = origText;
+    }
+}
+
+function showUpdateBanner(update) {
+    const banner = document.getElementById('update-alert-banner');
+    if (!banner) return;
+
+    document.getElementById('update-banner-version').innerText = `v${update.latest_version}`;
+    document.getElementById('update-banner-notes').innerText = update.release_notes || 'Performance and security updates ready to install.';
+
+    const mandBadge = document.getElementById('update-banner-mandatory');
+    if (mandBadge) {
+        if (update.is_mandatory) mandBadge.classList.remove('hidden');
+        else mandBadge.classList.add('hidden');
+    }
+
+    banner.classList.remove('hidden');
+}
+
+function openUpdateModal() {
+    if (!availableUpdate) return;
+    document.getElementById('modal-target-version').innerText = `v${availableUpdate.latest_version}`;
+    document.getElementById('modal-release-notes').innerText = availableUpdate.release_notes || 'Security hardening and bug fixes.';
+    document.getElementById('update-details-modal').classList.remove('hidden');
+}
+
+function closeUpdateModal() {
+    document.getElementById('update-details-modal').classList.add('hidden');
+}
+
+async function triggerUpdateInstall() {
+    if (!availableUpdate) return;
+
+    const progContainer = document.getElementById('update-progress-container');
+    const progBar = document.getElementById('update-progress-bar');
+    const progPct = document.getElementById('update-progress-pct');
+    const statusText = document.getElementById('update-status-text');
+    const errText = document.getElementById('update-error-text');
+    const installBtn = document.getElementById('btn-modal-install');
+
+    if (progContainer) progContainer.classList.remove('hidden');
+    if (errText) errText.classList.add('hidden');
+    if (installBtn) installBtn.disabled = true;
+
+    // Simulate smooth progress animation
+    let p = 10;
+    const interval = setInterval(() => {
+        if (p < 90) {
+            p += 15;
+            if (progBar) progBar.style.width = `${p}%`;
+            if (progPct) progPct.innerText = `${p}%`;
+        }
+    }, 200);
+
+    try {
+        if (statusText) statusText.innerText = "Downloading & verifying cryptographic SHA-256 hash...";
+
+        await invokeTauri('download_and_install_update', {
+            downloadUrl: availableUpdate.download_url,
+            sha256: availableUpdate.sha256
+        });
+
+        clearInterval(interval);
+        if (progBar) progBar.style.width = '100%';
+        if (progPct) progPct.innerText = '100%';
+        if (statusText) statusText.innerText = "Applying update and restarting GymPOS...";
+    } catch (e) {
+        clearInterval(interval);
+        if (errText) {
+            errText.innerText = "Update Error: " + e;
+            errText.classList.remove('hidden');
+        }
+        if (installBtn) installBtn.disabled = false;
+        if (statusText) statusText.innerText = "Update failed. Please retry.";
+    }
+}
+
+// Hook checkAppVersion and checkForUpdatesSilent into initApp
+const origInitApp = initApp;
+initApp = async function() {
+    await origInitApp();
+    await checkAppVersion();
+    setTimeout(checkForUpdatesSilent, 3000);
+    // Background interval check every 1 hour
+    setInterval(checkForUpdatesSilent, 3600000);
+};
+
 document.addEventListener('DOMContentLoaded', initApp);
+

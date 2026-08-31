@@ -4,6 +4,7 @@ pub mod face;
 pub mod hardware;
 pub mod license;
 pub mod sync;
+pub mod updater;
 
 use commands::AppContext;
 use db::Database;
@@ -102,6 +103,9 @@ pub fn run() {
             commands::schedule_coach_session,
             commands::list_coach_sessions,
             commands::cancel_coach_session,
+            commands::check_for_updates,
+            commands::download_and_install_update,
+            commands::get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GymPOS tauri application");

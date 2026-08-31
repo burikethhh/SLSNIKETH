@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use gympos_shared::{
     CartItem, LicenseTier, MembershipPlanConfig, OwnerBranchSummary, OwnerDashboardAnalytics,
-    PromoVoucherConfig, RemoteCatalogProduct, SaleTransaction, UpdateGymRequest,
+    PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct, SaleTransaction, UpdateGymRequest,
 };
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, Result};
@@ -139,6 +139,19 @@ impl CloudDatabase {
                 payment_method TEXT NOT NULL,
                 items_json TEXT NOT NULL,
                 timestamp TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS cloud_releases (
+                version TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                min_supported_version TEXT NOT NULL,
+                download_url TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                release_notes TEXT NOT NULL,
+                rollout_percentage INTEGER NOT NULL DEFAULT 100,
+                is_mandatory INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(version, channel)
             );
             "#,
         )?;
@@ -967,5 +980,120 @@ impl CloudDatabase {
             hourly_traffic,
         })
     }
+
+    // --- Release Management & Auto-Updater ---
+
+    pub fn publish_release(&self, rel: &ReleaseInfo) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO cloud_releases (
+                version, channel, min_supported_version, download_url, sha256,
+                release_notes, rollout_percentage, is_mandatory, created_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(version, channel) DO UPDATE SET
+                min_supported_version = ?3, download_url = ?4, sha256 = ?5,
+                release_notes = ?6, rollout_percentage = ?7, is_mandatory = ?8, created_at = ?9",
+            params![
+                rel.version,
+                rel.channel,
+                rel.min_supported_version,
+                rel.download_url,
+                rel.sha256,
+                rel.release_notes,
+                rel.rollout_percentage as i64,
+                if rel.is_mandatory { 1 } else { 0 },
+                rel.created_at.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_latest_release(&self, channel: &str) -> Result<Option<ReleaseInfo>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT version, channel, min_supported_version, download_url, sha256,
+                    release_notes, rollout_percentage, is_mandatory, created_at
+             FROM cloud_releases
+             WHERE channel = ?1
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query_map(params![channel], |row| {
+            let version: String = row.get(0)?;
+            let channel: String = row.get(1)?;
+            let min_supported_version: String = row.get(2)?;
+            let download_url: String = row.get(3)?;
+            let sha256: String = row.get(4)?;
+            let release_notes: String = row.get(5)?;
+            let rollout_percentage: i64 = row.get(6)?;
+            let is_mandatory: i32 = row.get(7)?;
+            let created_at_str: String = row.get(8)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(ReleaseInfo {
+                version,
+                channel,
+                min_supported_version,
+                download_url,
+                sha256,
+                release_notes,
+                rollout_percentage: rollout_percentage as u32,
+                is_mandatory: is_mandatory == 1,
+                created_at,
+            })
+        })?;
+
+        if let Some(r) = rows.next() {
+            Ok(Some(r?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_releases(&self) -> Result<Vec<ReleaseInfo>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT version, channel, min_supported_version, download_url, sha256,
+                    release_notes, rollout_percentage, is_mandatory, created_at
+             FROM cloud_releases
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let version: String = row.get(0)?;
+            let channel: String = row.get(1)?;
+            let min_supported_version: String = row.get(2)?;
+            let download_url: String = row.get(3)?;
+            let sha256: String = row.get(4)?;
+            let release_notes: String = row.get(5)?;
+            let rollout_percentage: i64 = row.get(6)?;
+            let is_mandatory: i32 = row.get(7)?;
+            let created_at_str: String = row.get(8)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(ReleaseInfo {
+                version,
+                channel,
+                min_supported_version,
+                download_url,
+                sha256,
+                release_notes,
+                rollout_percentage: rollout_percentage as u32,
+                is_mandatory: is_mandatory == 1,
+                created_at,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
 }
+
 

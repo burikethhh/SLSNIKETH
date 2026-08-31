@@ -510,3 +510,52 @@ pub struct SyncResponse {
     pub server_time: DateTime<Utc>,
 }
 
+// --- Auto-Updater & Release Scalability Domain Models ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub channel: String, // "stable", "beta", "nightly"
+    pub min_supported_version: String,
+    pub download_url: String,
+    pub sha256: String,
+    pub release_notes: String,
+    pub rollout_percentage: u32, // 0..100 for staged rollout
+    pub is_mandatory: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckRequest {
+    pub current_version: String,
+    pub gym_id: Option<Uuid>,
+    pub channel: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateCheckResponse {
+    pub update_available: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub channel: String,
+    pub download_url: String,
+    pub sha256: String,
+    pub release_notes: String,
+    pub is_mandatory: bool,
+    pub rollout_percentage: u32,
+    pub server_time: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishReleaseRequest {
+    pub version: String,
+    pub channel: String,
+    pub min_supported_version: Option<String>,
+    pub download_url: String,
+    pub sha256: String,
+    pub release_notes: String,
+    pub rollout_percentage: Option<u32>,
+    pub is_mandatory: Option<bool>,
+}
+
+
