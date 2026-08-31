@@ -21,7 +21,8 @@ import os
 CLOUD_PORT = 8088
 CLOUD_URL = f"http://127.0.0.1:{CLOUD_PORT}"
 ADMIN_KEY = "gympos_master_ceo_secret_2026"
-OWNER_EMAIL = "ceo@titan.fitness"
+OWNER_EMAIL = f"franchise_{uuid.uuid4().hex[:6]}@titan.fitness"
+OWNER_PASSWORD = "titan_secure_password_2026"
 
 def post_json(url, payload, headers=None):
     if headers is None:
@@ -108,6 +109,16 @@ def run_full_e2e():
     print("\n[Phase 2: CEO Dashboard] Onboarding Franchise Gym Branches & Issuing RSA Keys...")
     admin_headers = {"Authorization": f"Bearer {ADMIN_KEY}"}
 
+    # Ensure Owner Account is registered on portal (CEO Guard compliance)
+    try:
+        post_json(f"{CLOUD_URL}/api/v1/owner/auth/register", {
+            "email": OWNER_EMAIL,
+            "password": OWNER_PASSWORD,
+            "company_name": "Titan Fitness Global HQ"
+        })
+    except Exception:
+        pass # Account may already exist
+
     # Register BGC Branch via CEO Onboarding Endpoint
     bgc_payload = {
         "name": "Titan Fitness - BGC Branch",
@@ -139,9 +150,9 @@ def run_full_e2e():
     # 3. Client / Franchise Owner Portal: Auth & Catalog Pricing Configuration
     print("\n[Phase 3: Client Owner Portal] Logging In & Managing Remote POS Catalog & Promos...")
     try:
-        owner_login_res, _ = post_json(f"{CLOUD_URL}/api/v1/owner/auth/register", {"email": OWNER_EMAIL, "password": "titan2026", "company_name": "Titan Fitness Inc."})
+        owner_login_res, _ = post_json(f"{CLOUD_URL}/api/v1/owner/auth/register", {"email": OWNER_EMAIL, "password": OWNER_PASSWORD, "company_name": "Titan Fitness Inc."})
     except Exception:
-        owner_login_res, _ = post_json(f"{CLOUD_URL}/api/v1/owner/auth/login", {"email": OWNER_EMAIL, "password": "titan2026"})
+        owner_login_res, _ = post_json(f"{CLOUD_URL}/api/v1/owner/auth/login", {"email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     owner_token = owner_login_res["token"]
     owner_headers = {"Authorization": f"Bearer {owner_token}"}
     print(f"  Owner Authenticated: {OWNER_EMAIL} -> Session {owner_token}")

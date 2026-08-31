@@ -93,6 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/portal.html", get(serve_portal_html))
         .route("/api/v1/owner/auth/register", post(routes::owner_register))
         .route("/api/v1/owner/auth/login", post(routes::owner_login))
+        .route("/api/v1/owner/exists", get(routes::owner_check_exists))
+        .route("/api/v1/owner/gyms", post(routes::owner_create_gym))
         .route("/api/v1/owner/branches", get(routes::owner_get_branches))
         .route("/api/v1/owner/analytics", get(routes::owner_get_analytics))
         .route("/api/v1/owner/catalog", get(routes::owner_get_catalog))

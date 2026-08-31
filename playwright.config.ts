@@ -28,7 +28,7 @@ export default defineConfig({
     },
     {
       name: 'cloud',
-      testMatch: /cloud\.spec\.ts/,
+      testMatch: /(cloud|owner-guard)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:8080' },
     },
     {

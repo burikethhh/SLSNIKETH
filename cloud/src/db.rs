@@ -155,6 +155,30 @@ impl CloudDatabase {
             );
             "#,
         )?;
+        // Phase 0 migrations — idempotent indices & audit log
+        let _ = conn.execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_gyms_owner ON cloud_gyms(owner_email);
+            CREATE INDEX IF NOT EXISTS idx_licenses_owner ON cloud_licenses(owner_email);
+            CREATE INDEX IF NOT EXISTS idx_members_owner ON cloud_members(owner_email);
+            CREATE TABLE IF NOT EXISTS cloud_audit_logs (
+                id TEXT PRIMARY KEY,
+                owner_email TEXT NOT NULL,
+                gym_id TEXT,
+                action TEXT NOT NULL,
+                target TEXT,
+                timestamp TEXT NOT NULL
+            );
+            "#,
+        );
+        // Add is_verified col if missing (legacy DBs)
+        for stmt in [
+            "ALTER TABLE cloud_owner_accounts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE cloud_owner_accounts ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE cloud_owner_accounts ADD COLUMN locked_until TEXT",
+        ] {
+            let _ = conn.execute(stmt, []);
+        }
         Ok(())
     }
 
@@ -575,6 +599,36 @@ impl CloudDatabase {
             }
         }
         Ok(None)
+    }
+
+    pub fn owner_exists(&self, email: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM cloud_owner_accounts WHERE owner_email = ?1",
+            params![email.to_lowercase().trim()],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        Ok(n > 0)
+    }
+
+    pub fn count_owner_gyms(&self, email: &str) -> Result<usize> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM cloud_gyms WHERE owner_email = ?1",
+            params![email.to_lowercase().trim()],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        Ok(n as usize)
+    }
+
+    pub fn log_audit(&self, owner_email: &str, gym_id: Option<&Uuid>, action: &str, target: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock();
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO cloud_audit_logs (id, owner_email, gym_id, action, target, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, owner_email.to_lowercase().trim(), gym_id.map(|u| u.to_string()), action, target, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
     }
 
     // --- Remote Catalog & Pricing Management ---

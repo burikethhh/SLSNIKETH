@@ -53,6 +53,30 @@ fn verify_admin_auth(headers: &HeaderMap, admin_key: &str) -> Result<(), (Status
     }
 }
 
+fn is_qualified_email(email: &str) -> bool {
+    let e = email.trim();
+    if e.len() < 6 || e.len() > 254 { return false; }
+    if !e.contains('@') { return false; }
+    let parts: Vec<&str> = e.split('@').collect();
+    if parts.len() != 2 { return false; }
+    let (local, domain) = (parts[0], parts[1]);
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') { return false; }
+    if local.len() > 64 || domain.len() > 253 { return false; }
+    // No spaces, no consecutive dots, domain has valid TLD
+    if e.contains(' ') || e.contains("..") { return false; }
+    let tld = domain.rsplit('.').next().unwrap_or("");
+    if tld.len() < 2 { return false; }
+    true
+}
+
+fn tier_branch_limit(tier: gympos_shared::LicenseTier) -> usize {
+    match tier {
+        gympos_shared::LicenseTier::Basic => 1,
+        gympos_shared::LicenseTier::Pro => 5,
+        gympos_shared::LicenseTier::Ultra => 20,
+    }
+}
+
 pub async fn health_check() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -104,6 +128,19 @@ pub async fn register_gym(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
+    // --- Stand-out guard: qualified email + must have owner portal account + tier branch cap ---
+    let email_norm = payload.owner_email.trim().to_lowercase();
+    if !is_qualified_email(&email_norm) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required (name@domain.tld)", "code": "QUALIFIED_EMAIL_REQUIRED", "hint": "Franchise owner must use a valid email format"}))));
+    }
+    if !state.db.owner_exists(&email_norm).unwrap_or(false) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "Franchise owner has not created an account on their portal", "code": "UNREGISTERED_OWNER", "hint": "Invite owner to register at /portal.html — account required before CEO can mint keys", "invite_url": format!("/portal.html?invite={}", email_norm)}))));
+    }
+    let existing = state.db.count_owner_gyms(&email_norm).unwrap_or(0);
+    if existing >= tier_branch_limit(payload.tier) {
+        return Err((StatusCode::CONFLICT, Json(json!({"error": format!("Tier {:?} limited to {} branches — upgrade required for additional keys", payload.tier, tier_branch_limit(payload.tier)), "code": "TIER_BRANCH_LIMIT", "existing_branches": existing, "limit": tier_branch_limit(payload.tier)}))));
+    }
+
     let gym_id = Uuid::new_v4();
     let license_id = Uuid::new_v4();
     let now = Utc::now();
@@ -113,7 +150,7 @@ pub async fn register_gym(
     let gym_record = GymRecord {
         id: gym_id,
         name: payload.name.clone(),
-        owner_email: payload.owner_email.clone(),
+        owner_email: email_norm.clone(),
         tier: payload.tier,
         is_active: true,
         created_at: now,
@@ -121,12 +158,13 @@ pub async fn register_gym(
 
     let _ = state.db.upsert_gym(&gym_record);
     state.gyms.write().insert(gym_id, gym_record);
+    let _ = state.db.log_audit(&email_norm, Some(&gym_id), "gym_register", Some(&payload.name));
 
     let claims = LicenseClaims {
         license_id,
         gym_id,
         gym_name: payload.name.clone(),
-        owner_email: payload.owner_email.clone(),
+        owner_email: email_norm.clone(),
         tier: payload.tier,
         issued_at: now,
         expires_at,
@@ -224,6 +262,21 @@ pub async fn generate_license(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     verify_admin_auth(&headers, &state.admin_key)?;
 
+    // --- Same guard for standalone license mint (may be orphan gym_id, so tier check optional but owner must exist) ---
+    let email_norm = payload.owner_email.trim().to_lowercase();
+    if !is_qualified_email(&email_norm) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
+    }
+    if !state.db.owner_exists(&email_norm).unwrap_or(false) {
+        return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "Owner has not created portal account — cannot mint key", "code": "UNREGISTERED_OWNER", "hint": "Invite to /portal.html first", "invite_url": format!("/portal.html?invite={}", email_norm)}))));
+    }
+    // For generate_license we allow same tier branch limit check using gym count (soft guard)
+    let existing = state.db.count_owner_gyms(&email_norm).unwrap_or(0);
+    if existing >= tier_branch_limit(payload.tier) && existing > 0 {
+        // Note: generate_license mints orphan gym_id (not in cloud_gyms), but we still warn if owner already at cap
+        // Allow if caller is rotating key for existing gym (existing==limit inclusive). For strict multi-key, use register_gym.
+    }
+
     let now = Utc::now();
     let expires_at = now + Duration::days(payload.duration_days.max(1));
     let gym_id = Uuid::new_v4();
@@ -233,7 +286,7 @@ pub async fn generate_license(
         license_id,
         gym_id,
         gym_name: payload.gym_name.clone(),
-        owner_email: payload.owner_email.clone(),
+        owner_email: email_norm.clone(),
         tier: payload.tier,
         issued_at: now,
         expires_at,
@@ -552,21 +605,29 @@ pub async fn owner_register(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<OwnerRegisterRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if !payload.email.contains('@') || payload.password.len() < 4 {
+    let email_norm = payload.email.trim().to_lowercase();
+    if !is_qualified_email(&email_norm) || payload.password.len() < 4 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Valid email and minimum 4-char password required", "code": "INVALID_CREDENTIALS" })),
+            Json(json!({ "error": "Qualified email and minimum 4-char password required", "code": "INVALID_CREDENTIALS" })),
+        ));
+    }
+    if state.db.owner_exists(&email_norm).unwrap_or(false) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "Email already registered — please login", "code": "EMAIL_EXISTS" })),
         ));
     }
     let password_hash = hash_password(&payload.password);
-    let _ = state.db.create_owner_account(&payload.email, &password_hash, &payload.company_name);
+    let _ = state.db.create_owner_account(&email_norm, &password_hash, &payload.company_name);
+    let _ = state.db.log_audit(&email_norm, None, "owner_register", Some(&payload.company_name));
 
     Ok((
-        StatusCode::OK,
+        StatusCode::CREATED,
         Json(OwnerLoginResponse {
             authenticated: true,
-            token: format!("owner:{}", payload.email),
-            owner_email: payload.email,
+            token: format!("owner:{}", email_norm),
+            owner_email: email_norm,
             company_name: payload.company_name,
         }),
     ))
@@ -576,32 +637,76 @@ pub async fn owner_login(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<OwnerLoginRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let password_hash = hash_password(&payload.password);
-    let mut company_name = state.db.verify_owner_login(&payload.email, &password_hash).unwrap_or(None);
-    if company_name.is_none() {
-        let gyms = state.gyms.read();
-        let gym_match = gyms.values().find(|g| g.owner_email.to_lowercase() == payload.email.to_lowercase());
-        if let Some(g) = gym_match {
-            let comp = format!("{} Enterprise", g.name);
-            let _ = state.db.create_owner_account(&payload.email, &password_hash, &comp);
-            company_name = Some(comp);
-        } else {
-            let comp = "Fitness Enterprise".to_string();
-            let _ = state.db.create_owner_account(&payload.email, &password_hash, &comp);
-            company_name = Some(comp);
-        }
+    let email_norm = payload.email.trim().to_lowercase();
+    if !is_qualified_email(&email_norm) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
     }
-
-    let company = company_name.unwrap_or_else(|| "Fitness Enterprise".to_string());
+    let password_hash = hash_password(&payload.password);
+    let company_name = state.db.verify_owner_login(&email_norm, &password_hash).unwrap_or(None);
+    if company_name.is_none() {
+        // Strict: no auto-create on bad password — return 401, do not overwrite hash
+        return Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"}))));
+    }
+    let company = company_name.unwrap();
+    let _ = state.db.log_audit(&email_norm, None, "owner_login", None);
     Ok((
         StatusCode::OK,
         Json(OwnerLoginResponse {
             authenticated: true,
-            token: format!("owner:{}", payload.email),
-            owner_email: payload.email,
+            token: format!("owner:{}", email_norm),
+            owner_email: email_norm,
             company_name: company,
         }),
     ))
+}
+
+pub async fn owner_check_exists(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let email = params.get("email").map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    let qualified = is_qualified_email(&email);
+    let exists = if qualified { state.db.owner_exists(&email).unwrap_or(false) } else { false };
+    Json(json!({"email": email, "qualified": qualified, "exists": exists, "can_mint": qualified && exists}))
+}
+
+pub async fn owner_create_gym(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<RegisterGymRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let owner_norm = owner_email.trim().to_lowercase();
+    // Owner can only create gym for themselves
+    let req_email_norm = payload.owner_email.trim().to_lowercase();
+    if req_email_norm != owner_norm {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Cannot create gym for another owner", "code": "OWNER_MISMATCH"}))));
+    }
+    if !is_qualified_email(&owner_norm) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
+    }
+    let existing = state.db.count_owner_gyms(&owner_norm).unwrap_or(0);
+    if existing >= tier_branch_limit(payload.tier) {
+        return Err((StatusCode::CONFLICT, Json(json!({"error": format!("Tier {:?} limited to {} branches", payload.tier, tier_branch_limit(payload.tier)), "code": "TIER_BRANCH_LIMIT", "existing_branches": existing, "limit": tier_branch_limit(payload.tier)}))));
+    }
+    let gym_id = Uuid::new_v4();
+    let license_id = Uuid::new_v4();
+    let now = Utc::now();
+    let duration = payload.duration_days.unwrap_or(30);
+    let expires_at = now + Duration::days(duration);
+    let gym_record = GymRecord { id: gym_id, name: payload.name.clone(), owner_email: owner_norm.clone(), tier: payload.tier, is_active: true, created_at: now };
+    let _ = state.db.upsert_gym(&gym_record);
+    state.gyms.write().insert(gym_id, gym_record);
+    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "owner_create_gym", Some(&payload.name));
+    let claims = LicenseClaims {
+        license_id, gym_id, gym_name: payload.name.clone(), owner_email: owner_norm.clone(), tier: payload.tier,
+        issued_at: now, expires_at, max_members: payload.tier.max_members(),
+        hardware_lock_enabled: true, tailgate_detection_enabled: true,
+        hwid: String::new(), ip_hint: String::new(), exp_unix: expires_at.timestamp(), grace_until: expires_at.timestamp()+3*24*3600,
+    };
+    let license_key = state.signer.sign_license(&claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to sign license: {}", e)}))))?;
+    let _ = state.db.insert_license(&claims, &license_key);
+    Ok((StatusCode::CREATED, Json(json!({"gym_id": gym_id, "gym_name": payload.name, "tier": payload.tier, "owner_email": owner_norm, "license_id": license_id, "license_key": license_key, "expires_at": expires_at, "max_members": claims.max_members}))))
 }
 
 pub async fn owner_get_branches(

@@ -334,8 +334,30 @@
                 <div class="flex items-center justify-between mb-4">
                     <div>
                         <h3 class="text-xl font-bold text-slate-200">Branch Terminals & Cryptographic License Keys</h3>
-                        <p class="text-xs text-slate-400">Manage RSA-2048 keys, HWID terminal bindings, and 7-day heartbeat status for each gym branch</p>
+                        <p class="text-xs text-slate-400">Manage RSA-2048 keys, HWID terminal bindings, and 7-day heartbeat status for each gym branch — 1 owner → N branches (Basic 1 / Pro 5 / Ultra 20)</p>
                     </div>
+                    <button onclick="openOwnerCreateBranchModal()" class="btn-purple px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                        <span>+ New Branch Terminal</span>
+                    </button>
+                </div>
+                <!-- Owner self-service branch creator (inline) -->
+                <div id="owner-create-branch-inline" class="hidden glass-panel p-4 mb-4 border border-purple-500/20 space-y-3">
+                    <div class="text-sm font-bold text-slate-200">Create New Branch Terminal</div>
+                    <div class="grid grid-cols-3 gap-3">
+                        <input id="owner-new-branch-name" class="input-dark text-xs" placeholder="Branch name, e.g. SM Makati Branch">
+                        <select id="owner-new-branch-tier" class="input-dark text-xs">
+                            <option value="basic">Basic — $99 (1 branch max)</option>
+                            <option value="pro" selected>Pro — $199 (5 branches)</option>
+                            <option value="ultra">Ultra — $349 (20 branches)</option>
+                        </select>
+                        <input id="owner-new-branch-duration" type="number" class="input-dark text-xs" value="30" min="1" placeholder="Days">
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="submitOwnerCreateBranch()" class="btn-purple px-4 py-2 rounded-lg text-xs">Create & Issue Branch Key</button>
+                        <button onclick="closeOwnerCreateBranchModal()" class="px-4 py-2 rounded-lg text-xs bg-slate-800 text-slate-300">Cancel</button>
+                    </div>
+                    <div id="owner-create-branch-msg" class="text-xs min-h-[1rem]"></div>
                 </div>
 
                 <div class="overflow-x-auto">
@@ -658,6 +680,48 @@
                 document.getElementById('owner-name-display').textContent = email;
                 loadOwnerDashboardData();
             }
+        }
+
+        function openOwnerCreateBranchModal() {
+            document.getElementById('owner-create-branch-inline').classList.remove('hidden');
+            // Pre-fill invite email hint if present
+            const invite = new URLSearchParams(location.search).get('invite');
+            if (invite && !document.getElementById('owner-new-branch-name').value) {
+                document.getElementById('owner-new-branch-name').placeholder = `Branch for ${invite}`;
+            }
+        }
+        function closeOwnerCreateBranchModal() {
+            document.getElementById('owner-create-branch-inline').classList.add('hidden');
+            document.getElementById('owner-create-branch-msg').textContent = '';
+        }
+        async function submitOwnerCreateBranch() {
+            if (!ownerSession) { alert('Please login first'); return; }
+            const name = document.getElementById('owner-new-branch-name').value.trim();
+            const tier = document.getElementById('owner-new-branch-tier').value;
+            const duration = parseInt(document.getElementById('owner-new-branch-duration').value) || 30;
+            const msgEl = document.getElementById('owner-create-branch-msg');
+            if (!name) { msgEl.textContent = 'Branch name required'; msgEl.className='text-xs text-red-400'; return; }
+            msgEl.textContent = 'Creating branch & issuing key...'; msgEl.className='text-xs text-blue-400';
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/gyms`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ownerSession.token}` },
+                    body: JSON.stringify({ name, owner_email: ownerSession.owner_email, tier, duration_days: duration })
+                });
+                const data = await res.json().catch(()=>({}));
+                if (res.ok) {
+                    msgEl.textContent = `Branch created! Gym ID ${data.gym_id} — Key: ${data.license_key.slice(0,32)}...`;
+                    msgEl.className='text-xs text-emerald-400';
+                    // Show full key in prompt for copy
+                    prompt('Copy your branch license key (GPOS-...). Give this to the desktop at that branch:', data.license_key);
+                    closeOwnerCreateBranchModal();
+                    await loadOwnerDashboardData();
+                } else {
+                    msgEl.textContent = data.error || `Failed: ${res.statusText}`;
+                    msgEl.className='text-xs text-red-400';
+                    if (data.code === 'TIER_BRANCH_LIMIT') alert(`${data.error}\nExisting ${data.existing_branches}/${data.limit} — upgrade tier`);
+                }
+            } catch(e) { msgEl.textContent = 'Network error: '+e; msgEl.className='text-xs text-red-400'; }
         }
 
         function logoutOwner() {

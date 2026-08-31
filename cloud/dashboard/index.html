@@ -633,6 +633,33 @@
                 alert("Please enter gym name and owner email");
                 return;
             }
+            // Front-end qualified email check (mirrors is_qualified_email)
+            const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && !email.includes('..') && email.split('@')[1].includes('.');
+            if (!emailOk) {
+                alert("Qualified email required (name@domain.tld) — franchise owner must use a valid format");
+                return;
+            }
+
+            // CEO guard pre-check: owner must have portal account
+            try {
+                const chk = await fetch(`/api/v1/owner/exists?email=${encodeURIComponent(email)}`);
+                if (chk.ok) {
+                    const j = await chk.json();
+                    if (!j.qualified) {
+                        alert("Qualified email required");
+                        return;
+                    }
+                    if (!j.exists) {
+                        const goPortal = confirm(`Franchise owner ${email} has not created an account on their portal.\n\nCEO cannot mint keys for unregistered emails (stand-out guard).\n\nInvite owner to register at /portal.html?invite=${encodeURIComponent(email)}\n\nOpen invite link now?`);
+                        if (goPortal) window.open(`/portal.html?invite=${encodeURIComponent(email)}`, '_blank');
+                        return;
+                    }
+                    if (j.can_mint === false) {
+                        alert("Cannot mint: tier branch limit reached for this owner email");
+                        return;
+                    }
+                }
+            } catch (e) { /* pre-check optional, server will enforce */ }
 
             try {
                 const res = await fetch('/api/v1/gyms/register', {
@@ -640,7 +667,7 @@
                     headers: getAdminHeaders(),
                     body: JSON.stringify({
                         name: name,
-                        owner_email: email,
+                        owner_email: email.toLowerCase().trim(),
                         tier: tier,
                         duration_days: duration
                     })
@@ -655,7 +682,17 @@
                     document.getElementById('gym-email').value = '';
                     await refreshAllData();
                 } else {
-                    alert("Registration failed: " + res.statusText);
+                    const err = await res.json().catch(()=>({error: res.statusText}));
+                    if (err.code === 'UNREGISTERED_OWNER') {
+                        const go = confirm(`${err.error}\n\n${err.hint || ''}\n\nOpen ${err.invite_url || '/portal.html'}?`);
+                        if (go) window.open(err.invite_url || '/portal.html', '_blank');
+                    } else if (err.code === 'QUALIFIED_EMAIL_REQUIRED') {
+                        alert(`${err.error} — owner must use name@domain.tld`);
+                    } else if (err.code === 'TIER_BRANCH_LIMIT') {
+                        alert(`${err.error}\nExisting: ${err.existing_branches}/${err.limit}`);
+                    } else {
+                        alert(`Registration failed: ${err.error || res.statusText}`);
+                    }
                 }
             } catch (e) {
                 alert("Network error: " + e);
