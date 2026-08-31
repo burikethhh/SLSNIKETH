@@ -57,16 +57,18 @@ impl CloudSyncWorker {
                     let unsynced_att = self.db.get_unsynced_attendance().unwrap_or_default();
                     let unsynced_att_ids: Vec<String> = unsynced_att.iter().map(|a| a.id.clone()).collect();
 
-                    // 3. Idle heartbeat: even with no new data, the network is reachable — refresh 7-day heartbeat
+                    // 3. Gather unsynced POS sales transactions
+                    let unsynced_sales = self.db.get_unsynced_sales().unwrap_or_default();
+                    let unsynced_sale_ids: Vec<String> = unsynced_sales.iter().map(|s| s.id.clone()).collect();
+
+                    // 4. Idle heartbeat: even with no new data, the network is reachable — refresh 7-day heartbeat
                     // Prevents idle kiosks (no check-ins for days) from false LOCK due to heartbeat starvation.
-                    if unsynced_members.is_empty() && unsynced_att.is_empty() {
+                    if unsynced_members.is_empty() && unsynced_att.is_empty() && unsynced_sales.is_empty() {
                         if consecutive_failures > 0 {
                             consecutive_failures = 0;
                         }
                         // Lightweight online proof: refresh heartbeat without full sync push
                         let _ = self.db.heartbeat_ok();
-                        // Also optionally ping cloud health to confirm online status before counting heartbeat
-                        // (if ping fails, heartbeat will expire naturally and next real sync will reveal offline)
                         continue;
                     }
 
@@ -80,7 +82,7 @@ impl CloudSyncWorker {
                         attendance_logs: unsynced_att,
                         members: unsynced_members,
                         face_vectors: vec![],
-                        sales: vec![],
+                        sales: unsynced_sales,
                     };
 
                     let mut req_builder = client.post(&sync_url).json(&payload);
@@ -112,12 +114,15 @@ impl CloudSyncWorker {
                                     if !unsynced_att_ids.is_empty() {
                                         let _ = self.db.mark_attendance_synced(&unsynced_att_ids);
                                     }
+                                    if !unsynced_sale_ids.is_empty() {
+                                        let _ = self.db.mark_sales_synced(&unsynced_sale_ids);
+                                    }
 
                                     // B. Ingest sister branch members and face vectors
                                     if !body.sister_branch_members.is_empty() {
                                         let ingested = self
                                             .db
-                                            .upsert_interbranch_members(&body.sister_branch_members)
+                                             .upsert_interbranch_members(&body.sister_branch_members)
                                             .unwrap_or(0);
                                         if ingested > 0 {
                                             info!(
@@ -127,7 +132,17 @@ impl CloudSyncWorker {
                                         }
                                     }
 
-                                    // C. Check kill-switch
+                                    // C. Ingest remote catalog, membership plans, and promo vouchers from cloud owner
+                                    if let Some(ref cat) = body.remote_catalog {
+                                        let plans = body.remote_plans.as_deref().unwrap_or(&[]);
+                                        let promos = body.remote_promos.as_deref().unwrap_or(&[]);
+                                        if !cat.is_empty() || !plans.is_empty() || !promos.is_empty() {
+                                            let _ = self.db.ingest_remote_catalog(cat, plans, promos);
+                                            info!("Catalog sync: Ingested {} products and promos from Cloud Owner Portal", cat.len());
+                                        }
+                                    }
+
+                                    // D. Check kill-switch
                                     if body.remote_disabled {
                                         warn!("REMOTE KILL SWITCH ACTIVATED: CEO Command Center disabled gym {}. Revoking local license.", claims.gym_name);
                                         self.license.revoke();

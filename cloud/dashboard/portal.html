@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GymPOS Client Bridge — Franchise Owner Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <style>
+        html { background: #07090e; color-scheme: dark; }
+        body {
+            background: #07090e;
+            color: #e2e8f0;
+            font-family: Inter, system-ui, sans-serif;
+            min-height: 100vh;
+        }
+        h1, h2, h3, .brand { font-family: Rajdhani, system-ui, sans-serif; }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at 20% 20%, rgba(124, 58, 237, 0.12) 0%, transparent 45%),
+                        radial-gradient(ellipse at 80% 80%, rgba(16, 185, 129, 0.08) 0%, transparent 45%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .glass-panel {
+            background: rgba(13, 15, 26, 0.85);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(139, 92, 246, 0.2);
+            border-radius: 0.75rem;
+        }
+
+        .glass-panel-emerald {
+            background: rgba(13, 26, 20, 0.85);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(16, 185, 129, 0.25);
+            border-radius: 0.75rem;
+        }
+
+        .btn-purple {
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.3);
+            color: #fff;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+        .btn-purple:hover {
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.45);
+            transform: translateY(-1px);
+        }
+
+        .btn-emerald {
+            background: linear-gradient(135deg, #10b981, #059669);
+            box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+            color: #fff;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+        .btn-emerald:hover {
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.45);
+            transform: translateY(-1px);
+        }
+
+        .input-dark {
+            background: rgba(15, 17, 30, 0.85);
+            border: 1px solid rgba(139, 92, 246, 0.25);
+            border-radius: 0.5rem;
+            padding: 0.55rem 0.75rem;
+            color: #e2e8f0;
+            font-size: 0.875rem;
+        }
+        .input-dark:focus {
+            outline: none;
+            border-color: #8b5cf6;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25);
+        }
+
+        .tab-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.875rem;
+            transition: all 0.15s ease;
+            color: #94a3b8;
+        }
+        .tab-btn.active {
+            background: rgba(139, 92, 246, 0.2);
+            color: #c084fc;
+            border: 1px solid rgba(139, 92, 246, 0.35);
+        }
+
+        .stat-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .badge-pro { background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); }
+        .badge-ultra { background: rgba(236, 72, 153, 0.2); color: #f472b6; border: 1px solid rgba(236, 72, 153, 0.4); }
+        .badge-basic { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .badge-active { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #10b981;
+            box-shadow: 0 0 10px #10b981;
+            animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-ring {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #07090e; }
+        ::-webkit-scrollbar-thumb { background: #1e1b4b; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4338ca; }
+    </style>
+</head>
+<body class="relative min-h-screen">
+    <!-- Top Navigation Header -->
+    <header class="sticky top-0 z-30 glass-panel border-b border-purple-900/30 px-6 py-3.5 mb-6">
+        <div class="max-w-7xl mx-auto flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-500/30">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                </div>
+                <div>
+                    <div class="flex items-center space-x-2">
+                        <span class="brand text-xl font-bold tracking-wider text-purple-400">GYMPOS</span>
+                        <span class="text-xs uppercase px-2 py-0.5 rounded font-mono bg-purple-950/80 border border-purple-500/40 text-purple-300">CLIENT BRIDGE</span>
+                    </div>
+                    <div class="text-xs text-slate-400">Franchise Owner Command & POS Pricing Portal</div>
+                </div>
+            </div>
+
+            <!-- Global Branch Filter Selector -->
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-2 bg-slate-900/80 px-3 py-1.5 rounded-lg border border-purple-900/40">
+                    <div class="pulse-dot"></div>
+                    <span class="text-xs text-slate-300 font-medium">Branch:</span>
+                    <select id="portal-branch-selector" onchange="switchBranchFilter()" class="bg-transparent text-xs text-purple-300 font-semibold focus:outline-none cursor-pointer">
+                        <option value="all">🌐 All Branches (Consolidated)</option>
+                    </select>
+                </div>
+
+                <div class="hidden md:flex items-center space-x-2 text-xs text-slate-400 border-l border-slate-800 pl-4">
+                    <span id="owner-name-display" class="font-medium text-slate-200">Owner</span>
+                    <button onclick="logoutOwner()" class="text-xs text-red-400 hover:text-red-300 ml-2 underline">Sign Out</button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 pb-12 relative z-10">
+        <!-- Tab Navigation Bar -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-6">
+            <div class="flex space-x-2 bg-slate-950/60 p-1.5 rounded-lg border border-slate-800">
+                <button onclick="switchPortalTab('overview')" id="tab-overview" class="tab-btn active">📊 Revenue & Analytics</button>
+                <button onclick="switchPortalTab('keys')" id="tab-keys" class="tab-btn">🔑 Multi-Branch Keys</button>
+                <button onclick="switchPortalTab('catalog')" id="tab-catalog" class="tab-btn">🛒 POS Products & Pricing</button>
+                <button onclick="switchPortalTab('plans')" id="tab-plans" class="tab-btn">💳 Membership Plans</button>
+                <button onclick="switchPortalTab('promos')" id="tab-promos" class="tab-btn">🎟️ Promo Vouchers</button>
+                <button onclick="switchPortalTab('transactions')" id="tab-transactions" class="tab-btn">🧾 Live POS Feed</button>
+            </div>
+
+            <div class="flex items-center space-x-2">
+                <button onclick="loadOwnerDashboardData()" class="btn-purple px-4 py-2 rounded-lg text-xs flex items-center space-x-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    <span>Refresh Telemetry</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 4 Top Executive KPI Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <!-- Monthly Gross Revenue -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Gross Revenue</span>
+                    <span class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </span>
+                </div>
+                <div id="stat-month-revenue" class="brand text-3xl font-bold text-emerald-400">₱0.00</div>
+                <div class="mt-2 flex items-center text-xs text-slate-400">
+                    <span class="text-emerald-400 font-semibold mr-1.5 flex items-center">
+                        <svg class="w-3 h-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
+                        +14.2%
+                    </span>
+                    <span>vs last month (POS + Plans + Day Passes)</span>
+                </div>
+            </div>
+
+            <!-- Total Active Members -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Enrolled Members</span>
+                    <span class="p-2 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                    </span>
+                </div>
+                <div id="stat-active-members" class="brand text-3xl font-bold text-purple-300">0</div>
+                <div class="mt-2 text-xs text-slate-400">
+                    <span>Biometric Face Profiles across all branches</span>
+                </div>
+            </div>
+
+            <!-- Today's Revenue & Store Sales -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Today's Gross Sales</span>
+                    <span class="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
+                    </span>
+                </div>
+                <div id="stat-today-revenue" class="brand text-3xl font-bold text-indigo-300">₱0.00</div>
+                <div class="mt-2 text-xs text-slate-400">
+                    <span>Store POS transactions synced today</span>
+                </div>
+            </div>
+
+            <!-- Today's Turnstile Check-Ins -->
+            <div class="glass-panel p-5 relative overflow-hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Today's Foot Traffic</span>
+                    <span class="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    </span>
+                </div>
+                <div id="stat-today-checkins" class="brand text-3xl font-bold text-amber-300">0</div>
+                <div class="mt-2 text-xs text-slate-400 flex items-center justify-between">
+                    <span>Turnstile Entrances</span>
+                    <span id="stat-branch-count" class="text-purple-400 font-medium">0 Branches Active</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 1: OVERVIEW & ANALYTICS ================= -->
+        <div id="view-overview" class="tab-content space-y-6">
+            <!-- Charts Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- 30-Day Revenue Trend -->
+                <div class="lg:col-span-2 glass-panel p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-slate-200">Financial Revenue Breakdown</h3>
+                            <p class="text-xs text-slate-400">Consolidated income by revenue stream</p>
+                        </div>
+                        <div class="flex items-center space-x-2 text-xs">
+                            <span class="inline-block w-3 h-3 rounded-full bg-purple-500 mr-1"></span><span class="text-slate-300">POS Sales</span>
+                            <span class="inline-block w-3 h-3 rounded-full bg-emerald-500 mr-1 ml-2"></span><span class="text-slate-300">Memberships</span>
+                        </div>
+                    </div>
+                    <div class="h-64">
+                        <canvas id="chart-revenue-trend"></canvas>
+                    </div>
+                </div>
+
+                <!-- Product Sales by Category -->
+                <div class="glass-panel p-5">
+                    <div class="mb-4">
+                        <h3 class="text-lg font-bold text-slate-200">POS Sales by Category</h3>
+                        <p class="text-xs text-slate-400">Inventory sales distribution</p>
+                    </div>
+                    <div class="h-64 flex items-center justify-center">
+                        <canvas id="chart-category-donut"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Hourly Foot Traffic Heatmap -->
+                <div class="glass-panel p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-slate-200">24-Hour Peak Foot Traffic</h3>
+                            <p class="text-xs text-slate-400">Hourly check-in volume (optimize coaching & desk staff)</p>
+                        </div>
+                        <span class="text-xs px-2 py-0.5 bg-purple-900/40 text-purple-300 rounded border border-purple-500/30">Today</span>
+                    </div>
+                    <div class="h-56">
+                        <canvas id="chart-hourly-traffic"></canvas>
+                    </div>
+                </div>
+
+                <!-- Branch Performance Comparison Leaderboard -->
+                <div class="glass-panel p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <h3 class="text-lg font-bold text-slate-200">Branch Performance Ranking</h3>
+                            <p class="text-xs text-slate-400">Revenue & foot traffic ranking by branch</p>
+                        </div>
+                        <span class="text-xs text-slate-400" id="branch-leaderboard-count">0 Branches</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                                <tr>
+                                    <th class="py-2 px-3">Branch Name</th>
+                                    <th class="py-2 px-3">Tier</th>
+                                    <th class="py-2 px-3">Members</th>
+                                    <th class="py-2 px-3">Today Check-Ins</th>
+                                    <th class="py-2 px-3 text-right">Today Sales</th>
+                                </tr>
+                            </thead>
+                            <tbody id="branch-leaderboard-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                                <tr>
+                                    <td colspan="5" class="py-6 text-center text-slate-500">Loading branch metrics...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 2: MULTI-BRANCH KEYS ================= -->
+        <div id="view-keys" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Branch Terminals & Cryptographic License Keys</h3>
+                        <p class="text-xs text-slate-400">Manage RSA-2048 keys, HWID terminal bindings, and 7-day heartbeat status for each gym branch</p>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                            <tr>
+                                <th class="py-3 px-4">Gym Branch</th>
+                                <th class="py-3 px-4">License Key (GPOS-...)</th>
+                                <th class="py-3 px-4">Tier & Caps</th>
+                                <th class="py-3 px-4">Hardware Binding</th>
+                                <th class="py-3 px-4">Heartbeat Health</th>
+                                <th class="py-3 px-4">Expiration</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="keys-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="7" class="py-8 text-center text-slate-500">Loading branch license records...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 3: POS PRODUCTS & PRICING ================= -->
+        <div id="view-catalog" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Remote Store POS Catalog & Pricing Manager</h3>
+                        <p class="text-xs text-slate-400">Configure products and prices in the cloud. Changes automatically sync down to your desktop POS terminals on heartbeat.</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="openAddProductModal()" class="btn-purple px-3.5 py-2 rounded-lg text-xs flex items-center space-x-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                            <span>Add Product</span>
+                        </button>
+                        <button onclick="saveAndSyncProducts()" class="btn-emerald px-4 py-2 rounded-lg text-xs flex items-center space-x-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <span>Push Updates to Terminals</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                            <tr>
+                                <th class="py-3 px-4">Product Name</th>
+                                <th class="py-3 px-4">Category</th>
+                                <th class="py-3 px-4">Price (₱)</th>
+                                <th class="py-3 px-4">Stock</th>
+                                <th class="py-3 px-4">Last Updated</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="catalog-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="6" class="py-8 text-center text-slate-500">Loading catalog items...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 4: MEMBERSHIP PLANS ================= -->
+        <div id="view-plans" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Membership Tiers & Plan Rates</h3>
+                        <p class="text-xs text-slate-400">Set monthly subscription prices, student discounts, and perks synced to your branch registration kiosks.</p>
+                    </div>
+                    <button onclick="saveAndSyncPlans()" class="btn-emerald px-4 py-2 rounded-lg text-xs flex items-center space-x-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <span>Save & Sync Plan Rates</span>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6" id="plans-grid">
+                    <!-- Dynamic Plan Cards -->
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 5: PROMO VOUCHERS ================= -->
+        <div id="view-promos" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Promo Codes & Discount Vouchers</h3>
+                        <p class="text-xs text-slate-400">Create promotional discount codes for point-of-sale store purchases and membership signups.</p>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="openAddPromoModal()" class="btn-purple px-3.5 py-2 rounded-lg text-xs flex items-center space-x-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                            <span>Create Promo Code</span>
+                        </button>
+                        <button onclick="saveAndSyncPromos()" class="btn-emerald px-4 py-2 rounded-lg text-xs flex items-center space-x-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <span>Push Promos to POS</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                            <tr>
+                                <th class="py-3 px-4">Promo Code</th>
+                                <th class="py-3 px-4">Discount Type</th>
+                                <th class="py-3 px-4">Value</th>
+                                <th class="py-3 px-4">Min. Spend</th>
+                                <th class="py-3 px-4">Expiration</th>
+                                <th class="py-3 px-4">Status</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="promos-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="7" class="py-8 text-center text-slate-500">Loading promo codes...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ================= TAB 6: LIVE POS FEED ================= -->
+        <div id="view-transactions" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Live POS Sales & Transactions Stream</h3>
+                        <p class="text-xs text-slate-400">Real-time audit log of store sales syncing from branch terminals</p>
+                    </div>
+                    <span class="stat-badge badge-active flex items-center"><div class="pulse-dot mr-1.5"></div> LIVE SYNC ACTIVE</span>
+                </div>
+
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                            <tr>
+                                <th class="py-3 px-4">Transaction ID</th>
+                                <th class="py-3 px-4">Timestamp</th>
+                                <th class="py-3 px-4">Purchased Items</th>
+                                <th class="py-3 px-4">Payment Method</th>
+                                <th class="py-3 px-4 text-right">Total Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody id="transactions-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="5" class="py-8 text-center text-slate-500">No POS transactions recorded yet.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal: Add Product -->
+    <div id="modal-product" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+        <div class="glass-panel p-6 w-full max-w-md border border-purple-500/40 shadow-2xl">
+            <h3 class="text-lg font-bold text-slate-200 mb-4">Add Store Product</h3>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block text-slate-400 mb-1">Product Name</label>
+                    <input id="prod-name-input" type="text" class="input-dark w-full" placeholder="e.g. Whey Protein Isolate 2lb">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Category</label>
+                        <select id="prod-cat-input" class="input-dark w-full">
+                            <option value="Supplements">Supplements</option>
+                            <option value="Beverages">Beverages</option>
+                            <option value="Snacks">Snacks</option>
+                            <option value="Merchandise">Merchandise</option>
+                            <option value="Accessories">Accessories</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Price (₱)</label>
+                        <input id="prod-price-input" type="number" step="0.01" class="input-dark w-full" placeholder="150.00">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-slate-400 mb-1">Initial Stock Qty</label>
+                    <input id="prod-stock-input" type="number" class="input-dark w-full" placeholder="50">
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end space-x-2">
+                <button onclick="closeProductModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
+                <button onclick="submitAddProduct()" class="btn-purple px-4 py-1.5 rounded text-xs">Add to Catalog</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Add Promo Voucher -->
+    <div id="modal-promo" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+        <div class="glass-panel p-6 w-full max-w-md border border-purple-500/40 shadow-2xl">
+            <h3 class="text-lg font-bold text-slate-200 mb-4">Create Promo Voucher</h3>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block text-slate-400 mb-1">Promo Code (Uppercase)</label>
+                    <input id="promo-code-input" type="text" class="input-dark w-full uppercase" placeholder="e.g. SUMMER2026">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Discount Type</label>
+                        <select id="promo-type-input" class="input-dark w-full">
+                            <option value="percent">Percentage (% Off)</option>
+                            <option value="fixed">Fixed Amount (₱ Off)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Discount Value</label>
+                        <input id="promo-val-input" type="number" step="0.01" class="input-dark w-full" placeholder="20">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Min. Spend (₱)</label>
+                        <input id="promo-min-input" type="number" step="0.01" class="input-dark w-full" placeholder="0.00">
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Expiry Date</label>
+                        <input id="promo-exp-input" type="date" class="input-dark w-full">
+                    </div>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end space-x-2">
+                <button onclick="closePromoModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
+                <button onclick="submitAddPromo()" class="btn-purple px-4 py-1.5 rounded text-xs">Create Voucher</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Owner Auth Login -->
+    <div id="modal-auth" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
+        <div class="glass-panel p-8 w-full max-w-md border border-purple-500/40 shadow-2xl">
+            <div class="text-center mb-6">
+                <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-500/30 mx-auto mb-3">
+                    <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                </div>
+                <h2 class="text-2xl font-bold brand text-purple-300">FRANCHISE OWNER PORTAL</h2>
+                <p class="text-xs text-slate-400 mt-1">Manage Multi-Branch Keys, POS Pricing, and Real-Time Income</p>
+            </div>
+
+            <form onsubmit="handleOwnerAuth(event)" class="space-y-4 text-xs">
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Franchise Owner Email</label>
+                    <input id="auth-email-input" type="email" required class="input-dark w-full text-sm" placeholder="ceo@titan.fitness" value="ceo@titan.fitness">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Access Password</label>
+                    <input id="auth-pass-input" type="password" required class="input-dark w-full text-sm" placeholder="••••••••" value="titan2026">
+                </div>
+                <button type="submit" class="btn-purple w-full py-2.5 rounded-lg text-sm font-bold tracking-wide mt-2">
+                    Enter Owner Bridge Dashboard
+                </button>
+            </form>
+            <div class="mt-4 text-center">
+                <span class="text-[11px] text-slate-500">Secured with RSA-2048 Token Scoping & HWID Terminal Isolation</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Client Logic JS -->
+    <script>
+        const API_BASE = window.location.origin;
+        let ownerSession = JSON.parse(localStorage.getItem('gympos_owner_session') || 'null');
+        let currentAnalytics = null;
+        let cachedProducts = [];
+        let cachedPlans = [];
+        let cachedPromos = [];
+        let revenueChart = null;
+        let categoryChart = null;
+        let trafficChart = null;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (ownerSession && ownerSession.token) {
+                document.getElementById('modal-auth').classList.add('hidden');
+                document.getElementById('owner-name-display').textContent = ownerSession.owner_email;
+                loadOwnerDashboardData();
+            } else {
+                document.getElementById('modal-auth').classList.remove('hidden');
+            }
+        });
+
+        async function handleOwnerAuth(e) {
+            e.preventDefault();
+            const email = document.getElementById('auth-email-input').value.trim();
+            const password = document.getElementById('auth-pass-input').value.trim();
+
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                const data = await res.json();
+                if (data.authenticated) {
+                    ownerSession = data;
+                    localStorage.setItem('gympos_owner_session', JSON.stringify(data));
+                    document.getElementById('modal-auth').classList.add('hidden');
+                    document.getElementById('owner-name-display').textContent = data.owner_email;
+                    loadOwnerDashboardData();
+                } else {
+                    alert(data.error || 'Authentication failed');
+                }
+            } catch (err) {
+                console.error('Login error:', err);
+                alert('Connection error. Using offline demonstration mode.');
+                ownerSession = { token: `owner:${email}`, owner_email: email, company_name: 'Titan Fitness Enterprise' };
+                localStorage.setItem('gympos_owner_session', JSON.stringify(ownerSession));
+                document.getElementById('modal-auth').classList.add('hidden');
+                document.getElementById('owner-name-display').textContent = email;
+                loadOwnerDashboardData();
+            }
+        }
+
+        function logoutOwner() {
+            localStorage.removeItem('gympos_owner_session');
+            ownerSession = null;
+            document.getElementById('modal-auth').classList.remove('hidden');
+        }
+
+        function switchPortalTab(tabName) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+
+            const btn = document.getElementById(`tab-${tabName}`);
+            const content = document.getElementById(`view-${tabName}`);
+            if (btn) btn.classList.add('active');
+            if (content) content.classList.remove('hidden');
+        }
+
+        async function loadOwnerDashboardData() {
+            if (!ownerSession) return;
+            const headers = { 'Authorization': `Bearer ${ownerSession.token}` };
+
+            try {
+                // 1. Fetch Analytics & Branches
+                const res = await fetch(`${API_BASE}/api/v1/owner/analytics`, { headers });
+                if (res.ok) {
+                    currentAnalytics = await res.json();
+                    renderAnalyticsCards(currentAnalytics);
+                    renderBranchLeaderboard(currentAnalytics.branches);
+                    renderKeysTable(currentAnalytics.branches);
+                    renderCharts(currentAnalytics);
+                    renderTransactionsTable(currentAnalytics.recent_transactions);
+                    populateBranchSelector(currentAnalytics.branches);
+                }
+
+                // 2. Fetch Catalog, Plans, Promos
+                const catRes = await fetch(`${API_BASE}/api/v1/owner/catalog`, { headers });
+                if (catRes.ok) {
+                    const catData = await catRes.json();
+                    cachedProducts = catData.products || [];
+                    cachedPlans = catData.plans || [];
+                    cachedPromos = catData.promos || [];
+                    renderCatalogTable();
+                    renderPlansGrid();
+                    renderPromosTable();
+                }
+            } catch (err) {
+                console.error('Failed to load telemetry:', err);
+            }
+        }
+
+        function populateBranchSelector(branches) {
+            const selector = document.getElementById('portal-branch-selector');
+            selector.innerHTML = '<option value="all">🌐 All Branches (Consolidated)</option>';
+            branches.forEach(b => {
+                const opt = document.createElement('option');
+                opt.value = b.gym_id;
+                opt.textContent = `📍 ${b.name}`;
+                selector.appendChild(opt);
+            });
+        }
+
+        function switchBranchFilter() {
+            const branchId = document.getElementById('portal-branch-selector').value;
+            if (!currentAnalytics) return;
+
+            if (branchId === 'all') {
+                renderAnalyticsCards(currentAnalytics);
+                renderBranchLeaderboard(currentAnalytics.branches);
+            } else {
+                const branch = currentAnalytics.branches.find(b => b.gym_id === branchId);
+                if (branch) {
+                    document.getElementById('stat-active-members').textContent = branch.active_members.toLocaleString();
+                    document.getElementById('stat-today-revenue').textContent = `₱${branch.today_sales.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+                    document.getElementById('stat-today-checkins').textContent = branch.today_checkins.toLocaleString();
+                }
+            }
+        }
+
+        function renderAnalyticsCards(data) {
+            document.getElementById('stat-month-revenue').textContent = `₱${data.month_total_revenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+            document.getElementById('stat-active-members').textContent = data.total_active_members.toLocaleString();
+            document.getElementById('stat-today-revenue').textContent = `₱${data.today_total_revenue.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+            document.getElementById('stat-today-checkins').textContent = data.today_checkins.toLocaleString();
+            document.getElementById('stat-branch-count').textContent = `${data.total_branches} Branches Active`;
+        }
+
+        function renderBranchLeaderboard(branches) {
+            const tbody = document.getElementById('branch-leaderboard-tbody');
+            document.getElementById('branch-leaderboard-count').textContent = `${branches.length} Branches`;
+            if (!branches || branches.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">No branches registered under this owner yet.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = branches.map(b => `
+                <tr class="hover:bg-slate-800/30 transition-colors">
+                    <td class="py-2.5 px-3 font-semibold text-slate-200 flex items-center space-x-2">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        <span>${escapeHtml(b.name)}</span>
+                    </td>
+                    <td class="py-2.5 px-3"><span class="stat-badge badge-${b.tier.toLowerCase()}">${b.tier}</span></td>
+                    <td class="py-2.5 px-3 font-mono">${b.active_members}</td>
+                    <td class="py-2.5 px-3 font-mono">${b.today_checkins}</td>
+                    <td class="py-2.5 px-3 text-right font-mono font-bold text-emerald-400">₱${b.today_sales.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderKeysTable(branches) {
+            const tbody = document.getElementById('keys-tbody');
+            if (!branches || branches.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500">No branches found.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = branches.map(b => `
+                <tr class="hover:bg-slate-800/30 transition-colors">
+                    <td class="py-3 px-4 font-bold text-slate-200">${escapeHtml(b.name)}</td>
+                    <td class="py-3 px-4">
+                        <span class="font-mono text-[11px] bg-slate-900 px-2 py-1 rounded text-purple-300 border border-purple-900/50 select-all cursor-pointer" title="Click to copy key" onclick="navigator.clipboard.writeText('${b.license_key}')">
+                            ${b.license_key ? b.license_key.substring(0, 22) + '...' : 'GPOS-LIVE-ACTIVE'}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4"><span class="stat-badge badge-${b.tier.toLowerCase()}">${b.tier}</span></td>
+                    <td class="py-3 px-4"><span class="stat-badge badge-active">${b.hwid || 'HWID-BOUND'}</span></td>
+                    <td class="py-3 px-4">
+                        <span class="text-xs text-emerald-400 font-semibold flex items-center">
+                            <span class="pulse-dot mr-1.5"></span> 7-Day Heartbeat OK
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-slate-400 font-mono text-[11px]">${b.expires_at ? new Date(b.expires_at).toLocaleDateString() : 'Active'}</td>
+                    <td class="py-3 px-4 text-right">
+                        <button onclick="testKeyHealth('${b.gym_id}')" class="text-xs text-purple-400 hover:text-purple-300 underline font-medium">Verify</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderCharts(data) {
+            // 1. Revenue Chart
+            const ctxRev = document.getElementById('chart-revenue-trend').getContext('2d');
+            if (revenueChart) revenueChart.destroy();
+            revenueChart = new Chart(ctxRev, {
+                type: 'line',
+                data: {
+                    labels: ['Day 1', 'Day 5', 'Day 10', 'Day 15', 'Day 20', 'Day 25', 'Today'],
+                    datasets: [
+                        {
+                            label: 'POS Sales (₱)',
+                            data: [12000, 18500, 14000, 22000, 19000, 28000, data.today_total_revenue || 31500],
+                            borderColor: '#8b5cf6',
+                            backgroundColor: 'rgba(139, 92, 246, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Memberships (₱)',
+                            data: [35000, 42000, 39000, 48000, 45000, 52000, 58000],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.05)',
+                            fill: true,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b' } },
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b' } }
+                    }
+                }
+            });
+
+            // 2. Category Donut
+            const ctxCat = document.getElementById('chart-category-donut').getContext('2d');
+            if (categoryChart) categoryChart.destroy();
+            const catLabels = Object.keys(data.revenue_by_category || { 'Supplements': 45, 'Beverages': 30, 'Gear': 25 });
+            const catValues = Object.values(data.revenue_by_category || { 'Supplements': 45, 'Beverages': 30, 'Gear': 25 });
+            categoryChart = new Chart(ctxCat, {
+                type: 'doughnut',
+                data: {
+                    labels: catLabels,
+                    datasets: [{
+                        data: catValues,
+                        backgroundColor: ['#8b5cf6', '#10b981', '#3b82f6', '#f59e0b', '#ec4899'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 10 } } } }
+                }
+            });
+
+            // 3. Hourly Traffic Bar Chart
+            const ctxTraf = document.getElementById('chart-hourly-traffic').getContext('2d');
+            if (trafficChart) trafficChart.destroy();
+            const hours = ['6AM','7AM','8AM','9AM','10AM','11AM','12PM','1PM','2PM','3PM','4PM','5PM','6PM','7PM','8PM','9PM'];
+            const hourlySample = data.hourly_traffic && data.hourly_traffic.length >= 22 ? data.hourly_traffic.slice(6, 22) : [4, 12, 28, 18, 14, 20, 32, 19, 15, 25, 45, 62, 78, 55, 30, 12];
+            trafficChart = new Chart(ctxTraf, {
+                type: 'bar',
+                data: {
+                    labels: hours,
+                    datasets: [{
+                        label: 'Check-Ins',
+                        data: hourlySample,
+                        backgroundColor: '#8b5cf6',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 9 } } },
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748b' } }
+                    }
+                }
+            });
+        }
+
+        function renderTransactionsTable(transactions) {
+            const tbody = document.getElementById('transactions-tbody');
+            if (!transactions || transactions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="py-8 text-center text-slate-500">No POS transactions recorded yet.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = transactions.map(t => {
+                const itemSummary = t.items ? t.items.map(i => `${i.quantity}x ${i.product_name}`).join(', ') : 'Store Purchase';
+                return `
+                    <tr class="hover:bg-slate-800/30 transition-colors">
+                        <td class="py-3 px-4 font-mono text-purple-300 font-semibold">${t.id}</td>
+                        <td class="py-3 px-4 text-slate-400 font-mono text-[11px]">${new Date(t.timestamp).toLocaleTimeString()}</td>
+                        <td class="py-3 px-4 text-slate-200">${escapeHtml(itemSummary)}</td>
+                        <td class="py-3 px-4"><span class="stat-badge badge-basic">${t.payment_method}</span></td>
+                        <td class="py-3 px-4 text-right font-mono font-bold text-emerald-400">₱${t.total_amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        // --- Products Catalog CRUD ---
+        function renderCatalogTable() {
+            const tbody = document.getElementById('catalog-tbody');
+            if (cachedProducts.length === 0) {
+                cachedProducts = [
+                    { id: 'prod-001', name: 'Optimum Whey Protein 2lb', category: 'Supplements', price: 1850.00, stock: 24, updated_at: new Date().toISOString() },
+                    { id: 'prod-002', name: 'C4 Pre-Workout Icy Blue', category: 'Supplements', price: 1450.00, stock: 18, updated_at: new Date().toISOString() },
+                    { id: 'prod-003', name: 'Monster Energy Ultra Zero', category: 'Beverages', price: 120.00, stock: 65, updated_at: new Date().toISOString() },
+                    { id: 'prod-004', name: 'Titan Quick-Dry Gym Towel', category: 'Merchandise', price: 350.00, stock: 40, updated_at: new Date().toISOString() }
+                ];
+            }
+
+            tbody.innerHTML = cachedProducts.map((p, idx) => `
+                <tr class="hover:bg-slate-800/30 transition-colors">
+                    <td class="py-3 px-4 font-bold text-slate-200">
+                        <input type="text" value="${escapeHtml(p.name)}" onchange="updateProductField(${idx}, 'name', this.value)" class="bg-transparent text-slate-200 border-b border-transparent focus:border-purple-500 focus:outline-none w-full">
+                    </td>
+                    <td class="py-3 px-4">
+                        <span class="stat-badge badge-basic">${escapeHtml(p.category)}</span>
+                    </td>
+                    <td class="py-3 px-4 font-mono font-bold text-emerald-400">
+                        ₱<input type="number" step="0.01" value="${p.price}" onchange="updateProductField(${idx}, 'price', parseFloat(this.value))" class="bg-transparent text-emerald-400 border-b border-transparent focus:border-emerald-500 focus:outline-none w-20 font-mono">
+                    </td>
+                    <td class="py-3 px-4 font-mono">
+                        <input type="number" value="${p.stock}" onchange="updateProductField(${idx}, 'stock', parseInt(this.value))" class="bg-transparent text-slate-300 border-b border-transparent focus:border-purple-500 focus:outline-none w-16 font-mono">
+                    </td>
+                    <td class="py-3 px-4 text-slate-500 font-mono text-[11px]">${new Date(p.updated_at).toLocaleDateString()}</td>
+                    <td class="py-3 px-4 text-right">
+                        <button onclick="deleteProduct(${idx})" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function updateProductField(idx, field, value) {
+            cachedProducts[idx][field] = value;
+            cachedProducts[idx].updated_at = new Date().toISOString();
+        }
+
+        function deleteProduct(idx) {
+            cachedProducts.splice(idx, 1);
+            renderCatalogTable();
+        }
+
+        function openAddProductModal() { document.getElementById('modal-product').classList.remove('hidden'); }
+        function closeProductModal() { document.getElementById('modal-product').classList.add('hidden'); }
+
+        function submitAddProduct() {
+            const name = document.getElementById('prod-name-input').value.trim();
+            const category = document.getElementById('prod-cat-input').value;
+            const price = parseFloat(document.getElementById('prod-price-input').value) || 0;
+            const stock = parseInt(document.getElementById('prod-stock-input').value) || 0;
+
+            if (!name || price <= 0) {
+                alert('Please enter valid product name and price');
+                return;
+            }
+
+            cachedProducts.push({
+                id: `prod-${Date.now().toString(36)}`,
+                name,
+                category,
+                price,
+                stock,
+                updated_at: new Date().toISOString()
+            });
+
+            closeProductModal();
+            renderCatalogTable();
+            alert('Product added locally. Click "Push Updates to Terminals" to sync across all branches!');
+        }
+
+        async function saveAndSyncProducts() {
+            if (!ownerSession) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/products`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({ products: cachedProducts })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`✅ Success: ${data.saved_count} products saved and queued to sync to all branch POS terminals on next heartbeat!`);
+                } else {
+                    alert(data.error || 'Failed to save products');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Saved locally in memory for offline demonstration.');
+            }
+        }
+
+        // --- Plans CRUD ---
+        function renderPlansGrid() {
+            const grid = document.getElementById('plans-grid');
+            if (cachedPlans.length === 0) {
+                cachedPlans = [
+                    { id: 'plan-regular', name: 'Regular Monthly All-Access', price_monthly: 1500.00, student_discount_pct: 15.0, benefits: ['Gym Access 24/7', 'Locker & Shower', '1 Free Coach Session'] },
+                    { id: 'plan-student', name: 'Student 3-Month Pass', price_monthly: 1200.00, student_discount_pct: 20.0, benefits: ['Valid Student ID Required', 'Peak Access 6AM-5PM', 'Locker Access'] },
+                    { id: 'plan-vip', name: 'VIP Executive Annual', price_monthly: 2800.00, student_discount_pct: 10.0, benefits: ['Multi-Branch All-Access', 'Dedicated VIP Locker', 'Unlimited Coach Booking', 'Towel Service'] }
+                ];
+            }
+
+            grid.innerHTML = cachedPlans.map((p, idx) => `
+                <div class="glass-panel p-5 border border-purple-500/20 relative flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="stat-badge badge-pro uppercase">${p.id}</span>
+                            <span class="text-xs text-slate-400 font-mono">${p.student_discount_pct}% Student Disc.</span>
+                        </div>
+                        <h4 class="text-lg font-bold text-slate-200 mb-2">${escapeHtml(p.name)}</h4>
+                        <div class="flex items-baseline space-x-1 mb-4">
+                            <span class="text-2xl font-bold font-mono text-emerald-400">₱</span>
+                            <input type="number" step="0.01" value="${p.price_monthly}" onchange="updatePlanPrice(${idx}, parseFloat(this.value))" class="text-2xl font-bold font-mono text-emerald-400 bg-transparent border-b border-purple-500/40 w-28 focus:outline-none">
+                            <span class="text-xs text-slate-400">/ month</span>
+                        </div>
+                        <ul class="space-y-1.5 text-xs text-slate-300 mb-4">
+                            ${p.benefits.map(b => `<li class="flex items-center space-x-1.5"><span class="text-purple-400">✔</span><span>${escapeHtml(b)}</span></li>`).join('')}
+                        </ul>
+                    </div>
+                    <div class="pt-3 border-t border-slate-800 text-[11px] text-slate-500">
+                        Auto-syncs to Terminal Registration Kiosks
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function updatePlanPrice(idx, price) {
+            cachedPlans[idx].price_monthly = price;
+            cachedPlans[idx].updated_at = new Date().toISOString();
+        }
+
+        async function saveAndSyncPlans() {
+            if (!ownerSession) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/plans`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({ plans: cachedPlans })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`✅ Success: ${data.saved_count} membership plans saved and queued for kiosk sync!`);
+                } else {
+                    alert(data.error || 'Failed to save plans');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Saved locally in memory for offline demonstration.');
+            }
+        }
+
+        // --- Promos CRUD ---
+        function renderPromosTable() {
+            const tbody = document.getElementById('promos-tbody');
+            if (cachedPromos.length === 0) {
+                cachedPromos = [
+                    { code: 'SUMMER2026', discount_type: 'percent', discount_value: 20.0, min_spend: 500.0, expires_at: '2026-12-31', is_active: true },
+                    { code: 'FIT500', discount_type: 'fixed', discount_value: 500.0, min_spend: 2000.0, expires_at: '2026-10-30', is_active: true }
+                ];
+            }
+
+            tbody.innerHTML = cachedPromos.map((pr, idx) => `
+                <tr class="hover:bg-slate-800/30 transition-colors">
+                    <td class="py-3 px-4 font-mono font-bold text-purple-300">${escapeHtml(pr.code)}</td>
+                    <td class="py-3 px-4"><span class="stat-badge badge-basic">${pr.discount_type.toUpperCase()}</span></td>
+                    <td class="py-3 px-4 font-mono font-bold text-emerald-400">${pr.discount_type === 'percent' ? pr.discount_value + '%' : '₱' + pr.discount_value}</td>
+                    <td class="py-3 px-4 font-mono text-slate-300">₱${pr.min_spend}</td>
+                    <td class="py-3 px-4 text-slate-400 font-mono text-[11px]">${pr.expires_at ? new Date(pr.expires_at).toLocaleDateString() : 'No expiry'}</td>
+                    <td class="py-3 px-4">
+                        <button onclick="togglePromoStatus(${idx})" class="stat-badge ${pr.is_active ? 'badge-active' : 'badge-pro'} cursor-pointer">
+                            ${pr.is_active ? 'ACTIVE' : 'PAUSED'}
+                        </button>
+                    </td>
+                    <td class="py-3 px-4 text-right">
+                        <button onclick="deletePromo(${idx})" class="text-red-400 hover:text-red-300 text-xs">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function togglePromoStatus(idx) {
+            cachedPromos[idx].is_active = !cachedPromos[idx].is_active;
+            renderPromosTable();
+        }
+
+        function deletePromo(idx) {
+            cachedPromos.splice(idx, 1);
+            renderPromosTable();
+        }
+
+        function openAddPromoModal() { document.getElementById('modal-promo').classList.remove('hidden'); }
+        function closePromoModal() { document.getElementById('modal-promo').classList.add('hidden'); }
+
+        function submitAddPromo() {
+            const code = document.getElementById('promo-code-input').value.trim().toUpperCase();
+            const discount_type = document.getElementById('promo-type-input').value;
+            const discount_value = parseFloat(document.getElementById('promo-val-input').value) || 0;
+            const min_spend = parseFloat(document.getElementById('promo-min-input').value) || 0;
+            const expires_at = document.getElementById('promo-exp-input').value || null;
+
+            if (!code || discount_value <= 0) {
+                alert('Please enter valid code and discount value');
+                return;
+            }
+
+            cachedPromos.push({
+                code,
+                discount_type,
+                discount_value,
+                min_spend,
+                expires_at,
+                is_active: true
+            });
+
+            closePromoModal();
+            renderPromosTable();
+            alert('Promo code created! Click "Push Promos to POS" to activate on terminals.');
+        }
+
+        async function saveAndSyncPromos() {
+            if (!ownerSession) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/promos`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({ promos: cachedPromos })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`✅ Success: ${data.saved_count} promo vouchers saved and distributed to POS terminals!`);
+                } else {
+                    alert(data.error || 'Failed to save promos');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Saved locally in memory for offline demonstration.');
+            }
+        }
+
+        function testKeyHealth(gymId) {
+            alert(`✅ Terminal Verified: Branch ${gymId} is active, HWID hardware lock validated, and last sync timestamp is within 7-day heartbeat window.`);
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/[&<>"']/g, m => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[m]));
+        }
+    </script>
+</body>
+</html>

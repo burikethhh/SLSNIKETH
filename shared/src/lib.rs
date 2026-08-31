@@ -352,6 +352,110 @@ pub struct CoachSession {
     pub duration_minutes: u32,
 }
 
+// --- Remote Catalog, Membership Plans, and Promo Vouchers (Cloud -> POS Sync) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteCatalogProduct {
+    pub id: String,
+    pub name: String,
+    pub price: f64,
+    pub stock: i32,
+    pub category: String,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MembershipPlanConfig {
+    pub id: String,
+    pub name: String,
+    pub price_monthly: f64,
+    pub student_discount_pct: f64,
+    #[serde(default)]
+    pub benefits: Vec<String>,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromoVoucherConfig {
+    pub code: String,
+    pub discount_type: String, // "percent" or "fixed"
+    pub discount_value: f64,
+    pub min_spend: f64,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub is_active: bool,
+}
+
+// --- Owner Portal DTOs & Analytics ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerRegisterRequest {
+    pub email: String,
+    pub password: String,
+    pub company_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerLoginResponse {
+    pub authenticated: bool,
+    pub token: String,
+    pub owner_email: String,
+    pub company_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerBranchSummary {
+    pub gym_id: Uuid,
+    pub name: String,
+    pub tier: LicenseTier,
+    pub active_members: u32,
+    pub today_checkins: u32,
+    pub today_sales: f64,
+    pub hwid: String,
+    pub license_key: String,
+    pub expires_at: DateTime<Utc>,
+    pub is_heartbeat_healthy: bool,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerDashboardAnalytics {
+    pub owner_email: String,
+    pub company_name: String,
+    pub total_branches: usize,
+    pub total_active_members: u32,
+    pub today_total_revenue: f64,
+    pub month_total_revenue: f64,
+    pub today_checkins: u32,
+    pub branches: Vec<OwnerBranchSummary>,
+    pub recent_transactions: Vec<SaleTransaction>,
+    pub revenue_by_branch: std::collections::HashMap<String, f64>,
+    pub revenue_by_category: std::collections::HashMap<String, f64>,
+    pub hourly_traffic: Vec<u32>, // 24 hours (0..23)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveProductsRequest {
+    pub products: Vec<RemoteCatalogProduct>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavePlansRequest {
+    pub plans: Vec<MembershipPlanConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavePromosRequest {
+    pub promos: Vec<PromoVoucherConfig>,
+}
+
 // --- Cloud Sync Payloads & Responses ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -397,7 +501,12 @@ pub struct SyncResponse {
     pub processed_attendance: usize,
     pub processed_members: usize,
     pub processed_vectors: usize,
+    pub processed_sales: usize,
     pub remote_disabled: bool,
     pub sister_branch_members: Vec<CloudMemberSyncItem>,
+    pub remote_catalog: Option<Vec<RemoteCatalogProduct>>,
+    pub remote_plans: Option<Vec<MembershipPlanConfig>>,
+    pub remote_promos: Option<Vec<PromoVoucherConfig>>,
     pub server_time: DateTime<Utc>,
 }
+

@@ -1,8 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use gympos_shared::{
     AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest,
-    CreateProductRequest, CreateWalkInRequest, Member, ProductItem, SaleTransaction, UpdateCoachRequest,
-    UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
+    CreateProductRequest, CreateWalkInRequest, Member, MembershipPlanConfig, ProductItem, PromoVoucherConfig,
+    RemoteCatalogProduct, SaleTransaction, UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest,
+    WalkInRecord,
 };
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -1055,6 +1056,68 @@ impl Database {
             items: items.to_vec(),
             timestamp: now,
         })
+    }
+
+    pub fn get_unsynced_sales(&self) -> Result<Vec<SaleTransaction>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, member_id, total_amount, payment_method, items_json, created_at
+             FROM transactions WHERE synced_to_cloud = 0 ORDER BY created_at ASC LIMIT 50",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let member_id: Option<String> = row.get(1)?;
+            let total_amount: f64 = row.get(2)?;
+            let payment_method: String = row.get(3)?;
+            let items_json: String = row.get(4)?;
+            let items: Vec<CartItem> = serde_json::from_str(&items_json).unwrap_or_default();
+            let created_at_str: String = row.get(5)?;
+            let timestamp = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(SaleTransaction {
+                id,
+                member_id,
+                total_amount,
+                payment_method,
+                items,
+                timestamp,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for s in rows {
+            list.push(s?);
+        }
+        Ok(list)
+    }
+
+    pub fn mark_sales_synced(&self, ids: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for id in ids {
+            conn.execute("UPDATE transactions SET synced_to_cloud = 1 WHERE id = ?1", params![id])?;
+        }
+        Ok(())
+    }
+
+    pub fn ingest_remote_catalog(
+        &self,
+        products: &[RemoteCatalogProduct],
+        _plans: &[MembershipPlanConfig],
+        _promos: &[PromoVoucherConfig],
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut count = 0;
+        for p in products {
+            conn.execute(
+                "INSERT INTO products (id, name, price, stock, category)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(id) DO UPDATE SET name = ?2, price = ?3, stock = ?4, category = ?5",
+                params![p.id, p.name, p.price, p.stock, p.category],
+            )?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     // --- Coaches CRUD Operations ---

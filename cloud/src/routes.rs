@@ -5,7 +5,11 @@ use axum::{
     Json,
 };
 use chrono::{Duration, Utc};
-use gympos_shared::{FaceVectorSyncItem, LicenseClaims, SyncPushPayload, SyncResponse};
+use gympos_shared::{
+    FaceVectorSyncItem, LicenseClaims, OwnerLoginRequest, OwnerLoginResponse,
+    OwnerRegisterRequest, SavePlansRequest, SaveProductsRequest, SavePromosRequest,
+    SyncPushPayload, SyncResponse,
+};
 use parking_lot::RwLock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -398,8 +402,16 @@ pub async fn sync_push(
     let processed_att = state.db.insert_attendance_logs(&trusted_owner, &payload.attendance_logs, &payload.gym_id).unwrap_or(0);
     let processed_vec = payload.face_vectors.len();
 
-    // 4. Query all inter-branch members from sister gyms under the same owner (trusted)
+    // 4. Ingest POS sales transactions from this branch (using trusted owner)
+    let processed_sales = state.db.insert_sales(&trusted_owner, &payload.gym_id, &payload.sales).unwrap_or(0);
+
+    // 5. Query all inter-branch members from sister gyms under the same owner (trusted)
     let sister_branch_members = state.db.get_sister_branch_members(&trusted_owner, &payload.gym_id).unwrap_or_default();
+
+    // 6. Query updated remote catalog, plans, and promos for this owner
+    let remote_catalog = state.db.get_products(&trusted_owner).ok();
+    let remote_plans = state.db.get_plans(&trusted_owner).ok();
+    let remote_promos = state.db.get_promos(&trusted_owner).ok();
 
     Ok((
         StatusCode::OK,
@@ -407,8 +419,12 @@ pub async fn sync_push(
             processed_attendance: processed_att,
             processed_members,
             processed_vectors: processed_vec,
+            processed_sales,
             remote_disabled: is_disabled,
             sister_branch_members,
+            remote_catalog,
+            remote_plans,
+            remote_promos,
             server_time: Utc::now(),
         }),
     ))
@@ -495,4 +511,210 @@ pub async fn analytics_fleet(
         })),
     ))
 }
+
+// --- Owner Portal Authentication & Scoped Management ---
+
+fn hash_password(password: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn extract_owner_email(headers: &HeaderMap) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .or_else(|| headers.get("x-owner-token").and_then(|v| v.to_str().ok()));
+
+    match auth_header {
+        Some(token) if !token.trim().is_empty() => {
+            let email = token.strip_prefix("owner:").unwrap_or(token).trim().to_string();
+            if email.contains('@') {
+                Ok(email)
+            } else {
+                Err((
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "Invalid owner session token format", "code": "OWNER_TOKEN_INVALID" })),
+                ))
+            }
+        }
+        _ => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Unauthorized: Owner session token required", "code": "OWNER_AUTH_REQUIRED" })),
+        )),
+    }
+}
+
+pub async fn owner_register(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<OwnerRegisterRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if !payload.email.contains('@') || payload.password.len() < 4 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Valid email and minimum 4-char password required", "code": "INVALID_CREDENTIALS" })),
+        ));
+    }
+    let password_hash = hash_password(&payload.password);
+    let _ = state.db.create_owner_account(&payload.email, &password_hash, &payload.company_name);
+
+    Ok((
+        StatusCode::OK,
+        Json(OwnerLoginResponse {
+            authenticated: true,
+            token: format!("owner:{}", payload.email),
+            owner_email: payload.email,
+            company_name: payload.company_name,
+        }),
+    ))
+}
+
+pub async fn owner_login(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<OwnerLoginRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let password_hash = hash_password(&payload.password);
+    let mut company_name = state.db.verify_owner_login(&payload.email, &password_hash).unwrap_or(None);
+    if company_name.is_none() {
+        let gyms = state.gyms.read();
+        let gym_match = gyms.values().find(|g| g.owner_email.to_lowercase() == payload.email.to_lowercase());
+        if let Some(g) = gym_match {
+            let comp = format!("{} Enterprise", g.name);
+            let _ = state.db.create_owner_account(&payload.email, &password_hash, &comp);
+            company_name = Some(comp);
+        } else {
+            let comp = "Fitness Enterprise".to_string();
+            let _ = state.db.create_owner_account(&payload.email, &password_hash, &comp);
+            company_name = Some(comp);
+        }
+    }
+
+    let company = company_name.unwrap_or_else(|| "Fitness Enterprise".to_string());
+    Ok((
+        StatusCode::OK,
+        Json(OwnerLoginResponse {
+            authenticated: true,
+            token: format!("owner:{}", payload.email),
+            owner_email: payload.email,
+            company_name: company,
+        }),
+    ))
+}
+
+pub async fn owner_get_branches(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let branches = state.db.get_owner_branches(&owner_email).unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "owner_email": owner_email,
+            "branches": branches,
+            "count": branches.len()
+        })),
+    ))
+}
+
+pub async fn owner_get_analytics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let analytics = state.db.get_owner_analytics(&owner_email).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Analytics error: {}", e) })),
+        )
+    })?;
+    Ok((StatusCode::OK, Json(analytics)))
+}
+
+pub async fn owner_get_catalog(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let products = state.db.get_products(&owner_email).unwrap_or_default();
+    let plans = state.db.get_plans(&owner_email).unwrap_or_default();
+    let promos = state.db.get_promos(&owner_email).unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "products": products,
+            "plans": plans,
+            "promos": promos,
+        })),
+    ))
+}
+
+pub async fn owner_save_products(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SaveProductsRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let count = state.db.upsert_products(&owner_email, &payload.products).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Save products error: {}", e) })),
+        )
+    })?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "status": "success",
+            "saved_count": count,
+            "message": "Products updated and queued for POS terminal sync"
+        })),
+    ))
+}
+
+pub async fn owner_save_plans(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SavePlansRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let count = state.db.upsert_plans(&owner_email, &payload.plans).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Save plans error: {}", e) })),
+        )
+    })?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "status": "success",
+            "saved_count": count,
+            "message": "Membership plans updated and queued for POS terminal sync"
+        })),
+    ))
+}
+
+pub async fn owner_save_promos(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<SavePromosRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let count = state.db.upsert_promos(&owner_email, &payload.promos).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Save promos error: {}", e) })),
+        )
+    })?;
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "status": "success",
+            "saved_count": count,
+            "message": "Promo vouchers updated and queued for POS terminal sync"
+        })),
+    ))
+}
+
 
