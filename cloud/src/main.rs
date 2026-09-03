@@ -1,6 +1,7 @@
 mod crypto;
 mod db;
 mod models;
+mod rate_limit;
 mod routes;
 
 use axum::{
@@ -24,18 +25,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let signer = match std::env::var("RSA_PRIVATE_KEY_PEM") {
-        Ok(pem) => {
-            tracing::info!("Loaded RSA private key from environment");
-            LicenseSigner::from_pem(&pem)?
-        }
-        Err(_) => {
-            tracing::info!("Using embedded production RSA-2048 signing key");
-            LicenseSigner::default_production()?
-        }
+    let signer = if let Ok(pem) = std::env::var("RSA_PRIVATE_KEY_PEM") {
+        tracing::info!("Loaded RSA private key from environment");
+        LicenseSigner::from_pem(&pem)?
+    } else if let Ok(pem) = std::fs::read_to_string("rsa_private_key.pem") {
+        tracing::info!("Loaded RSA private key from rsa_private_key.pem");
+        LicenseSigner::from_pem(&pem)?
+    } else {
+        tracing::warn!("Generating in-memory ephemeral signing key");
+        LicenseSigner::generate_ephemeral()?
     };
 
-    let admin_key = std::env::var("ADMIN_SECRET_KEY").unwrap_or_else(|_| "gympos_master_ceo_secret_2026".to_string());
+    let admin_key = match std::env::var("ADMIN_SECRET_KEY") {
+        Ok(key) => key,
+        Err(_) => "gympos_master_ceo_secret_2026".to_string(),
+    };
     tracing::info!("Master Admin Authentication active");
 
     let cloud_db = Arc::new(CloudDatabase::new("gympos_cloud.sqlite")?);
@@ -49,6 +53,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         loaded_revoked_licenses.len()
     );
 
+    let login_limiter = Arc::new(rate_limit::RateLimiter::new());
+    let limiter_for_cleanup = login_limiter.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            limiter_for_cleanup.cleanup(std::time::Duration::from_secs(3600));
+        }
+    });
+
     let state = Arc::new(AppState {
         signer,
         db: cloud_db,
@@ -56,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         disabled_gyms: Arc::new(RwLock::new(loaded_disabled)),
         revoked_licenses: Arc::new(RwLock::new(loaded_revoked_licenses)),
         admin_key,
+        login_limiter,
     });
 
     let cors = CorsLayer::new()
@@ -125,7 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("GymPOS Cloud Backend listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -149,5 +167,3 @@ async fn serve_portal_html() -> impl axum::response::IntoResponse {
         ),
     }
 }
-
-
