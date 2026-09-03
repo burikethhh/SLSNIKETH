@@ -644,5 +644,54 @@ pub struct TerminalSession {
     pub logged_in_at: DateTime<Utc>,
 }
 
+// --- CEO Hierarchical Multi-Owner Licensing Models ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerHierarchyBranch {
+    pub gym_id: Uuid,
+    pub name: String,
+    pub tier: LicenseTier,
+    pub is_active: bool,
+    pub license_key: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub days_remaining: Option<i64>,
+    pub is_license_active: bool,
+    pub hwid: Option<String>,
+    pub active_members: u32,
+    pub today_sales: f64,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnerHierarchyAccount {
+    pub owner_email: String,
+    pub company_name: String,
+    pub created_at: DateTime<Utc>,
+    pub branches: Vec<OwnerHierarchyBranch>,
+    pub total_branches: usize,
+    pub active_licenses_count: usize,
+    pub pending_licenses_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueBranchKeyRequest {
+    pub tier: Option<LicenseTier>,
+    pub duration_days: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminCreateBranchForOwnerRequest {
+    pub branch_name: String,
+    pub tier: LicenseTier,
+    pub duration_days: Option<i64>,
+    #[serde(default = "default_true")]
+    pub auto_issue_license: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+
 
 

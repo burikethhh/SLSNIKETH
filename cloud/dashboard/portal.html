@@ -337,25 +337,25 @@
                         <h3 class="text-xl font-bold text-slate-200">Branch Terminals & Cryptographic License Keys</h3>
                         <p class="text-xs text-slate-400">Manage RSA-2048 keys, HWID terminal bindings, and 7-day heartbeat status for each gym branch — 1 owner → N branches (Basic 1 / Pro 5 / Ultra 20)</p>
                     </div>
-                    <button onclick="openOwnerCreateBranchModal()" class="btn-purple px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5">
+                    <button id="btn-open-create-branch" onclick="openOwnerCreateBranchModal()" class="btn-purple px-3.5 py-2 rounded-lg text-xs flex items-center gap-1.5">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v6m0 0v6m0-6h6m-6 0H6"></path></svg>
                         <span>+ New Branch Terminal</span>
                     </button>
                 </div>
                 <!-- Owner self-service branch creator (inline) -->
                 <div id="owner-create-branch-inline" class="hidden glass-panel p-4 mb-4 border border-purple-500/20 space-y-3">
-                    <div class="text-sm font-bold text-slate-200">Create New Branch Terminal</div>
-                    <div class="grid grid-cols-3 gap-3">
+                    <div class="text-sm font-bold text-slate-200">Register New Branch Location</div>
+                    <p class="text-xs text-slate-400">Register a new branch for your franchise. The CEO Command Center will review and issue your cryptographic RSA license key.</p>
+                    <div class="grid grid-cols-2 gap-3">
                         <input id="owner-new-branch-name" class="input-dark text-xs" placeholder="Branch name, e.g. SM Makati Branch">
                         <select id="owner-new-branch-tier" class="input-dark text-xs">
                             <option value="basic">Basic — $99 (1 branch max)</option>
                             <option value="pro" selected>Pro — $199 (5 branches)</option>
                             <option value="ultra">Ultra — $349 (20 branches)</option>
                         </select>
-                        <input id="owner-new-branch-duration" type="number" class="input-dark text-xs" value="30" min="1" placeholder="Days">
                     </div>
                     <div class="flex gap-2">
-                        <button onclick="submitOwnerCreateBranch()" class="btn-purple px-4 py-2 rounded-lg text-xs">Create & Issue Branch Key</button>
+                        <button id="btn-submit-create-branch" onclick="submitOwnerCreateBranch()" class="btn-purple px-4 py-2 rounded-lg text-xs">Register Branch Location</button>
                         <button onclick="closeOwnerCreateBranchModal()" class="px-4 py-2 rounded-lg text-xs bg-slate-800 text-slate-300">Cancel</button>
                     </div>
                     <div id="owner-create-branch-msg" class="text-xs min-h-[1rem]"></div>
@@ -698,18 +698,29 @@
         </div>
     </div>
 
-    <!-- Modal: Owner Auth Login -->
+    <!-- Modal: Owner Auth (Login & Register) -->
     <div id="modal-auth" class="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md">
         <div class="glass-panel p-8 w-full max-w-md border border-purple-500/40 shadow-2xl">
-            <div class="text-center mb-6">
+            <div class="text-center mb-5">
                 <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-500/30 mx-auto mb-3">
                     <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
                 </div>
                 <h2 class="text-2xl font-bold brand text-purple-300">FRANCHISE OWNER PORTAL</h2>
-                <p class="text-xs text-slate-400 mt-1">Manage Multi-Branch Keys, POS Pricing, and Real-Time Income</p>
+                <p class="text-xs text-slate-400 mt-1">Multi-Branch Licensing, Cashiers & Real-Time Analytics</p>
             </div>
 
-            <form onsubmit="handleOwnerAuth(event)" class="space-y-4 text-xs">
+            <!-- Tab Switcher: Sign In vs Register -->
+            <div class="flex border-b border-purple-900/40 mb-4">
+                <button type="button" id="tab-btn-auth-login" onclick="switchAuthTab('login')" class="flex-1 py-2 text-xs font-bold text-center border-b-2 border-purple-500 text-purple-200 transition">
+                    Sign In
+                </button>
+                <button type="button" id="tab-btn-auth-register" onclick="switchAuthTab('register')" class="flex-1 py-2 text-xs font-bold text-center border-b-2 border-transparent text-slate-400 hover:text-purple-300 transition">
+                    Register New Owner
+                </button>
+            </div>
+
+            <!-- Login Form -->
+            <form id="form-auth-login" onsubmit="handleOwnerAuth(event)" class="space-y-4 text-xs">
                 <div>
                     <label class="block text-slate-300 font-medium mb-1">Franchise Owner Email</label>
                     <input id="auth-email-input" type="email" required class="input-dark w-full text-sm" placeholder="ceo@titan.fitness" value="ceo@titan.fitness">
@@ -718,10 +729,36 @@
                     <label class="block text-slate-300 font-medium mb-1">Access Password</label>
                     <input id="auth-pass-input" type="password" required class="input-dark w-full text-sm" placeholder="••••••••" value="titan2026">
                 </div>
+                <div id="auth-login-error" class="text-xs text-red-400 hidden"></div>
                 <button type="submit" class="btn-purple w-full py-2.5 rounded-lg text-sm font-bold tracking-wide mt-2">
                     Enter Owner Bridge Dashboard
                 </button>
             </form>
+
+            <!-- Register Form -->
+            <form id="form-auth-register" onsubmit="handleOwnerRegister(event)" class="space-y-3 text-xs hidden">
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Gym / Company Name</label>
+                    <input id="auth-reg-company" type="text" required class="input-dark w-full text-sm" placeholder="e.g. Spartan Fitness Center">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Franchise Owner Email</label>
+                    <input id="auth-reg-email" type="email" required class="input-dark w-full text-sm" placeholder="e.g. owner@spartanfit.com">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Create Password</label>
+                    <input id="auth-reg-pass" type="password" required minlength="4" class="input-dark w-full text-sm" placeholder="••••••••">
+                </div>
+                <div>
+                    <label class="block text-slate-300 font-medium mb-1">Confirm Password</label>
+                    <input id="auth-reg-pass-confirm" type="password" required minlength="4" class="input-dark w-full text-sm" placeholder="••••••••">
+                </div>
+                <div id="auth-reg-error" class="text-xs text-red-400 hidden"></div>
+                <button type="submit" class="btn-purple w-full py-2.5 rounded-lg text-sm font-bold tracking-wide mt-2">
+                    Create Owner Account & Enter
+                </button>
+            </form>
+
             <div class="mt-4 text-center">
                 <span class="text-[11px] text-slate-500">Secured with RSA-2048 Token Scoping & HWID Terminal Isolation</span>
             </div>
@@ -741,6 +778,13 @@
         let trafficChart = null;
 
         document.addEventListener('DOMContentLoaded', () => {
+            // Check invite parameter in URL
+            const inviteEmail = new URLSearchParams(location.search).get('invite');
+            if (inviteEmail) {
+                switchAuthTab('register');
+                document.getElementById('auth-reg-email').value = inviteEmail;
+            }
+
             if (ownerSession && ownerSession.token) {
                 document.getElementById('modal-auth').classList.add('hidden');
                 document.getElementById('owner-name-display').textContent = ownerSession.owner_email;
@@ -750,10 +794,31 @@
             }
         });
 
+        function switchAuthTab(tab) {
+            const btnLogin = document.getElementById('tab-btn-auth-login');
+            const btnReg = document.getElementById('tab-btn-auth-register');
+            const formLogin = document.getElementById('form-auth-login');
+            const formReg = document.getElementById('form-auth-register');
+
+            if (tab === 'register') {
+                btnLogin.className = 'flex-1 py-2 text-xs font-bold text-center border-b-2 border-transparent text-slate-400 hover:text-purple-300 transition';
+                btnReg.className = 'flex-1 py-2 text-xs font-bold text-center border-b-2 border-purple-500 text-purple-200 transition';
+                formLogin.classList.add('hidden');
+                formReg.classList.remove('hidden');
+            } else {
+                btnReg.className = 'flex-1 py-2 text-xs font-bold text-center border-b-2 border-transparent text-slate-400 hover:text-purple-300 transition';
+                btnLogin.className = 'flex-1 py-2 text-xs font-bold text-center border-b-2 border-purple-500 text-purple-200 transition';
+                formReg.classList.add('hidden');
+                formLogin.classList.remove('hidden');
+            }
+        }
+
         async function handleOwnerAuth(e) {
             e.preventDefault();
             const email = document.getElementById('auth-email-input').value.trim();
             const password = document.getElementById('auth-pass-input').value.trim();
+            const errEl = document.getElementById('auth-login-error');
+            errEl.classList.add('hidden');
 
             try {
                 const res = await fetch(`${API_BASE}/api/v1/owner/auth/login`, {
@@ -769,22 +834,58 @@
                     document.getElementById('owner-name-display').textContent = data.owner_email;
                     loadOwnerDashboardData();
                 } else {
-                    alert(data.error || 'Authentication failed');
+                    errEl.textContent = data.error || 'Authentication failed';
+                    errEl.classList.remove('hidden');
                 }
             } catch (err) {
                 console.error('Login error:', err);
-                alert('Connection error. Using offline demonstration mode.');
-                ownerSession = { token: `owner:${email}`, owner_email: email, company_name: 'Titan Fitness Enterprise' };
-                localStorage.setItem('gympos_owner_session', JSON.stringify(ownerSession));
-                document.getElementById('modal-auth').classList.add('hidden');
-                document.getElementById('owner-name-display').textContent = email;
-                loadOwnerDashboardData();
+                errEl.textContent = 'Connection error. Check server.';
+                errEl.classList.remove('hidden');
+            }
+        }
+
+        async function handleOwnerRegister(e) {
+            e.preventDefault();
+            const company = document.getElementById('auth-reg-company').value.trim();
+            const email = document.getElementById('auth-reg-email').value.trim();
+            const pass = document.getElementById('auth-reg-pass').value.trim();
+            const confirmPass = document.getElementById('auth-reg-pass-confirm').value.trim();
+            const errEl = document.getElementById('auth-reg-error');
+            errEl.classList.add('hidden');
+
+            if (pass !== confirmPass) {
+                errEl.textContent = 'Passwords do not match';
+                errEl.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/auth/register`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ company_name: company, email, password: pass })
+                });
+                const data = await res.json();
+                if (res.ok && data.authenticated) {
+                    ownerSession = data;
+                    localStorage.setItem('gympos_owner_session', JSON.stringify(data));
+                    document.getElementById('modal-auth').classList.add('hidden');
+                    document.getElementById('owner-name-display').textContent = data.owner_email;
+                    loadOwnerDashboardData();
+                    alert(`Welcome, ${company}! Your franchise account has been registered.`);
+                } else {
+                    errEl.textContent = data.error || 'Registration failed';
+                    errEl.classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error('Register error:', err);
+                errEl.textContent = 'Network error: ' + err;
+                errEl.classList.remove('hidden');
             }
         }
 
         function openOwnerCreateBranchModal() {
             document.getElementById('owner-create-branch-inline').classList.remove('hidden');
-            // Pre-fill invite email hint if present
             const invite = new URLSearchParams(location.search).get('invite');
             if (invite && !document.getElementById('owner-new-branch-name').value) {
                 document.getElementById('owner-new-branch-name').placeholder = `Branch for ${invite}`;
@@ -798,10 +899,11 @@
             if (!ownerSession) { alert('Please login first'); return; }
             const name = document.getElementById('owner-new-branch-name').value.trim();
             const tier = document.getElementById('owner-new-branch-tier').value;
-            const duration = parseInt(document.getElementById('owner-new-branch-duration').value) || 30;
+            const durationInput = document.getElementById('owner-new-branch-duration');
+            const duration = durationInput ? (parseInt(durationInput.value) || 30) : 30;
             const msgEl = document.getElementById('owner-create-branch-msg');
             if (!name) { msgEl.textContent = 'Branch name required'; msgEl.className='text-xs text-red-400'; return; }
-            msgEl.textContent = 'Creating branch & issuing key...'; msgEl.className='text-xs text-blue-400';
+            msgEl.textContent = 'Registering branch location with CEO Command Center...'; msgEl.className='text-xs text-blue-400';
             try {
                 const res = await fetch(`${API_BASE}/api/v1/owner/gyms`, {
                     method: 'POST',
@@ -810,10 +912,9 @@
                 });
                 const data = await res.json().catch(()=>({}));
                 if (res.ok) {
-                    msgEl.textContent = `Branch created! Gym ID ${data.gym_id} — Key: ${data.license_key.slice(0,32)}...`;
+                    msgEl.textContent = `Branch '${data.gym_name}' registered! Status: Pending CEO License Key Issuance.`;
                     msgEl.className='text-xs text-emerald-400';
-                    // Show full key in prompt for copy
-                    prompt('Copy your branch license key (GPOS-...). Give this to the desktop at that branch:', data.license_key);
+                    alert(`Branch '${data.gym_name}' registered successfully!\n\nStatus: Pending CEO License Issuance.\nThe CEO Command Center will review and cryptographically issue your branch license key.`);
                     closeOwnerCreateBranchModal();
                     await loadOwnerDashboardData();
                 } else {
@@ -946,27 +1047,45 @@
                 return;
             }
 
-            tbody.innerHTML = branches.map(b => `
-                <tr class="hover:bg-slate-800/30 transition-colors">
-                    <td class="py-3 px-4 font-bold text-slate-200">${escapeHtml(b.name)}</td>
-                    <td class="py-3 px-4">
-                        <span class="font-mono text-[11px] bg-slate-900 px-2 py-1 rounded text-purple-300 border border-purple-900/50 select-all cursor-pointer" title="Click to copy key" onclick="navigator.clipboard.writeText('${b.license_key}')">
-                            ${b.license_key ? b.license_key.substring(0, 22) + '...' : 'GPOS-LIVE-ACTIVE'}
+            tbody.innerHTML = branches.map(b => {
+                const hasKey = b.license_key && b.license_key.length > 20;
+
+                const keyDisplay = hasKey 
+                    ? `<div class="flex items-center gap-2">
+                        <span class="font-mono text-[11px] bg-slate-900 px-2 py-1 rounded text-purple-300 border border-purple-900/50 select-all cursor-pointer" title="${b.license_key}">
+                            ${b.license_key.substring(0, 20)}...
                         </span>
-                    </td>
-                    <td class="py-3 px-4"><span class="stat-badge badge-${b.tier.toLowerCase()}">${b.tier}</span></td>
-                    <td class="py-3 px-4"><span class="stat-badge badge-active">${b.hwid || 'HWID-BOUND'}</span></td>
-                    <td class="py-3 px-4">
-                        <span class="text-xs text-emerald-400 font-semibold flex items-center">
-                            <span class="pulse-dot mr-1.5"></span> 7-Day Heartbeat OK
-                        </span>
-                    </td>
-                    <td class="py-3 px-4 text-slate-400 font-mono text-[11px]">${b.expires_at ? new Date(b.expires_at).toLocaleDateString() : 'Active'}</td>
-                    <td class="py-3 px-4 text-right">
-                        <button onclick="testKeyHealth('${b.gym_id}')" class="text-xs text-purple-400 hover:text-purple-300 underline font-medium">Verify</button>
-                    </td>
-                </tr>
-            `).join('');
+                        <button onclick="navigator.clipboard.writeText('${b.license_key}'); alert('License key copied to clipboard! Paste this on your branch POS terminal.');" class="px-2 py-1 rounded text-[10px] font-bold bg-emerald-700 hover:bg-emerald-600 text-white shadow">
+                            Copy Key
+                        </button>
+                       </div>`
+                    : `<span class="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-300 bg-amber-950/70 border border-amber-800/60 px-2.5 py-1 rounded-full animate-pulse" title="The CEO Command Center will issue your branch license key">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                        Awaiting CEO License Key
+                       </span>`;
+
+                const statusDisplay = hasKey 
+                    ? `<span class="text-xs text-emerald-400 font-semibold flex items-center">
+                        <span class="pulse-dot mr-1.5"></span> Active (Licensed)
+                       </span>`
+                    : `<span class="text-xs text-amber-400 font-semibold flex items-center">
+                        <span class="w-2 h-2 rounded-full bg-amber-400 mr-1.5"></span> Pending Activation
+                       </span>`;
+
+                return `
+                    <tr class="hover:bg-slate-800/30 transition-colors">
+                        <td class="py-3 px-4 font-bold text-slate-200">${escapeHtml(b.name)}</td>
+                        <td class="py-3 px-4">${keyDisplay}</td>
+                        <td class="py-3 px-4"><span class="stat-badge badge-${b.tier.toLowerCase()}">${b.tier}</span></td>
+                        <td class="py-3 px-4"><span class="stat-badge badge-active">${b.hwid || 'HWID-BOUND'}</span></td>
+                        <td class="py-3 px-4">${statusDisplay}</td>
+                        <td class="py-3 px-4 text-slate-400 font-mono text-[11px]">${b.expires_at ? new Date(b.expires_at).toLocaleDateString() : (hasKey ? 'Active' : 'Pending')}</td>
+                        <td class="py-3 px-4 text-right">
+                            <button onclick="testKeyHealth('${b.gym_id}')" class="text-xs text-purple-400 hover:text-purple-300 underline font-medium">Verify</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
         function renderCharts(data) {

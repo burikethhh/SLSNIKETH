@@ -192,39 +192,31 @@
                 </div>
             </div>
 
-            <!-- 2. Registered Gym Fleet Table (2 Cols) -->
+            <!-- 2. Registered Gym Fleet & Multi-Owner Collapsible Hierarchy (2 Cols) -->
             <div class="col-span-2 glass-panel p-5 space-y-4 border border-purple-900/40 flex flex-col justify-between">
                 <div>
                     <div class="flex items-center justify-between mb-3">
                         <div class="flex items-center gap-2">
                             <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-                            <h2 class="text-lg font-bold text-purple-100 brand">Active Gym Installations</h2>
+                            <h2 class="text-lg font-bold text-purple-100 brand">Client Owners & Multi-Branch Fleet</h2>
                         </div>
-                        <span class="text-xs text-purple-400/60">Fleet subscriptions & remote kill switch</span>
+                        <div class="flex items-center gap-2">
+                            <button onclick="expandAllOwners()" class="px-2.5 py-1 rounded bg-purple-950/60 hover:bg-purple-900/60 text-purple-300 border border-purple-800/40 text-[11px] font-medium">Expand All</button>
+                            <button onclick="collapseAllOwners()" class="px-2.5 py-1 rounded bg-purple-950/60 hover:bg-purple-900/60 text-purple-300 border border-purple-800/40 text-[11px] font-medium">Collapse All</button>
+                            <button onclick="fetchGyms()" class="px-2.5 py-1 rounded bg-purple-900/40 hover:bg-purple-800/60 text-purple-200 border border-purple-500/20 text-[11px] font-medium flex items-center gap-1">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
                     </div>
 
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-xs border-collapse">
-                            <thead>
-                                <tr class="border-b border-purple-900/40 text-purple-400">
-                                    <th class="pb-2">Gym Name</th>
-                                    <th class="pb-2">Owner Email</th>
-                                    <th class="pb-2">Tier</th>
-                                    <th class="pb-2">Status</th>
-                                    <th class="pb-2 text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="gym-fleet-tbody" class="divide-y divide-purple-900/20">
-                                <tr>
-                                    <td colspan="5" class="py-6 text-center text-purple-400/50">Loading registered gyms from Cloud DB...</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                    <div id="owners-hierarchy-container" class="space-y-3">
+                        <div class="py-8 text-center text-purple-400/50 text-xs">Loading registered client owners and branches from Cloud DB...</div>
                     </div>
                 </div>
 
                 <div class="pt-3 border-t border-purple-900/30 flex justify-between items-center text-xs text-purple-400/60">
-                    <span>Multi-Branch Interlock: Automated via owner_email clustering</span>
+                    <span>Centralized RSA Licensing: Cryptographically bound to branch Gym ID & HWID</span>
                     <span>Live SQLite Database: <b class="text-purple-300 font-mono">gympos_cloud.sqlite</b></span>
                 </div>
             </div>
@@ -443,6 +435,92 @@
         </div>
     </div>
 
+    <!-- Add Branch for Owner Modal (CEO Master) -->
+    <div id="modal-admin-add-branch" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4 hidden">
+        <div class="glass-panel p-6 max-w-md w-full space-y-4 border border-purple-500/50">
+            <div class="flex items-center justify-between border-b border-purple-900/40 pb-3">
+                <div class="flex items-center gap-2">
+                    <div class="w-6 h-6 rounded bg-purple-900/60 flex items-center justify-center text-purple-300 font-bold text-xs">+</div>
+                    <h3 class="text-base font-bold text-purple-200 brand">Add Branch for Client Owner</h3>
+                </div>
+                <button onclick="closeAdminAddBranchModal()" class="text-purple-400 hover:text-purple-200 text-lg font-bold">&times;</button>
+            </div>
+            <div class="text-xs text-purple-300/80 bg-purple-950/40 p-2.5 rounded-lg border border-purple-800/30">
+                <div><b>Owner:</b> <span id="admin-add-branch-owner-email" class="font-mono text-purple-200"></span></div>
+                <div><b>Company:</b> <span id="admin-add-branch-company" class="text-purple-200"></span></div>
+            </div>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block text-purple-300 font-medium mb-1">Branch Name</label>
+                    <input type="text" id="admin-add-branch-name" class="input-dark" placeholder="e.g. Titan Fitness - Branch 2 (Makati)">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-purple-300 font-medium mb-1">Subscription Tier</label>
+                        <select id="admin-add-branch-tier" class="input-dark">
+                            <option value="basic">Basic ($99/mo, 200)</option>
+                            <option value="pro" selected>Pro ($199/mo, 500)</option>
+                            <option value="ultra">Ultra ($349/mo, 1000)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-purple-300 font-medium mb-1">Duration (Days)</label>
+                        <input type="number" id="admin-add-branch-duration" class="input-dark" value="30">
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 pt-1">
+                    <input type="checkbox" id="admin-add-branch-auto-key" checked class="rounded border-purple-600">
+                    <label for="admin-add-branch-auto-key" class="text-purple-300 font-medium cursor-pointer">Immediately sign & issue RSA license key</label>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                <button type="button" onclick="closeAdminAddBranchModal()" class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-slate-300">Cancel</button>
+                <button type="button" onclick="submitAdminAddBranch()" class="btn-purple px-4 py-2 rounded-lg text-xs font-bold">Create Branch Location</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Issue Key for Specific Branch Modal (CEO Master) -->
+    <div id="modal-issue-branch-key" class="fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4 hidden">
+        <div class="glass-panel p-6 max-w-md w-full space-y-4 border border-purple-500/50">
+            <div class="flex items-center justify-between border-b border-purple-900/40 pb-3">
+                <div class="flex items-center gap-2">
+                    <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
+                    <h3 class="text-base font-bold text-purple-200 brand">Issue RSA-2048 Key for Branch</h3>
+                </div>
+                <button onclick="closeIssueBranchKeyModal()" class="text-purple-400 hover:text-purple-200 text-lg font-bold">&times;</button>
+            </div>
+            <div class="text-xs text-purple-300/80 bg-purple-950/40 p-2.5 rounded-lg border border-purple-800/30 space-y-1">
+                <div><b>Target Branch:</b> <span id="issue-key-branch-name" class="font-bold text-purple-200"></span></div>
+                <div><b>Branch UUID:</b> <span id="issue-key-branch-id" class="font-mono text-[11px] text-purple-300"></span></div>
+                <div><b>Owner Email:</b> <span id="issue-key-owner-email" class="font-mono text-purple-300"></span></div>
+            </div>
+            <input type="hidden" id="issue-key-target-gym-id">
+            <div class="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                    <label class="block text-purple-300 font-medium mb-1">Tier</label>
+                    <select id="issue-key-tier" class="input-dark">
+                        <option value="basic">Basic (200 Members)</option>
+                        <option value="pro" selected>Pro (500 Members)</option>
+                        <option value="ultra">Ultra (1000 Members)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-purple-300 font-medium mb-1">Duration (Days)</label>
+                    <input type="number" id="issue-key-duration" class="input-dark" value="30">
+                </div>
+            </div>
+            <div class="p-2.5 rounded bg-emerald-950/30 border border-emerald-800/40 text-[11px] text-emerald-300 flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span>Cryptographically scoped exclusively to this branch's Gym ID</span>
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                <button type="button" onclick="closeIssueBranchKeyModal()" class="px-3 py-2 rounded-lg text-xs bg-slate-800 text-slate-300">Cancel</button>
+                <button type="button" onclick="submitIssueBranchKey()" class="btn-purple px-4 py-2 rounded-lg text-xs font-bold">Sign & Issue License</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let registeredGyms = [];
         let storedLicenses = [];
@@ -499,71 +577,293 @@
             await fetchLicenses();
         }
 
+        let ownerHierarchy = [];
+        let expandedOwners = new Set();
+
         async function fetchGyms() {
             try {
-                const res = await fetch('/api/v1/gyms', { headers: getAdminHeaders() });
+                const res = await fetch('/api/v1/admin/owners', { headers: getAdminHeaders() });
                 if (res.status === 401) {
                     promptAdminKey();
                     return;
                 }
                 if (res.ok) {
-                    const data = await res.json();
-                    registeredGyms = data;
-                    renderGyms();
+                    ownerHierarchy = await res.json();
+                    
+                    // Flatten branches into registeredGyms for metrics and license checks
+                    registeredGyms = [];
+                    ownerHierarchy.forEach(owner => {
+                        // By default expand first owner or any with pending
+                        if (expandedOwners.size === 0 && ownerHierarchy.length > 0) {
+                            expandedOwners.add(ownerHierarchy[0].owner_email);
+                        }
+                        if (owner.pending_licenses_count > 0) {
+                            expandedOwners.add(owner.owner_email);
+                        }
+                        owner.branches.forEach(b => {
+                            registeredGyms.push({
+                                id: b.gym_id,
+                                name: b.name,
+                                owner_email: owner.owner_email,
+                                tier: b.tier,
+                                is_active: b.is_active,
+                                license_key: b.license_key,
+                                created_at: b.created_at
+                            });
+                        });
+                    });
+
+                    renderOwnersHierarchy();
                     updateMetrics();
                 }
             } catch (e) {
-                console.error("Failed to fetch gyms:", e);
+                console.error("Failed to fetch owners hierarchy:", e);
             }
         }
 
-        async function fetchLicenses() {
-            try {
-                const res = await fetch('/api/v1/licenses', { headers: getAdminHeaders() });
-                if (res.ok) {
-                    storedLicenses = await res.json();
-                    renderLicenses();
-                    updateMetrics();
-                }
-            } catch (e) {
-                console.error("Failed to fetch licenses:", e);
+        function toggleOwnerAccordion(email) {
+            if (expandedOwners.has(email)) {
+                expandedOwners.delete(email);
+            } else {
+                expandedOwners.add(email);
             }
+            renderOwnersHierarchy();
         }
 
-        function renderGyms() {
-            const tbody = document.getElementById('gym-fleet-tbody');
-            if (!tbody) return;
+        function expandAllOwners() {
+            ownerHierarchy.forEach(o => expandedOwners.add(o.owner_email));
+            renderOwnersHierarchy();
+        }
 
-            if (registeredGyms.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-purple-400/50">No gyms onboarded yet. Use the form on the left to register a gym.</td></tr>';
+        function collapseAllOwners() {
+            expandedOwners.clear();
+            renderOwnersHierarchy();
+        }
+
+        function renderOwnersHierarchy() {
+            const container = document.getElementById('owners-hierarchy-container');
+            if (!container) return;
+
+            if (ownerHierarchy.length === 0) {
+                container.innerHTML = `
+                    <div class="py-8 text-center text-purple-400/50 text-xs bg-purple-950/20 rounded-lg border border-purple-900/30">
+                        No client franchise owners onboarded yet. Clients can register via the Franchise Portal (/portal.html) or you can onboard a gym on the left.
+                    </div>
+                `;
                 return;
             }
 
-            tbody.innerHTML = registeredGyms.map(g => {
-                const isDisabled = disabledGymIds.has(g.id);
-                const tierColor = g.tier.toLowerCase() === 'ultra' ? 'text-amber-400 border-amber-500/40 bg-amber-950/40' : (g.tier.toLowerCase() === 'pro' ? 'text-purple-300 border-purple-500/40 bg-purple-950/40' : 'text-blue-300 border-blue-500/40 bg-blue-950/40');
+            container.innerHTML = ownerHierarchy.map(owner => {
+                const isExpanded = expandedOwners.has(owner.owner_email);
+                const regDate = new Date(owner.created_at).toLocaleDateString();
+
+                const branchRowsHtml = owner.branches.length === 0 
+                    ? `<tr><td colspan="6" class="py-4 text-center text-purple-400/50 text-xs">No branch locations registered yet. Click '+ Add Branch' to create one.</td></tr>`
+                    : owner.branches.map(b => {
+                        const isDisabled = disabledGymIds.has(b.gym_id);
+                        const tierColor = b.tier.toLowerCase() === 'ultra' ? 'text-amber-400 border-amber-500/40 bg-amber-950/40' : (b.tier.toLowerCase() === 'pro' ? 'text-purple-300 border-purple-500/40 bg-purple-950/40' : 'text-blue-300 border-blue-500/40 bg-blue-950/40');
+                        
+                        let licBadge = '';
+                        if (b.is_license_active && b.license_key) {
+                            licBadge = `
+                                <div class="flex items-center gap-1.5">
+                                    <span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                        ACTIVE (${b.days_remaining}d)
+                                    </span>
+                                    <button onclick="prompt('Cryptographic RSA License Key for ${b.name.replace(/'/g, "\\'")}:', '${b.license_key}')" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950 border border-purple-800 text-purple-300 hover:text-white" title="View / Copy Key">
+                                        GPOS-...
+                                    </button>
+                                </div>
+                            `;
+                        } else {
+                            licBadge = `
+                                <span class="inline-flex items-center gap-1 text-[10px] font-bold text-amber-300 bg-amber-950/80 border border-amber-800 px-2 py-0.5 rounded">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                                    NO KEY (PENDING)
+                                </span>
+                            `;
+                        }
+
+                        return `
+                            <tr class="hover:bg-purple-900/20 transition border-b border-purple-900/20 ${isDisabled ? 'opacity-60 bg-red-950/10' : ''}">
+                                <td class="py-2.5 font-bold text-purple-100">${b.name}</td>
+                                <td class="py-2.5 font-mono text-[10px] text-purple-400" title="${b.gym_id}">${b.gym_id.substring(0, 8)}...</td>
+                                <td class="py-2.5">
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${tierColor}">${b.tier}</span>
+                                </td>
+                                <td class="py-2.5">${licBadge}</td>
+                                <td class="py-2.5">
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono text-purple-300 bg-purple-950/60 border border-purple-800/50">HWID-BOUND</span>
+                                </td>
+                                <td class="py-2.5 text-right space-x-1">
+                                    ${b.license_key ? `
+                                        <button onclick="openIssueBranchKeyModal('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}', '${owner.owner_email}', '${b.tier}')" title="Renew License" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Renew</button>
+                                    ` : `
+                                        <button onclick="openIssueBranchKeyModal('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}', '${owner.owner_email}', '${b.tier}')" title="Issue RSA-2048 Key" class="px-2.5 py-1 rounded text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow animate-pulse">⚡ Issue Key</button>
+                                    `}
+                                    <button onclick="toggleKillSwitch('${b.gym_id}', ${!isDisabled})" title="${isDisabled ? 'Reactivate' : 'Kill Switch'}" class="px-2 py-1 rounded text-[10px] font-bold ${isDisabled ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">${isDisabled ? 'Enable' : 'Kill'}</button>
+                                    <button onclick="deleteGym('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}')" title="Delete Branch" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-900 hover:bg-red-950 text-red-400 border border-slate-800">Del</button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('');
 
                 return `
-                    <tr class="hover:bg-purple-950/20 transition ${isDisabled ? 'opacity-60 bg-red-950/10' : ''}">
-                        <td class="py-3 font-semibold text-purple-100">${g.name}</td>
-                        <td class="py-3 text-purple-300 font-mono">${g.owner_email}</td>
-                        <td class="py-3">
-                            <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${tierColor}">${g.tier}</span>
-                        </td>
-                        <td class="py-3">
-                            ${isDisabled 
-                                ? '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-red-400 bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded">REVOKED (LOCKOUT)</span>'
-                                : '<span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">ACTIVE</span>'}
-                        </td>
-                        <td class="py-3 text-right space-x-1.5">
-                            <button onclick="renewGymLicense('${g.id}', '${g.name.replace(/'/g, "\\'")}', '${g.tier}')" title="Issue / Renew License" class="px-2 py-1 rounded text-[11px] font-bold bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Issue Key</button>
-                            <button onclick="openEditGymModal('${g.id}')" title="Edit Profile" class="px-2 py-1 rounded text-[11px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700">Edit</button>
-                            <button onclick="toggleKillSwitch('${g.id}', ${!isDisabled})" title="${isDisabled ? 'Reactivate Gym' : 'Remotely Lockout Gym'}" class="px-2 py-1 rounded text-[11px] font-bold ${isDisabled ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">${isDisabled ? 'Enable' : 'Kill Switch'}</button>
-                            <button onclick="deleteGym('${g.id}', '${g.name.replace(/'/g, "\\'")}')" title="Delete Gym" class="px-2 py-1 rounded text-[11px] font-bold bg-slate-900 hover:bg-red-950 text-red-400 border border-slate-800">Del</button>
-                        </td>
-                    </tr>
+                    <div class="border border-purple-900/40 rounded-lg overflow-hidden bg-purple-950/20 transition">
+                        <!-- Collapsible Header -->
+                        <div onclick="toggleOwnerAccordion('${owner.owner_email}')" class="p-3.5 flex items-center justify-between cursor-pointer hover:bg-purple-900/20 transition select-none">
+                            <div class="flex items-center gap-3">
+                                <div class="w-6 h-6 rounded bg-purple-900/60 flex items-center justify-center text-purple-300 text-xs font-bold">
+                                    ${isExpanded ? '▲' : '▼'}
+                                </div>
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-bold text-sm text-purple-100">${owner.company_name}</span>
+                                        <span class="text-xs text-purple-400 font-mono">(${owner.owner_email})</span>
+                                    </div>
+                                    <div class="text-[11px] text-purple-400/60">Registered: ${regDate}</div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2.5">
+                                <span class="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-purple-900/50 text-purple-200 border border-purple-500/30">
+                                    ${owner.total_branches} Branches
+                                </span>
+                                ${owner.pending_licenses_count > 0 ? `
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 animate-pulse">
+                                        ${owner.pending_licenses_count} Needs Key
+                                    </span>
+                                ` : `
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800">
+                                        All Licensed
+                                    </span>
+                                `}
+                                <button onclick="event.stopPropagation(); openAdminAddBranchModal('${owner.owner_email}', '${owner.company_name.replace(/'/g, "\\'")}')" class="px-2.5 py-1 rounded text-xs font-bold bg-purple-700 hover:bg-purple-600 text-white shadow transition">
+                                    + Add Branch
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Collapsible Drawer -->
+                        <div class="p-3 bg-black/40 border-t border-purple-900/30 overflow-x-auto ${isExpanded ? '' : 'hidden'}">
+                            <table class="w-full text-left text-xs border-collapse">
+                                <thead>
+                                    <tr class="border-b border-purple-900/40 text-purple-400">
+                                        <th class="pb-2">Branch Location</th>
+                                        <th class="pb-2">Gym UUID</th>
+                                        <th class="pb-2">Tier</th>
+                                        <th class="pb-2">License Token Status</th>
+                                        <th class="pb-2">Hardware Terminal</th>
+                                        <th class="pb-2 text-right">CEO Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-purple-900/20">
+                                    ${branchRowsHtml}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 `;
             }).join('');
+        }
+
+        // Modal Handlers
+        let currentAdminAddBranchOwner = '';
+
+        function openAdminAddBranchModal(ownerEmail, companyName) {
+            currentAdminAddBranchOwner = ownerEmail;
+            document.getElementById('admin-add-branch-owner-email').textContent = ownerEmail;
+            document.getElementById('admin-add-branch-company').textContent = companyName;
+            document.getElementById('admin-add-branch-name').value = '';
+            document.getElementById('modal-admin-add-branch').classList.remove('hidden');
+        }
+
+        function closeAdminAddBranchModal() {
+            document.getElementById('modal-admin-add-branch').classList.add('hidden');
+        }
+
+        async function submitAdminAddBranch() {
+            const branchName = document.getElementById('admin-add-branch-name').value.trim();
+            const tier = document.getElementById('admin-add-branch-tier').value;
+            const duration = parseInt(document.getElementById('admin-add-branch-duration').value) || 30;
+            const autoKey = document.getElementById('admin-add-branch-auto-key').checked;
+
+            if (!branchName) {
+                alert("Please enter a Branch Name");
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/v1/admin/owners/${encodeURIComponent(currentAdminAddBranchOwner)}/branches`, {
+                    method: 'POST',
+                    headers: getAdminHeaders(),
+                    body: JSON.stringify({
+                        branch_name: branchName,
+                        tier: tier,
+                        duration_days: duration,
+                        auto_issue_license: autoKey
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    closeAdminAddBranchModal();
+                    if (data.license_key) {
+                        document.getElementById('output-license-key').value = data.license_key;
+                        document.getElementById('license-output-modal').classList.remove('hidden');
+                    }
+                    await refreshAllData();
+                    alert(`Branch '${branchName}' created successfully for ${currentAdminAddBranchOwner}!`);
+                } else {
+                    const err = await res.json();
+                    alert("Failed to create branch: " + (err.error || res.statusText));
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        function openIssueBranchKeyModal(gymId, gymName, ownerEmail, tier) {
+            document.getElementById('issue-key-target-gym-id').value = gymId;
+            document.getElementById('issue-key-branch-name').textContent = gymName;
+            document.getElementById('issue-key-branch-id').textContent = gymId;
+            document.getElementById('issue-key-owner-email').textContent = ownerEmail;
+            document.getElementById('issue-key-tier').value = tier ? tier.toLowerCase() : 'pro';
+            document.getElementById('modal-issue-branch-key').classList.remove('hidden');
+        }
+
+        function closeIssueBranchKeyModal() {
+            document.getElementById('modal-issue-branch-key').classList.add('hidden');
+        }
+
+        async function submitIssueBranchKey() {
+            const gymId = document.getElementById('issue-key-target-gym-id').value;
+            const tier = document.getElementById('issue-key-tier').value;
+            const duration = parseInt(document.getElementById('issue-key-duration').value) || 30;
+
+            try {
+                const res = await fetch(`/api/v1/admin/branches/${gymId}/issue-key`, {
+                    method: 'POST',
+                    headers: getAdminHeaders(),
+                    body: JSON.stringify({
+                        tier: tier,
+                        duration_days: duration
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    closeIssueBranchKeyModal();
+                    document.getElementById('output-license-key').value = data.license_key;
+                    document.getElementById('license-output-modal').classList.remove('hidden');
+                    await refreshAllData();
+                } else {
+                    const err = await res.json();
+                    alert("Failed to issue key: " + (err.error || res.statusText));
+                }
+            } catch (e) {
+                alert("Network error: " + e);
+            }
         }
 
         function renderLicenses() {

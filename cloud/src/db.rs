@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use gympos_shared::{
     CartItem, LicenseTier, MembershipPlanConfig, OwnerBranchSummary, OwnerDashboardAnalytics,
-    PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct, SaleTransaction, StaffAccount,
-    StaffRole, UpdateGymRequest, UpdateStaffRequest,
+    OwnerHierarchyAccount, OwnerHierarchyBranch, PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct,
+    SaleTransaction, StaffAccount, StaffRole, UpdateGymRequest, UpdateStaffRequest,
 };
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, Result};
@@ -1444,6 +1444,203 @@ impl CloudDatabase {
             list.push(r?);
         }
         Ok(list)
+    }
+
+    // --- CEO Collapsible Owner Hierarchy & Centralized License Management ---
+
+    pub fn list_all_owners_with_branches(&self) -> Result<Vec<OwnerHierarchyAccount>> {
+        let conn = self.conn.lock();
+        let now = Utc::now();
+        let today_prefix = now.format("%Y-%m-%d").to_string();
+
+        // 1. Fetch all registered owner accounts
+        let mut owner_stmt = conn.prepare(
+            "SELECT owner_email, company_name, created_at FROM cloud_owner_accounts ORDER BY created_at DESC"
+        )?;
+
+        let owner_rows = owner_stmt.query_map([], |row| {
+            let owner_email: String = row.get(0)?;
+            let company_name: String = row.get(1)?;
+            let created_at_str: String = row.get(2)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok((owner_email, company_name, created_at))
+        })?;
+
+        let mut owners = Vec::new();
+        for r in owner_rows {
+            owners.push(r?);
+        }
+
+        // Also discover any orphan gyms created before owner accounts existed
+        let mut orphan_stmt = conn.prepare(
+            "SELECT DISTINCT owner_email FROM cloud_gyms WHERE owner_email NOT IN (SELECT owner_email FROM cloud_owner_accounts)"
+        )?;
+        let orphan_rows = orphan_stmt.query_map([], |row| {
+            let email: String = row.get(0)?;
+            Ok((email.clone(), format!("Gym Group ({})", email), now))
+        })?;
+        for o in orphan_rows {
+            if let Ok(item) = o {
+                owners.push(item);
+            }
+        }
+
+        let mut hierarchy = Vec::new();
+
+        for (owner_email, company_name, created_at) in owners {
+            // Query all branches for this owner
+            let mut branch_stmt = conn.prepare(
+                "SELECT id, name, tier, is_active, created_at FROM cloud_gyms WHERE owner_email = ?1 ORDER BY created_at ASC"
+            )?;
+
+            let branch_rows = branch_stmt.query_map(params![owner_email], |row| {
+                let id_str: String = row.get(0)?;
+                let gym_id = Uuid::parse_str(&id_str).unwrap_or_default();
+                let name: String = row.get(1)?;
+                let tier_str: String = row.get(2)?;
+                let tier = match tier_str.to_lowercase().as_str() {
+                    "basic" => LicenseTier::Basic,
+                    "ultra" => LicenseTier::Ultra,
+                    _ => LicenseTier::Pro,
+                };
+                let is_active_int: i32 = row.get(3)?;
+                let b_created_str: String = row.get(4)?;
+                let b_created = DateTime::parse_from_rfc3339(&b_created_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+
+                Ok((gym_id, name, tier, is_active_int > 0, b_created))
+            })?;
+
+            let mut branches = Vec::new();
+            let mut active_count = 0;
+            let mut pending_count = 0;
+
+            for b in branch_rows {
+                let (gym_id, name, tier, is_active, b_created) = b?;
+
+                // Check active license for this branch
+                let lic_res = conn.query_row(
+                    "SELECT raw_token, expires_at, is_revoked FROM cloud_licenses WHERE gym_id = ?1 AND is_revoked = 0 ORDER BY expires_at DESC LIMIT 1",
+                    params![gym_id.to_string()],
+                    |r| {
+                        let token: String = r.get(0)?;
+                        let exp_str: String = r.get(1)?;
+                        let is_revoked_int: i32 = r.get(2)?;
+                        Ok((token, exp_str, is_revoked_int > 0))
+                    }
+                );
+
+                let mut license_key = None;
+                let mut expires_at = None;
+                let mut days_remaining = None;
+                let mut is_license_active = false;
+
+                if let Ok((token, exp_str, is_revoked)) = lic_res {
+                    if !is_revoked {
+                        let exp_dt = DateTime::parse_from_rfc3339(&exp_str)
+                            .map(|dt| dt.with_timezone(&Utc))
+                            .unwrap_or_else(|_| Utc::now());
+
+                        let remaining = (exp_dt - now).num_days();
+                        if exp_dt > now {
+                            is_license_active = true;
+                            days_remaining = Some(remaining);
+                            active_count += 1;
+                        } else {
+                            pending_count += 1;
+                        }
+                        license_key = Some(token);
+                        expires_at = Some(exp_dt);
+                    } else {
+                        pending_count += 1;
+                    }
+                } else {
+                    pending_count += 1;
+                }
+
+                // Active members count
+                let active_members: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM cloud_members WHERE home_gym_id = ?1 AND status = 'active'",
+                    params![gym_id.to_string()],
+                    |r| r.get(0),
+                ).unwrap_or(0);
+
+                // Today sales
+                let today_sales: f64 = conn.query_row(
+                    "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = ?1 AND timestamp LIKE ?2",
+                    params![gym_id.to_string(), format!("{}%", today_prefix)],
+                    |r| r.get(0),
+                ).unwrap_or(0.0);
+
+                branches.push(OwnerHierarchyBranch {
+                    gym_id,
+                    name,
+                    tier,
+                    is_active,
+                    license_key,
+                    expires_at,
+                    days_remaining,
+                    is_license_active,
+                    hwid: Some("HWID-LOCKED".to_string()),
+                    active_members: active_members as u32,
+                    today_sales,
+                    created_at: b_created,
+                });
+            }
+
+            let total_branches = branches.len();
+
+            hierarchy.push(OwnerHierarchyAccount {
+                owner_email,
+                company_name,
+                created_at,
+                branches,
+                total_branches,
+                active_licenses_count: active_count,
+                pending_licenses_count: pending_count,
+            });
+        }
+
+        Ok(hierarchy)
+    }
+
+    pub fn get_gym_by_id(&self, gym_id: &Uuid) -> Result<Option<GymRecord>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT id, name, owner_email, tier, is_active, created_at FROM cloud_gyms WHERE id = ?1")?;
+        let res = stmt.query_row(params![gym_id.to_string()], |row| {
+            let id_str: String = row.get(0)?;
+            let id = Uuid::parse_str(&id_str).unwrap_or_default();
+            let name: String = row.get(1)?;
+            let owner_email: String = row.get(2)?;
+            let tier_str: String = row.get(3)?;
+            let tier = match tier_str.to_lowercase().as_str() {
+                "basic" => LicenseTier::Basic,
+                "ultra" => LicenseTier::Ultra,
+                _ => LicenseTier::Pro,
+            };
+            let is_active: i32 = row.get(4)?;
+            let created_at_str: String = row.get(5)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(GymRecord {
+                id,
+                name,
+                owner_email,
+                tier,
+                is_active: is_active > 0,
+                created_at,
+            })
+        });
+
+        match res {
+            Ok(g) => Ok(Some(g)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 

@@ -7,10 +7,10 @@ use axum::{
 use axum::extract::Query;
 use chrono::{Duration, Utc};
 use gympos_shared::{
-    CreateStaffRequest, FaceVectorSyncItem, LicenseClaims, OwnerLoginRequest, OwnerLoginResponse,
-    OwnerRegisterRequest, PublishReleaseRequest, ReleaseInfo, SavePlansRequest, SaveProductsRequest,
-    SavePromosRequest, StaffAccount, StaffRole, SyncPushPayload, SyncResponse, UpdateCheckRequest,
-    UpdateCheckResponse, UpdateStaffRequest,
+    AdminCreateBranchForOwnerRequest, CreateStaffRequest, FaceVectorSyncItem, IssueBranchKeyRequest,
+    LicenseClaims, OwnerLoginRequest, OwnerLoginResponse, OwnerRegisterRequest, PublishReleaseRequest,
+    ReleaseInfo, SavePlansRequest, SaveProductsRequest, SavePromosRequest, StaffAccount, StaffRole,
+    SyncPushPayload, SyncResponse, UpdateCheckRequest, UpdateCheckResponse, UpdateStaffRequest,
 };
 use parking_lot::RwLock;
 use serde_json::json;
@@ -693,23 +693,205 @@ pub async fn owner_create_gym(
         return Err((StatusCode::CONFLICT, Json(json!({"error": format!("Tier {:?} limited to {} branches", payload.tier, tier_branch_limit(payload.tier)), "code": "TIER_BRANCH_LIMIT", "existing_branches": existing, "limit": tier_branch_limit(payload.tier)}))));
     }
     let gym_id = Uuid::new_v4();
-    let license_id = Uuid::new_v4();
     let now = Utc::now();
-    let duration = payload.duration_days.unwrap_or(30);
-    let expires_at = now + Duration::days(duration);
-    let gym_record = GymRecord { id: gym_id, name: payload.name.clone(), owner_email: owner_norm.clone(), tier: payload.tier, is_active: true, created_at: now };
+    let gym_record = GymRecord {
+        id: gym_id,
+        name: payload.name.clone(),
+        owner_email: owner_norm.clone(),
+        tier: payload.tier,
+        is_active: true,
+        created_at: now,
+    };
     let _ = state.db.upsert_gym(&gym_record);
     state.gyms.write().insert(gym_id, gym_record);
     let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "owner_create_gym", Some(&payload.name));
-    let claims = LicenseClaims {
-        license_id, gym_id, gym_name: payload.name.clone(), owner_email: owner_norm.clone(), tier: payload.tier,
-        issued_at: now, expires_at, max_members: payload.tier.max_members(),
-        hardware_lock_enabled: true, tailgate_detection_enabled: true,
-        hwid: String::new(), ip_hint: String::new(), exp_unix: expires_at.timestamp(), grace_until: expires_at.timestamp()+3*24*3600,
+
+    // Gym owners CANNOT self-sign RSA license keys.
+    // The branch is registered in pending status awaiting CEO license issuance.
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "gym_id": gym_id,
+            "gym_name": payload.name,
+            "tier": payload.tier,
+            "owner_email": owner_norm,
+            "status": "pending_license",
+            "message": "Branch location registered. Awaiting CEO license issuance from Command Center.",
+            "license_key": serde_json::Value::Null
+        })),
+    ))
+}
+
+// --- CEO Collapsible Owner Hierarchy & Centralized License Issuance ---
+
+pub async fn admin_list_owners_hierarchy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _ = verify_admin_auth(&headers, &state.admin_key);
+    let hierarchy = state.db.list_all_owners_with_branches().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to list owner hierarchy: {}", e) })),
+        )
+    })?;
+    Ok((StatusCode::OK, Json(hierarchy)))
+}
+
+pub async fn admin_create_branch_for_owner(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(owner_email): Path<String>,
+    Json(payload): Json<AdminCreateBranchForOwnerRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _ = verify_admin_auth(&headers, &state.admin_key);
+    let owner_norm = owner_email.trim().to_lowercase();
+    let branch_name = payload.branch_name.trim().to_string();
+
+    if branch_name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Branch name cannot be empty", "code": "INVALID_BRANCH_NAME" })),
+        ));
+    }
+
+    let gym_id = Uuid::new_v4();
+    let now = Utc::now();
+    let duration = payload.duration_days.unwrap_or(30);
+    let expires_at = now + Duration::days(duration);
+
+    let gym_record = GymRecord {
+        id: gym_id,
+        name: branch_name.clone(),
+        owner_email: owner_norm.clone(),
+        tier: payload.tier,
+        is_active: true,
+        created_at: now,
     };
-    let license_key = state.signer.sign_license(&claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to sign license: {}", e)}))))?;
+
+    let _ = state.db.upsert_gym(&gym_record);
+    state.gyms.write().insert(gym_id, gym_record);
+    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "admin_create_branch", Some(&branch_name));
+
+    let mut license_id_opt = None;
+    let mut license_key_opt = None;
+
+    if payload.auto_issue_license {
+        let license_id = Uuid::new_v4();
+        let claims = LicenseClaims {
+            license_id,
+            gym_id,
+            gym_name: branch_name.clone(),
+            owner_email: owner_norm.clone(),
+            tier: payload.tier,
+            issued_at: now,
+            expires_at,
+            max_members: payload.tier.max_members(),
+            hardware_lock_enabled: true,
+            tailgate_detection_enabled: true,
+            hwid: String::new(),
+            ip_hint: String::new(),
+            exp_unix: expires_at.timestamp(),
+            grace_until: expires_at.timestamp() + 3 * 24 * 3600,
+        };
+
+        let license_key = state.signer.sign_license(&claims).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("Failed to sign license: {}", e) })),
+            )
+        })?;
+
+        let _ = state.db.insert_license(&claims, &license_key);
+        license_id_opt = Some(license_id);
+        license_key_opt = Some(license_key);
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "gym_id": gym_id,
+            "branch_name": branch_name,
+            "owner_email": owner_norm,
+            "tier": payload.tier,
+            "license_id": license_id_opt,
+            "license_key": license_key_opt,
+            "expires_at": expires_at,
+        })),
+    ))
+}
+
+pub async fn admin_issue_branch_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(gym_id): Path<Uuid>,
+    Json(payload): Json<IssueBranchKeyRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _ = verify_admin_auth(&headers, &state.admin_key);
+
+    let gym = state.db.get_gym_by_id(&gym_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Database error: {}", e) })),
+        )
+    })?;
+
+    let gym = match gym {
+        Some(g) => g,
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Branch not found", "code": "BRANCH_NOT_FOUND" })),
+            ))
+        }
+    };
+
+    let tier = payload.tier.unwrap_or(gym.tier);
+    let duration = payload.duration_days.unwrap_or(30);
+    let now = Utc::now();
+    let expires_at = now + Duration::days(duration);
+    let license_id = Uuid::new_v4();
+
+    let claims = LicenseClaims {
+        license_id,
+        gym_id,
+        gym_name: gym.name.clone(),
+        owner_email: gym.owner_email.clone(),
+        tier,
+        issued_at: now,
+        expires_at,
+        max_members: tier.max_members(),
+        hardware_lock_enabled: true,
+        tailgate_detection_enabled: true,
+        hwid: String::new(),
+        ip_hint: String::new(),
+        exp_unix: expires_at.timestamp(),
+        grace_until: expires_at.timestamp() + 3 * 24 * 3600,
+    };
+
+    let license_key = state.signer.sign_license(&claims).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to sign license: {}", e) })),
+        )
+    })?;
+
     let _ = state.db.insert_license(&claims, &license_key);
-    Ok((StatusCode::CREATED, Json(json!({"gym_id": gym_id, "gym_name": payload.name, "tier": payload.tier, "owner_email": owner_norm, "license_id": license_id, "license_key": license_key, "expires_at": expires_at, "max_members": claims.max_members}))))
+    let _ = state.db.log_audit(&gym.owner_email, Some(&gym_id), "admin_issue_branch_key", Some(&gym.name));
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "gym_id": gym_id,
+            "gym_name": gym.name,
+            "owner_email": gym.owner_email,
+            "tier": tier,
+            "license_id": license_id,
+            "license_key": license_key,
+            "expires_at": expires_at,
+            "max_members": claims.max_members,
+        })),
+    ))
 }
 
 pub async fn owner_get_branches(
