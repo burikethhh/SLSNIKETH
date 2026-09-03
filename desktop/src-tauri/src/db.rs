@@ -205,14 +205,8 @@ impl Database {
         // Seed default staff accounts if empty (Default cashiers for instant out-of-the-box operation)
         let staff_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_staff_accounts", [], |r| r.get(0)).unwrap_or(0);
         if staff_count == 0 {
-            use sha2::{Digest, Sha256};
-            let mut h1 = Sha256::new();
-            h1.update(b"1234");
-            let pin_1234 = format!("{:x}", h1.finalize());
-
-            let mut h2 = Sha256::new();
-            h2.update(b"8888");
-            let pin_8888 = format!("{:x}", h2.finalize());
+            let pin_1234 = gympos_shared::hash_password("1234");
+            let pin_8888 = gympos_shared::hash_password("8888");
 
             let now = Utc::now().to_rfc3339();
             conn.execute(
@@ -407,7 +401,7 @@ impl Database {
     pub fn list_walk_ins(&self) -> Result<Vec<WalkInRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, guest_name, phone, amount_paid, payment_method, created_at, expires_at 
+            "SELECT id, guest_name, phone, amount_paid, payment_method, created_at, expires_at
              FROM walk_ins ORDER BY created_at DESC LIMIT 50",
         )?;
 
@@ -444,7 +438,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let now_str = Utc::now().to_rfc3339();
         let mut stmt = conn.prepare(
-            "SELECT id, guest_name, face_vector, expires_at 
+            "SELECT id, guest_name, face_vector, expires_at
              FROM walk_ins WHERE expires_at > ?1 AND face_vector IS NOT NULL",
         )?;
 
@@ -523,7 +517,7 @@ impl Database {
     pub fn list_members(&self) -> Result<Vec<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at 
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at
              FROM members ORDER BY created_at DESC",
         )?;
 
@@ -559,7 +553,7 @@ impl Database {
     pub fn get_member_by_id(&self, id: &str) -> Result<Option<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at 
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at
              FROM members WHERE id = ?1",
         )?;
 
@@ -596,7 +590,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now();
         conn.execute(
-            "UPDATE members SET 
+            "UPDATE members SET
                 first_name = ?1,
                 last_name = ?2,
                 email = ?3,
@@ -730,7 +724,7 @@ impl Database {
     pub fn list_recent_attendance(&self, limit: usize) -> Result<Vec<AttendanceRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag 
+            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag
              FROM attendance_logs ORDER BY timestamp DESC LIMIT ?1",
         )?;
 
@@ -763,8 +757,8 @@ impl Database {
     pub fn get_member_last_direction(&self, member_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT direction FROM attendance_logs 
-             WHERE member_id = ?1 
+            "SELECT direction FROM attendance_logs
+             WHERE member_id = ?1
              ORDER BY timestamp DESC LIMIT 1"
         )?;
         let mut rows = stmt.query_map(params![member_id], |row| row.get::<_, String>(0))?;
@@ -1344,22 +1338,25 @@ impl Database {
         Ok(count)
     }
 
+    /// Authenticates a cashier/manager PIN. Argon2id hashes are salted, so a
+    /// direct `WHERE pin_hash = ?` lookup (the previous SHA-256 approach) is no
+    /// longer possible — instead we scan the (small, per-branch) active staff
+    /// list and verify the PIN against each stored hash.
     pub fn authenticate_staff_pin(&self, pin: &str) -> Result<Option<StaffAccount>> {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(pin.as_bytes());
-        let pin_hash = format!("{:x}", hasher.finalize());
-
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at
              FROM local_staff_accounts
-             WHERE pin_hash = ?1 AND is_active = 1
-             LIMIT 1",
+             WHERE is_active = 1",
         )?;
 
-        let mut rows = stmt.query(params![pin_hash])?;
-        if let Some(row) = rows.next()? {
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let pin_hash: String = row.get(6)?;
+            if !gympos_shared::verify_password(pin, &pin_hash) {
+                continue;
+            }
+
             let id: String = row.get(0)?;
             let owner_email: String = row.get(1)?;
             let gym_id_str: Option<String> = row.get(2)?;
@@ -1367,7 +1364,6 @@ impl Database {
             let gym_name: Option<String> = row.get(3)?;
             let full_name: String = row.get(4)?;
             let username: String = row.get(5)?;
-            let pin_hash: String = row.get(6)?;
             let role_str: String = row.get(7)?;
             let role = match role_str.as_str() {
                 "manager" => StaffRole::Manager,

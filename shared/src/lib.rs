@@ -2,6 +2,53 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// --- Password / PIN Hashing (shared by cloud + desktop so hashes produced by
+// one side always verify on the other, e.g. staff PINs synced cloud -> desktop) ---
+
+/// Hash a password or numeric PIN with Argon2id, using a fresh random salt.
+/// Returns a self-describing string (`$argon2id$v=19$m=...$<salt>$<hash>`) that
+/// can be stored directly and later checked with [`verify_password`].
+///
+/// Replaces the previous unsalted SHA-256 scheme, which was vulnerable to
+/// precomputed rainbow-table attacks (especially for 4-6 digit numeric PINs,
+/// which only have 10,000-1,000,000 possible values).
+pub fn hash_password(password: &str) -> String {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::Argon2;
+
+    let salt = SaltString::generate(&mut rand::rngs::OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Argon2 hashing failed")
+        .to_string()
+}
+
+/// Verify a plaintext password/PIN against a stored hash produced by
+/// [`hash_password`]. Also transparently accepts legacy unsalted SHA-256 hex
+/// digests (64 lowercase hex chars) so accounts created before the Argon2
+/// migration keep working until their password/PIN is next changed.
+pub fn verify_password(password: &str, stored_hash: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    use argon2::Argon2;
+
+    if let Ok(parsed) = PasswordHash::new(stored_hash) {
+        return Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok();
+    }
+
+    // Legacy fallback: pre-migration accounts stored `sha256(password)` hex.
+    if stored_hash.len() == 64 && stored_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(password.as_bytes());
+        let legacy = format!("{:x}", hasher.finalize());
+        return legacy == stored_hash.to_lowercase();
+    }
+
+    false
+}
+
 // --- License & Tier Domain Models ---
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -692,6 +739,38 @@ fn default_true() -> bool {
     true
 }
 
+#[cfg(test)]
+mod password_tests {
+    use super::*;
 
+    #[test]
+    fn hash_and_verify_roundtrip() {
+        let hash = hash_password("correct-password");
+        assert!(hash.starts_with("$argon2"));
+        assert!(verify_password("correct-password", &hash));
+        assert!(!verify_password("wrong-password", &hash));
+    }
 
+    #[test]
+    fn same_password_produces_different_hashes() {
+        // Random per-hash salt means two hashes of the same input must differ,
+        // unlike the old unsalted SHA-256 scheme.
+        let a = hash_password("1234");
+        let b = hash_password("1234");
+        assert_ne!(a, b);
+        assert!(verify_password("1234", &a));
+        assert!(verify_password("1234", &b));
+    }
 
+    #[test]
+    fn legacy_sha256_hash_still_verifies() {
+        // Pre-migration accounts stored a raw sha256(password) hex digest.
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"legacy-pin");
+        let legacy_hash = format!("{:x}", hasher.finalize());
+
+        assert!(verify_password("legacy-pin", &legacy_hash));
+        assert!(!verify_password("wrong-pin", &legacy_hash));
+    }
+}

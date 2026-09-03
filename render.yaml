@@ -16,6 +16,18 @@ services:
         fromDatabase:
           name: gympos-db
           property: connectionString
+      # Persistent CEO/admin bearer secret. Render generates and stores this
+      # once per service so it survives restarts/redeploys.
+      - key: ADMIN_SECRET_KEY
+        generateValue: true
+      # REQUIRED for production: without this, the server signs licenses with
+      # a throwaway key that changes on every restart, invalidating all
+      # previously issued licenses. Generate one with:
+      #   cargo run --bin gen_keys -p gympos-cloud
+      # then paste the resulting PKCS#8 private key PEM here as a secret
+      # (Render dashboard -> Environment -> Add Secret File/Env Var).
+      - key: RSA_PRIVATE_KEY_PEM
+        sync: false
 
 databases:
   - name: gympos-db

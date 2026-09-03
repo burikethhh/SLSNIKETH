@@ -11,6 +11,7 @@ use crate::db::Database;
 use crate::face::FaceVectorStore;
 use crate::hardware::HardwareManager;
 use crate::license::LicenseManager;
+use crate::vision::FaceEngine;
 
 pub struct AppContext {
     pub db: Arc<Database>,
@@ -18,6 +19,14 @@ pub struct AppContext {
     pub hardware: HardwareManager,
     pub face_store: FaceVectorStore,
     pub session: Arc<parking_lot::RwLock<Option<TerminalSession>>>,
+    /// `None` when the ONNX models could not be located/loaded at startup
+    /// (e.g. missing `desktop/models/*.onnx`) — callers of `scan_face_frame`
+    /// get a clear error instead of a panic in that case.
+    pub face_engine: Arc<Option<FaceEngine>>,
+    /// Person counter for overhead Camera 3 anti-tailgate ROI
+    /// (`yolov8n.onnx`). `None` when the model failed to load — callers of
+    /// `count_persons_in_frame` get a clear error instead of a panic.
+    pub person_counter: Arc<Option<crate::vision::PersonCounter>>,
 }
 
 fn check_license_active(state: &AppContext) -> Result<(), String> {
@@ -285,6 +294,68 @@ pub fn list_walk_ins(state: State<'_, AppContext>) -> Result<Vec<WalkInRecord>, 
 
 // --- Face Recognition & Gate Kiosk (Scan In & Out) ---
 
+/// Runs the REAL ONNX detection + alignment + embedding pipeline
+/// (`crate::vision::FaceEngine`) on a camera frame captured by the webview,
+/// returning a genuine embedding (512-d ArcFace preferred, 128-d SFace
+/// fallback) instead of the simulated vectors
+/// previously fabricated in JS. Used for both enrollment captures and live
+/// probe scans; the resulting vector is passed to `register_member` /
+/// `process_face_scan` exactly as before, so no changes were needed to the
+/// matching engine in `face.rs`.
+#[tauri::command]
+pub fn scan_face_frame(image_base64: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    check_license_active(&state)?;
+
+    let engine = state
+        .face_engine
+        .as_ref()
+        .as_ref()
+        .ok_or_else(|| "Face recognition engine unavailable: ONNX models failed to load at startup".to_string())?;
+
+    let image = crate::vision::decode_base64_image(&image_base64)?;
+
+    let model = engine.recognizer_name();
+    match engine.detect_and_embed(&image)? {
+        Some((face, embedding)) => Ok(json!({
+            "face_detected": true,
+            "confidence": face.score,
+            "vector": embedding,
+            "embedding_dim": engine.embedding_dim(),
+            "model": model,
+            "box": { "x": face.rect.0, "y": face.rect.1, "w": face.rect.2, "h": face.rect.3 }
+        })),
+        None => Ok(json!({
+            "face_detected": false,
+            "vector": serde_json::Value::Null,
+            "message": "No face detected in frame"
+        })),
+    }
+}
+
+/// Counts persons inside the overhead Camera 3 ROI using the bundled
+/// `yolov8n.onnx` (`crate::vision::PersonCounter`). Called once per 250ms
+/// tick by `armDoorOpenTailgateSurveillance` in the webview during the
+/// 3.5s door-open window; `person_count > 1` means tailgating.
+#[tauri::command]
+pub fn count_persons_in_frame(
+    image_base64: String,
+    roi_x: f32,
+    roi_y: f32,
+    roi_width: f32,
+    roi_height: f32,
+    state: State<'_, AppContext>,
+) -> Result<serde_json::Value, String> {
+    check_license_active(&state)?;
+    let counter = state
+        .person_counter
+        .as_ref()
+        .as_ref()
+        .ok_or_else(|| "Person counter unavailable: yolov8n.onnx failed to load".to_string())?;
+    let image = crate::vision::decode_base64_image(&image_base64)?;
+    let count = counter.count_in_roi(&image, roi_x, roi_y, roi_width, roi_height)?;
+    Ok(json!({ "person_count": count }))
+}
+
 #[tauri::command]
 pub fn process_face_scan(
     probe_vector: Vec<f32>,
@@ -293,7 +364,15 @@ pub fn process_face_scan(
 ) -> Result<serde_json::Value, String> {
     check_license_active(&state)?;
 
-    let match_result = state.face_store.match_vector(&probe_vector, 0.60);
+    // Threshold follows the embedding: 512-d ArcFace (InsightFace w600k_mbf)
+    // match >= 0.68 (FAR < 0.001%), legacy 128-d SFace >= 0.60.
+    let (match_threshold, adapt_threshold) = if probe_vector.len() >= 512 {
+        (0.68, 0.82)
+    } else {
+        (0.60, 0.88)
+    };
+
+    let match_result = state.face_store.match_vector(&probe_vector, match_threshold);
 
     if let Some(m) = match_result {
         // If it's an expired walk-in pass (> 8 hours), deny access immediately
@@ -347,8 +426,9 @@ pub fn process_face_scan(
             .log_attendance(Some(&m.member_id), Some(&m.member_name), &direction, Some(m.confidence), false)
             .map_err(|e| e.to_string())?;
 
-        // Adaptive continuous learning: slightly adapt stored profile on high confidence match (>= 88%)
-        if m.confidence >= 0.88 && !m.is_expired {
+        // Adaptive continuous learning: slightly adapt stored profile on high
+        // confidence match (>= 0.82 ArcFace / >= 0.88 legacy SFace)
+        if m.confidence >= adapt_threshold && !m.is_expired {
             state.face_store.adapt_profile(&m.member_id, &probe_vector, 0.05);
         }
 
@@ -704,5 +784,3 @@ pub fn logout_terminal_session(state: State<'_, AppContext>) -> Result<(), Strin
 pub fn list_terminal_staff(state: State<'_, AppContext>) -> Result<Vec<StaffAccount>, String> {
     state.db.list_local_staff().map_err(|e| e.to_string())
 }
-
-

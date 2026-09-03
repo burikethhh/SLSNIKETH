@@ -88,6 +88,41 @@ cargo tauri dev
 
 ---
 
+## 🔑 Required Environment Variables (Cloud Backend)
+
+| Variable | Required in Production | Purpose |
+| :--- | :--- | :--- |
+| `ADMIN_SECRET_KEY` | ✅ Yes | Bearer secret for all CEO/admin endpoints (`/api/v1/admin/*`, `/api/v1/licenses/*`, `/api/v1/gyms/*`, `/api/v1/remote/*`). If unset, a random key is generated per-process and printed once to the server log — fine for a quick local test, but it changes on every restart. |
+| `RSA_PRIVATE_KEY_PEM` | ✅ Yes | PKCS#8 private key used to sign all license tokens. If unset, an ephemeral key is generated per-process — any license issued will stop verifying after a restart. Generate a real pair with `cargo run --bin gen_keys -p gympos-cloud`, keep the private half secret, and update `EMBEDDED_PUBLIC_KEY_PEM` in `desktop/src-tauri/src/license.rs` with the matching public half before shipping desktop builds. |
+
+For local development/testing convenience, the automated test suite pins
+`ADMIN_SECRET_KEY=gympos_master_ceo_secret_2026`. If you run `cargo run` in
+`cloud/` manually while exercising the Playwright/Python test scripts, export
+the same value so their hardcoded admin key matches:
+```bash
+export ADMIN_SECRET_KEY=gympos_master_ceo_secret_2026
+```
+Never reuse this value for a real deployment.
+
+### Login rate limiting
+
+`cloud/src/rate_limit.rs` implements a small in-memory, per-key fixed-window
+limiter applied to the three credential-guessing surfaces:
+
+| Endpoint | Limit | Key |
+| :--- | :--- | :--- |
+| `POST /api/v1/auth/admin-login` | 5 / 15 min | client IP |
+| `POST /api/v1/owner/auth/login` | 8 / 10 min, and 30 / 10 min | (IP + email), and IP alone |
+| `POST /api/v1/owner/auth/register` | 5 / hour | client IP |
+
+Exceeding a limit returns `429 Too Many Requests` with a `Retry-After` header
+and a JSON body (`{"code": "RATE_LIMITED", "retry_after_seconds": ...}`).
+Successful admin/owner logins reset that key's counter so legitimate users
+aren't penalized by earlier typos. Client IP is read from `X-Forwarded-For`
+first (set by Render's proxy) and falls back to the raw TCP peer address.
+
+---
+
 ## 🔐 Cryptographic License Format
 
 License keys are cryptographically signed using **RSA-2048 with PSS padding and SHA-256**:

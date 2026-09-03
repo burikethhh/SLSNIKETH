@@ -6,6 +6,9 @@ target/
 *.sqlite
 *.sqlite3
 *.db
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Temporary logs and caches
 *.log
@@ -19,8 +22,9 @@ dist/
 # Local build artifacts
 bin/
 
-# Keys
+# Keys / generated local secrets
 *.pem
+admin_secret_key.txt
 
 # Test reports and outputs
 playwright-report/

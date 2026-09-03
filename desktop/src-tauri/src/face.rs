@@ -1,7 +1,29 @@
 use chrono::{DateTime, Utc};
+use instant_distance::{Builder, HnswMap, Point as HnswPoint, Search};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Number of nearest-by-centroid candidates retrieved from the HNSW index
+/// before falling back to full multi-angle vector comparison (Task 5.3).
+/// Larger = safer (less chance of missing a match whose centroid ranks
+/// outside the top-K but whose specific angle vector would have matched)
+/// at a small extra cost; still O(K), not O(N).
+const HNSW_CANDIDATE_COUNT: usize = 8;
+
+/// Wraps a member's centroid embedding for HNSW indexing. Distance is cosine
+/// distance (1 - cosine similarity), reusing the same SIMD-friendly dot
+/// product as the rest of the matching pipeline so index results are
+/// consistent with `cosine_similarity_fast` used elsewhere.
+#[derive(Clone)]
+struct CentroidPoint(Vec<f32>);
+
+impl HnswPoint for CentroidPoint {
+    fn distance(&self, other: &Self) -> f32 {
+        1.0 - cosine_similarity_fast(&self.0, &other.0)
+    }
+}
 
 /// L2-Normalizes a vector in-place: v = v / ||v||_2
 /// Guards against NaN/Inf — invalid vectors are zeroed and left unnormalized.
@@ -71,6 +93,14 @@ struct LastMatchRecord {
 pub struct FaceVectorStore {
     entries: Arc<RwLock<HashMap<String, FaceEntry>>>,
     last_match: Arc<Mutex<Option<LastMatchRecord>>>,
+    /// HNSW index over member centroids (Task 5.3: sub-millisecond search at
+    /// scale). Rebuilt lazily on the next `match_vector` call after any write
+    /// (upsert/remove/clear/adapt) sets `index_dirty` — writes to a gym's
+    /// roster are rare compared to match lookups, so a rebuild-on-next-read
+    /// strategy amortizes the (still cheap, O(N log N)) rebuild cost far
+    /// better than rebuilding on every single write.
+    index: Arc<RwLock<Option<HnswMap<CentroidPoint, String>>>>,
+    index_dirty: Arc<AtomicBool>,
 }
 
 impl FaceVectorStore {
@@ -78,7 +108,33 @@ impl FaceVectorStore {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
             last_match: Arc::new(Mutex::new(None)),
+            index: Arc::new(RwLock::new(None)),
+            index_dirty: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Rebuilds the HNSW centroid index from the current entries if it has
+    /// been marked dirty by a write since the last rebuild. No-op otherwise.
+    fn rebuild_index_if_dirty(&self) {
+        if !self.index_dirty.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
+        let (points, ids): (Vec<CentroidPoint>, Vec<String>) = {
+            let store = self.entries.read();
+            store
+                .values()
+                .filter(|e| !e.centroid.is_empty())
+                .map(|e| (CentroidPoint(e.centroid.clone()), e.member_id.clone()))
+                .unzip()
+        };
+
+        let mut index = self.index.write();
+        *index = if points.is_empty() {
+            None
+        } else {
+            Some(Builder::default().build(points, ids))
+        };
     }
 
     /// Removes expired walk-in entries from memory (8-hour purge janitor).
@@ -94,7 +150,12 @@ impl FaceVectorStore {
                 true
             }
         });
-        before.saturating_sub(store.len())
+        let removed = before.saturating_sub(store.len());
+        if removed > 0 {
+            drop(store);
+            self.index_dirty.store(true, Ordering::Release);
+        }
+        removed
     }
 
     /// Load or upsert a member's face vectors into memory (permanent)
@@ -114,7 +175,10 @@ impl FaceVectorStore {
         // Sanitize: reject any vector containing NaN/Inf or absurd magnitude
         for vec in &vectors {
             if !vec.iter().all(|x| x.is_finite() && x.abs() < 1e4) || vec.is_empty() {
-                tracing::warn!("Rejecting upsert for {}: vector contains NaN/Inf or empty", member_id);
+                tracing::warn!(
+                    "Rejecting upsert for {}: vector contains NaN/Inf or empty",
+                    member_id
+                );
                 return;
             }
         }
@@ -151,6 +215,8 @@ impl FaceVectorStore {
                 expires_at,
             },
         );
+        drop(store);
+        self.index_dirty.store(true, Ordering::Release);
     }
 
     /// Adaptively updates the stored embedding when a member unlocks with high confidence (Continuous Learning)
@@ -163,6 +229,9 @@ impl FaceVectorStore {
                     *c = (1.0 - alpha) * (*c) + alpha * (*p);
                 }
                 l2_normalize(&mut entry.centroid);
+                drop(store);
+                self.index_dirty.store(true, Ordering::Release);
+                return;
             }
         }
     }
@@ -177,12 +246,17 @@ impl FaceVectorStore {
     pub fn remove(&self, member_id: &str) {
         let mut store = self.entries.write();
         store.remove(member_id);
+        drop(store);
+        self.index_dirty.store(true, Ordering::Release);
     }
 
     /// Clear all loaded vectors
     pub fn clear(&self) {
         let mut store = self.entries.write();
         store.clear();
+        drop(store);
+        *self.index.write() = None;
+        self.index_dirty.store(false, Ordering::Release);
     }
 
     /// Returns the number of enrolled face profiles currently in memory
@@ -197,11 +271,22 @@ impl FaceVectorStore {
             return None;
         }
 
-        // Quality gate: reject flat/corrupted probe embeddings for full feature vectors
+        // Quality gate: reject flat/corrupted probe embeddings for full feature vectors.
+        // Threshold scales with dimension: a uniform-on-sphere embedding has
+        // std ~ 1/sqrt(d), so 1.7/sqrt(d) reproduces the legacy 0.15 gate at
+        // d=128 exactly (1.7/11.31 = 0.150) while admitting genuine 512-d
+        // ArcFace embeddings (typical quality ~0.11, gate ~0.075). Flat
+        // vectors (std ~ 0) are still rejected at any dimension.
         if probe.len() >= 16 {
             let probe_quality = calculate_vector_quality(probe);
-            if probe_quality < 0.15 {
-                tracing::debug!("Probe rejected: quality {:.3} below minimum threshold 0.15", probe_quality);
+            let min_quality = 1.7 / (probe.len() as f32).sqrt();
+            if probe_quality < min_quality {
+                tracing::debug!(
+                    "Probe rejected: quality {:.3} below minimum threshold {:.3} (dim {})",
+                    probe_quality,
+                    min_quality,
+                    probe.len()
+                );
                 return None;
             }
         }
@@ -211,6 +296,8 @@ impl FaceVectorStore {
         l2_normalize(&mut normalized_probe);
 
         let now = Utc::now();
+        self.rebuild_index_if_dirty();
+
         // Note: expired walk-ins are retained briefly to allow `is_expired` reporting
         // (see test_walk_in_8_hour_expiry). Purge is explicit via `purge_expired()` called
         // periodically by a 60s janitor timer (not on every match) to avoid breaking that contract.
@@ -218,7 +305,32 @@ impl FaceVectorStore {
         let mut best_match: Option<MatchResult> = None;
         let mut highest_score: f32 = threshold;
 
-        for entry in store.values() {
+        // Task 5.3: instead of a full O(N) scan over every enrolled member,
+        // retrieve only the top-K nearest-by-centroid candidates from the
+        // HNSW index, then run the same precise multi-angle comparison as
+        // before on just those candidates. Falls back to scanning every
+        // entry when the index hasn't been built yet (e.g. right after the
+        // very first insert, before any match has triggered a rebuild).
+        let candidate_ids: Vec<String> = {
+            let index_guard = self.index.read();
+            match index_guard.as_ref() {
+                Some(index) => {
+                    let query = CentroidPoint(normalized_probe.clone());
+                    let mut search = Search::default();
+                    index
+                        .search(&query, &mut search)
+                        .take(HNSW_CANDIDATE_COUNT)
+                        .map(|item| item.value.clone())
+                        .collect()
+                }
+                None => store.keys().cloned().collect(),
+            }
+        };
+
+        for member_id in &candidate_ids {
+            let Some(entry) = store.get(member_id) else {
+                continue;
+            };
             let is_expired = entry.expires_at.map_or(false, |exp| now > exp);
 
             // Fast Pre-screening via Centroid Vector
@@ -268,7 +380,8 @@ impl FaceVectorStore {
                     if elapsed < 3000 {
                         tracing::debug!(
                             "Duplicate scan suppressed for {} ({}ms since last match)",
-                            matched.member_name, elapsed
+                            matched.member_name,
+                            elapsed
                         );
                         return None;
                     }
@@ -286,8 +399,9 @@ impl FaceVectorStore {
 }
 
 /// Compute cosine similarity between two L2-normalized float vectors.
-/// Uses 4-wide unrolled accumulation for SIMD-friendly throughput on 128-d embeddings.
-/// For 128-d vectors this cuts loop iterations from 128 to 32.
+/// Uses 4-wide unrolled accumulation for SIMD-friendly throughput on
+/// arbitrary-length embeddings (128-d SFace: 128 -> 32 iterations;
+/// 512-d ArcFace: 512 -> 128 iterations).
 pub fn cosine_similarity_fast(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -305,7 +419,7 @@ pub fn cosine_similarity_fast(a: &[f32], b: &[f32]) -> f32 {
     // 4-wide unrolled dot product
     for i in 0..chunks {
         let base = i * 4;
-        acc0 += a[base]     * b[base];
+        acc0 += a[base] * b[base];
         acc1 += a[base + 1] * b[base + 1];
         acc2 += a[base + 2] * b[base + 2];
         acc3 += a[base + 3] * b[base + 3];
@@ -377,7 +491,39 @@ mod tests {
         let flat_probe = vec![0.1; 128];
         let match_res = store.match_vector(&flat_probe, 0.60);
         // flat_probe has near-zero variance, quality gate should reject it
-        assert!(match_res.is_none(), "Flat probe should be rejected by quality gate");
+        assert!(
+            match_res.is_none(),
+            "Flat probe should be rejected by quality gate"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_scales_to_512d_arcface() {
+        // Genuine 512-d embeddings (L2-normalized, std ~0.044, quality ~0.11)
+        // must PASS the dimension-scaled gate (~0.075), while flat 512-d
+        // probes (std ~ 0) must still be REJECTED.
+        let store = FaceVectorStore::new();
+        let mut genuine: Vec<f32> = (0..512).map(|i| (i as f32 * 0.1).sin()).collect();
+        l2_normalize(&mut genuine);
+        let q = calculate_vector_quality(&genuine);
+        assert!(
+            q >= 1.7 / (512.0f32).sqrt(),
+            "genuine 512-d probe quality {:.3} should pass scaled gate",
+            q
+        );
+        store.upsert(
+            "MEM-512".to_string(),
+            "ArcFace User".to_string(),
+            vec![genuine.clone()],
+        );
+        let hit = store.match_vector(&genuine, 0.68);
+        assert!(hit.is_some(), "512-d genuine probe should match at 0.68");
+
+        let flat_512 = vec![0.1; 512];
+        assert!(
+            store.match_vector(&flat_512, 0.68).is_none(),
+            "Flat 512-d probe should be rejected by scaled quality gate"
+        );
     }
 
     #[test]
@@ -437,7 +583,69 @@ mod tests {
 
         // Immediate second match should be suppressed by 3s cooldown
         let second = store.match_vector(&vector, 0.60);
-        assert!(second.is_none(), "Duplicate scan within 3s should be suppressed");
+        assert!(
+            second.is_none(),
+            "Duplicate scan within 3s should be suppressed"
+        );
+    }
+
+    #[test]
+    fn test_hnsw_index_invalidated_after_removal() {
+        let store = FaceVectorStore::new();
+        let v1 = vec![0.9, 0.1, 0.1, 0.1];
+        let v2 = vec![0.1, 0.9, 0.1, 0.1];
+        store.upsert("MEM-A".to_string(), "Alice".to_string(), vec![v1.clone()]);
+        store.upsert("MEM-B".to_string(), "Bob".to_string(), vec![v2.clone()]);
+
+        // Triggers the first index build.
+        let hit = store.match_vector(&v1, 0.60);
+        assert_eq!(hit.unwrap().member_id, "MEM-A");
+
+        // Remove Alice, then immediately probe with her exact vector again.
+        // If the index were stale (not rebuilt), a naive implementation could
+        // still surface a removed member from a cached index; this proves
+        // the dirty-flag rebuild-on-next-read path actually runs.
+        store.remove("MEM-A");
+        let after_removal = store.match_vector(&v1, 0.60);
+        assert!(
+            after_removal.is_none(),
+            "Removed member must not be matchable after removal, got {:?}",
+            after_removal
+        );
+
+        // Bob should still be findable.
+        let bob = store.match_vector(&v2, 0.60);
+        assert_eq!(bob.unwrap().member_id, "MEM-B");
+    }
+
+    #[test]
+    fn test_hnsw_finds_correct_match_among_many_members() {
+        // With HNSW_CANDIDATE_COUNT == 8, a store with 50 members means most
+        // entries are NOT in every top-K candidate set by construction — this
+        // proves the HNSW search itself (not just the fallback full-scan
+        // path for tiny stores) is retrieving the right candidate.
+        let store = FaceVectorStore::new();
+        for i in 0..50 {
+            // Spread points around the unit hypersphere in a 16-d space so
+            // each member has a distinct, well-separated centroid.
+            let mut v = vec![0.0f32; 16];
+            v[i % 16] = 1.0;
+            v[(i + 1) % 16] = 0.5 + (i as f32 * 0.01);
+            store.upsert(format!("MEM-{:03}", i), format!("Member {}", i), vec![v]);
+        }
+
+        // Probe with member #37's exact (post-normalization) vector.
+        let target_id = "MEM-037";
+        let target_entry = store.get_entry(target_id).expect("seeded above");
+        let probe = target_entry.vectors[0].clone();
+
+        let result = store.match_vector(&probe, 0.60);
+        let matched = result.expect("should find an exact match among 50 members");
+        assert_eq!(matched.member_id, target_id);
+        assert!(
+            matched.confidence > 0.99,
+            "exact match should score near 1.0, got {}",
+            matched.confidence
+        );
     }
 }
-

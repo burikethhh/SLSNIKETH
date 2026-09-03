@@ -8,34 +8,16 @@ use rsa::RsaPrivateKey;
 use sha2::Sha256;
 use std::sync::Arc;
 
-pub const DEFAULT_PRODUCTION_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
-MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCve0y6Wxd5SNsI
-uEN+ByfegwyoWFXV2X+qI0dGKrgKLRHPjZs5Gu/wZNe1WZ7gU8iGdGWAo+pW6eNQ
-z22odcBZVnE6LkQn1wd6UXFh3DLsRVG9rhAkkx+ZHG53hyT5ICj+w+S7LqL0G545
-F07KmQFnLlf3g6TUSadm+ee6rwW4QiDAKvSUCCtYliL+urC3EcotItWXlxNqW17m
-bbEBIcsXUH0+izhvkJ7VUtL+fpurr1uEHYpeG32irQl39c0Q7HwB5jNwbJGWa2V0
-9dETh0jKHQQV+iA+Tg0SUa2IXhRL94nXaS7+yqzvnZLxxPZ/+eH9YtoIQlm5H9Lf
-6EvmMlDRAgMBAAECggEAHMCFF9upAvRO/yTB2jpt6+VpA4RFvB5A7q2NFhAVy4UK
-8Ajxr++b9LVxKoOepn7T0kPsBaHV2ZvE5Q63luyEMZ8aOkAuZqCy1vXVMAWWSmQp
-Onz0pCl++eVQrED2a+M7FFMgfRLtHDYSPKR3AncDZdaQDzwAm8/dn9++ejYHJ+NY
-WT1z9mUyMS5bEyVo7LWb0vPsgdrHhYhPY13tgh73rZtP7vU0y65fT8Yt743N3lTN
-0u4USU3Ezx5FpOL29EA2p02/Vh5qkWR0c2zZ2G9oTmbOBqewXDWlErMKNF86r3Cm
-ZZoH1/6UN1+YspNZmI91Jz6n4JWlh8rCx8zjIHCUAQKBgQDLCDEK1lh5k3taEb0C
-WbVnK8gaFNaSsAnd44P6b0SvB0W23D6BLAV4LIgSFPJAPGGpbbA9/Ag0F5Wr+sEb
-BBJa9ZKYtXxSH5j7GaB7u4SY/hiLSvfc7wzA7Calfo/Mrhy1pcBEpHJHka+V9AV2
-C7O+rC/i47nn9XgbDsWsvJVTcQKBgQDdQx1PvAmbZgPwg1FoUXm+35opRyrk8jRl
-gc8J3hgw+yJXIzC7oR0ggUbHc3LEI6pJ6SHWe3zyK5udTna82EeVWpwETKhses2C
-DqGLkwKGpxX169H8RGI27DuaVonI0QhSEPC8h97mQAm8qk4QdA7h4cXYHtKV97dL
-zkhEiWljYQKBgGAT10lel22o2fWMcVn8Y7iX4lBdThEKVxD2ikznfKQrF9VpsfZk
-g44T3KxZ1y2IpVqM+prKeoNUKdLBjcIgEiOTFDVJpLQkGbuxq90BpsTTcX/xEQwu
-32UoGz2zf48HUbSv5CVXgHDXwzR9zlvHO97eEqcWxrG62oRLYEXW0/8xAoGAD4YD
-6nIw4lw37onoDj+ZIREjCb5afhGYJ38B/Zk9bUJRWHe5lZBqMLuhMaEh7izqZ6EZ
-pKipTXxNwK2emwU5kHr48zxFnMbI4FUSdG5uAPB8E/LlmqNZmKzeSafEpvgzcz6J
-BVErDFB13my8aV8bJDHo5Y7UC32DuKfSXiyd3kECgYAgf0jR3uDpmeJqwfGQgRtk
-/eB+05Wz1mLQKEFMHRj851dPw/klN7xa9rO/TwmPBqQhDMehrF9ZV6WJA6dh/0F1
-T8JVwz1iaJKqRU79rIUleYANp0uhbFHrWUkN+Zf4mS/nZCMWK0rPW+iRCtZwe/ey
-H04eXSXEuvNADEOEA6HRTg==
------END PRIVATE KEY-----"#;
+// NOTE: A hardcoded "default production" RSA private key previously lived here.
+// It was checked into source control, which means it was never actually secret —
+// anyone with repository or binary access could extract it and self-sign
+// unlimited GymPOS license tokens, completely defeating the CEO-only licensing
+// model described in the architecture doc. It has been removed. The signer now
+// REQUIRES `RSA_PRIVATE_KEY_PEM` to be set for a stable production identity,
+// falling back to a fresh in-memory ephemeral key (with a loud warning) so the
+// server can still boot in local/dev environments. Generate a real key pair with:
+//   cargo run --bin gen_keys -p gympos-cloud
+// and set the resulting private PEM as the `RSA_PRIVATE_KEY_PEM` secret.
 
 #[derive(Clone)]
 pub struct LicenseSigner {
@@ -44,13 +26,10 @@ pub struct LicenseSigner {
 }
 
 impl LicenseSigner {
-    /// Load default production signing key
-    pub fn default_production() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::from_pem(DEFAULT_PRODUCTION_PRIVATE_KEY_PEM)
-    }
-
-    /// Generate a fresh in-memory key pair for development or test
-    #[allow(dead_code)]
+    /// Generate a fresh in-memory key pair. Used for tests, and as the dev-mode
+    /// fallback in `main.rs` when `RSA_PRIVATE_KEY_PEM` is not configured.
+    /// NOT suitable for production: the key is lost (and all previously issued
+    /// licenses become unverifiable) on every process restart.
     pub fn generate_ephemeral() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut rng = rand::thread_rng();
         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
@@ -93,6 +72,15 @@ impl LicenseSigner {
 
         Ok(format!("GPOS-{}.{}", claims_b64, sig_b64))
     }
+}
+
+/// Generate a cryptographically random, URL-safe secret (32 bytes / 256 bits).
+/// Used as an ephemeral fallback for `ADMIN_SECRET_KEY` when it is not configured.
+pub fn generate_random_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Standalone verifier (used by both Cloud and Desktop client)

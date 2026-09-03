@@ -134,15 +134,20 @@ graph TD
 ```
 
 1. **CEO Admin Authentication**:
-   - Master Secret: `gympos_master_ceo_secret_2026`.
-   - Verified on all `/api/v1/admin/*`, `/api/v1/licenses/*`, `/api/v1/gyms/*`, and `/api/v1/remote/*` endpoints via `Authorization: Bearer <key>`.
+   - Bearer secret configured via the `ADMIN_SECRET_KEY` environment variable (previously a hardcoded fallback string checked into source — rotated; see Section 4.1 audit note below).
+   - Verified on all `/api/v1/admin/*`, `/api/v1/licenses/*`, `/api/v1/gyms/*`, and `/api/v1/remote/*` endpoints via `Authorization: Bearer <key>`, compared in constant time.
+   - **Audit fix (2026-09-03)**: `POST /api/v1/auth/admin-login`, `POST /api/v1/owner/auth/login`, and `POST /api/v1/owner/auth/register` are now rate-limited (`cloud/src/rate_limit.rs`) to slow down credential brute-forcing — 5 attempts/15min per IP for admin login, 8/10min per (IP, email) plus 30/10min per IP for owner login, 5/hour per IP for registration. Rejected requests get `429` with a `Retry-After` header; successful logins reset the counter for that key.
+   - **Audit fix (2026-09-03)**: three CEO-only routes (`admin_list_owners_hierarchy`, `admin_create_branch_for_owner`, `admin_issue_branch_key`) previously discarded the result of `verify_admin_auth(...)` via `let _ = ...`, meaning the auth check ran but its failure was silently ignored — those endpoints were callable with **no credentials at all**. Fixed to propagate the error with `?`.
+   - **Audit fix (2026-09-03)**: the RSA private signing key and the admin secret both had hardcoded fallback values committed to source (`DEFAULT_PRODUCTION_PRIVATE_KEY_PEM`, `"gympos_master_ceo_secret_2026"`). Both were removed; the server now requires `RSA_PRIVATE_KEY_PEM` / `ADMIN_SECRET_KEY` env vars for a stable identity, falling back to a random ephemeral value (logged once, with a loud warning) so it can still boot for local development. The keypair was rotated end-to-end (new public key embedded in the desktop client).
 2. **Franchise Owner Authentication**:
    - Managed in `cloud_owner_accounts` (`owner_email`, `password_hash`, `company_name`).
    - Authenticated on `/api/v1/owner/auth/login` and `/api/v1/owner/auth/register`.
    - Returns Bearer session token: `owner:<email>`.
+   - **Audit fix (2026-09-03)**: `password_hash` migrated from unsalted SHA-256 to Argon2id (`gympos_shared::hash_password`/`verify_password`), with transparent legacy-hash verification for pre-existing accounts.
 3. **Front-Desk Cashier / Staff PIN Authentication**:
    - 4-6 digit numeric PIN entered via on-screen keypad.
-   - Hashed locally using SHA-256 (`pin_hash`).
+   - Hashed with Argon2id (`gympos_shared::hash_password`), shared verbatim between cloud and desktop so PINs synced from `cloud_staff_accounts` verify correctly on the terminal.
+     - **Audit fix (2026-09-03)**: this previously used unsalted SHA-256, which is trivially rainbow-tabled for a 4-6 digit numeric PIN (10,000-1,000,000 possibilities). Migrated to Argon2id in `gympos-shared` (used by both crates); legacy SHA-256 hashes still verify transparently so existing accounts are not locked out, and get upgraded the next time their PIN is changed. Because Argon2 hashes are salted, `authenticate_staff_pin` changed from an indexed `WHERE pin_hash = ?` lookup to fetch-active-then-verify (fine given branch staff rosters are small).
    - Matched against `local_staff_accounts` in desktop SQLite.
    - Branch Isolation: The cloud heartbeat filters staff syncing:
      ```sql
@@ -263,7 +268,17 @@ graph TD
 
 ---
 
-### Task 5.1: Embedded ONNX Runtime Engine in Tauri (`desktop/src-tauri`)
+### Task 5.1: Embedded ONNX Runtime Engine in Tauri (`desktop/src-tauri`) — STATUS: DONE (2026-09-03)
+
+**Implemented in `desktop/src-tauri/src/vision.rs`**, using `tract-onnx` (a pure-Rust ONNX inference engine) instead of the `ort` crate suggested below. Rationale: `ort` requires shipping/matching a native `onnxruntime.dll` (plus optional DirectML DLLs) alongside the executable, which is a real deployment/versioning headache for a Windows kiosk installer; `tract-onnx` compiles the inference engine directly into the binary with zero external runtime dependencies, at the cost of DirectML/GPU acceleration (acceptable for these small models — YuNet + SFace — on CPU).
+
+- **Detector decode + NMS** and the **5-point similarity-transform alignment** were transcribed directly from OpenCV's own C++ source (`modules/objdetect/src/face_detect.cpp` and `face_recognize.cpp`), not reverse-engineered, since a subtly wrong anchor-decode formula would silently produce plausible-looking garbage boxes.
+- The similarity-transform math is a closed-form least-squares fit (mathematically equivalent to OpenCV's SVD/Umeyama approach for genuine, non-mirrored face landmarks) with a self-verifying unit test (`similarity_transform_recovers_known_transform`) that round-trips a synthetic known transform.
+- Verified end-to-end: both bundled ONNX models (`face_detection_yunet_2023mar.onnx`, `face_recognition_sface_2021dec.onnx`) load and run through `tract` without error (`vision::tests::real_onnx_models_load_and_run`), and correctly detect zero faces on a blank frame.
+- New Tauri command `scan_face_frame(image_base64)` runs the full detect+align+embed pipeline on a webview-captured camera frame and returns a genuine 128-d embedding — wired into the enrollment Studio flow (`desktop/webview/static/js/app.js: captureCurrentAngleSnapshot`), replacing the previous `generateNormalizedFaceEmbedding()` fabrication.
+- Removed a second, fully-fake "Enroll New Member" quick-modal (`submitEnrollMember`) that had no camera at all and always registered members with 100% synthetic vectors; its button now opens the real camera-based Studio flow instead.
+- **Not yet verified**: detection/embedding accuracy against an actual live human face (no camera or real face photo available in this sandboxed environment) — recommend a manual smoke test with `cargo tauri dev` and a real webcam before shipping.
+- **Original blueprint (kept for reference; superseded by the above):**
 
 **Goal**: Run neural network models directly inside Rust using ONNX Runtime with CPU DirectML / OpenVINO / TensorRT acceleration.
 
@@ -283,7 +298,18 @@ graph TD
 
 ---
 
-### Task 5.2: Upgrading from 128-d to 512-d ArcFace Embeddings
+### Task 5.2: Upgrading from 128-d to 512-d ArcFace Embeddings — STATUS: DONE (2026-09-03)
+
+**Implemented in `desktop/src-tauri/src/vision.rs` (`FaceEngine.arcface`), `commands.rs` (dim-aware thresholds), `face.rs` (dimension-scaled quality gate), and `desktop/webview/static/js/app.js` (512-d preview mocks)**, standardizing the pipeline on 512-d ArcFace with a safe SFace fallback.
+
+- **Model choice**: InsightFace `buffalo_s` pack's `w600k_mbf.onnx` (MobileFaceNet trained with ArcFace loss on WebFace600K, 13MB) bundled as `desktop/models/face_recognition_arcface_w600k_mbf.onnx` — chosen over `buffalo_l`'s ResNet-50 (`w600k_r50.onnx`, ~170MB) for ~10x smaller disk footprint at the same 512-d output contract, input geometry (112x112), and preprocessing spec. Reference spec (`model_zoo/arcface_onnx.py`, i.e. `blobFromImage(img, 1.0/127.5, (112,112), (127.5,127.5,127.5), swapRB=True)`): RGB order, `(x - 127.5) / 127.5` normalization, input `input.1: [N,3,112,112]`, output `516: [1,512]` (opset 11) — all verified against the real file with `python -c "import onnx; ..."` before writing the decode.
+- **Export-artifact workaround (verified, not guessed)**: this InsightFace export carries a degenerate batch dim (`dim_value=0`, no `dim_param`) that makes tract's shape analysis fail (`Failed analyse for node ... ConvHir`, reproduced on tract 0.21.12 *and* 0.23.6 in a scratch crate). Fixed in code via `set_input_fact(0, [1,3,112,112])` before optimizing — no model bytes modified; load + optimize + infer `[1,512]` proven in the scratch probe first, then wired in. Confirmed the bundled file itself is valid (`onnx.checker.check_model` passes).
+- **Pipeline**: `FaceEngine` gains an optional `arcface: Option<Plan>` loaded alongside YuNet/SFace; `detect_and_embed` prefers 512-d ArcFace and falls back to 128-d SFace when the file is absent (`embedding_dim()` / `recognizer_name()` report which path served; `scan_face_frame` now returns `embedding_dim` + `model`). Same 5-point similarity-transform + 112x112 crop is reused — ArcFace typically wants 112x112, so alignment is unchanged.
+- **Threshold recalibration (per this section's blueprint)**: `process_face_scan` now selects thresholds from the probe itself — 512-d: match `>= 0.68`, adapt `>= 0.82`; legacy 128-d: match `>= 0.60`, adapt `>= 0.88`. The quality gate in `match_vector` scales as `1.7/sqrt(d)` (exactly 0.15 at d=128, ~0.075 at d=512 — required because genuine 512-d embeddings sit at quality ~0.11 and would all be rejected by the old absolute gate), while flat vectors (std ~ 0) are still rejected at any dimension.
+- **Dimension-agnostic core untouched**: `cosine_similarity_fast`, HNSW `CentroidPoint(Vec<f32>)`, and centroid logic needed no changes (no hardcoded 128 assumption — the one stale comment was updated). Length mismatch safely yields cosine 0.0 (never a false accept).
+- **Migration**: pre-existing 128-d member vectors stay in SQLite and keep matching 128-d probes, but members must be re-enrolled once for 512-d — `upsert_with_expiry` replaces vectors wholesale so one re-enrollment fully converts a member. Preview/test fabrications in `app.js` (`generateNormalizedFaceEmbedding` + inline fallbacks) now emit 512-d via `FACE_EMBEDDING_DIM`.
+- **Verified**: `cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib` 20/20 (incl. new `real_arcface_model_loads_and_runs` on the real file, `insightface_normalization_maps_pixel_range_to_minus_one_to_one`, `test_quality_gate_scales_to_512d_arcface`), `cargo test --workspace` 7/7, `node --check` clean.
+- **Original blueprint (kept for reference; implemented as described above):**
 
 **Goal**: Standardize the system on 512-dimensional ArcFace/CosFace representations.
 
@@ -309,7 +335,16 @@ graph TD
 
 ---
 
-### Task 5.3: Sub-Millisecond Search via HNSW Indexing
+### Task 5.3: Sub-Millisecond Search via HNSW Indexing — STATUS: DONE (2026-09-03)
+
+**Implemented in `desktop/src-tauri/src/face.rs`** using `instant-distance` (exactly as suggested below). `FaceVectorStore` now maintains an `HnswMap<CentroidPoint, String>` indexing every member's centroid, alongside the existing `HashMap<String, FaceEntry>` (kept as the source of truth for full multi-angle vectors and metadata).
+
+- **Rebuild strategy**: writes (`upsert_with_expiry`, `adapt_profile`, `remove`, `purge_expired`) set an `AtomicBool` dirty flag rather than rebuilding synchronously; `match_vector` rebuilds the index lazily on the next read if dirty. This amortizes the O(N log N) rebuild cost against the fact that roster writes are rare compared to per-frame match lookups.
+- **Search flow**: `match_vector` now retrieves the top-8 nearest-by-centroid candidates from the HNSW index (falling back to a full scan only if the index hasn't been built yet), then runs the exact same precise multi-angle cosine comparison as before on just those candidates — matching the blueprint's "index centroids, then evaluate multi-angle vectors on the top candidates" design.
+- **Verified correctness, not just compilation**: added `test_hnsw_finds_correct_match_among_many_members` (50 distinct members, proves the actual HNSW graph search — not the tiny-store fallback path — retrieves the right candidate) and `test_hnsw_index_invalidated_after_removal` (proves a removed member cannot be matched afterward, i.e. the dirty-flag rebuild path actually runs). All prior `face.rs` matching tests still pass unmodified.
+- **Not yet done**: no formal large-N (10k-50k members) latency benchmark was run to empirically confirm the roadmap's "<0.5ms at 50,000 members" target — this follows directly from HNSW's known O(log N) query complexity, but hasn't been measured in this environment.
+
+**Original blueprint (kept for reference; implemented as described above):**
 
 **Goal**: Replace linear $O(N)$ scanning with an approximate nearest neighbor (ANN) graph index capable of searching 50,000 members in $< 0.5\text{ ms}$.
 
@@ -333,7 +368,16 @@ graph TD
 
 ---
 
-### Task 5.4: Multi-Camera Anti-Tailgating Correlation Logic
+### Task 5.4: Multi-Camera Anti-Tailgating Correlation Logic — STATUS: DONE (2026-09-03)
+
+**Implemented in `desktop/src-tauri/src/vision.rs` (`PersonCounter`), `commands.rs` (`count_persons_in_frame`), `lib.rs` (loader + handler registration), and `desktop/webview/static/js/app.js` (`armDoorOpenTailgateSurveillance`)**, replacing the `Math.sin(...)`-based fake "transit density" heuristic that previously stood in for the overhead measurement.
+
+- **Detector**: `PersonCounter` runs the already-bundled `desktop/models/yolov8n.onnx` via `tract-onnx` (same pure-Rust engine as Task 5.1, zero native DLLs). ONNX I/O shape verified against the real file before writing the decode: input `images` is `[1,3,320,320]`, output `output0` is `[1,84,2100]` (channel-major 4 box coords + 80 COCO scores, standard Ultralytics YOLOv8 export). Decode filters COCO class 0 ("person") at confidence 0.45 with IoU-NMS 0.45 via a dedicated `nms_scored()` helper. Preprocessing generalizes `rgb_to_nchw_tensor()` with a `scale` parameter because YOLO expects `[0,1]`-normalized RGB (`1.0/255.0`), unlike the OpenCV face models (`1.0`) — do not revert.
+- **ROI contract**: `count_in_roi()` takes percentages matching `gympos_shared::CameraConfig` (`roi_x/roi_y/roi_width/roi_height`, 0-100) — the same values the existing calibration UI (`saveRoiCalibration()`) already tunes, so no new config plumbing was needed. A box counts when its center falls inside the ROI.
+- **Wiring**: new Tauri command `count_persons_in_frame(image_base64, roi_x, roi_y, roi_width, roi_height)` (license-gated like `scan_face_frame`) backed by `AppContext.person_counter: Arc<Option<PersonCounter>>`, loaded in `run()` with the same `find_models_dir()` pattern as `FaceEngine` and registered in `generate_handler!`. The webview captures a Camera 3 frame per 250ms tick during the 3.5s door-open window and calls it with the live ROI config; `person_count > 1` increments `suspiciousFrames`, keeping the existing sensitivity-derived `violationThreshold` debounce (default 85 → 2 frames of 14). A `count_persons_in_frame` mock returning `{ person_count: 1 }` was added to the browser-preview fallback so static previews don't alarm.
+- **Verified**: `cargo build --manifest-path desktop/src-tauri/Cargo.toml` clean, `cargo test --manifest-path desktop/src-tauri/Cargo.toml --lib` 17/17 pass (9 face + 8 vision, incl. `real_yolo_model_loads_and_runs` on the real `yolov8n.onnx` and `nms_scored_suppresses_overlapping_lower_score_boxes`), `cargo test --workspace` 7/7 pass.
+- **Not yet verified**: live Camera 3 round-trip against a real overhead feed with two humans (no camera available in this environment) — recommend a manual `cargo tauri dev` pass triggering a scan to confirm the IPC path under real video.
+- **Original blueprint (kept for reference; implemented as described above):**
 
 **Goal**: Prevent "two people entering on one scan" by correlating Camera 1 (Face Scan) with Camera 3 (Overhead Anti-Tailgate ROI).
 

@@ -619,7 +619,9 @@ impl CloudDatabase {
         Ok(res > 0)
     }
 
-    pub fn verify_owner_login(&self, email: &str, password_hash: &str) -> Result<Option<String>> {
+    /// Verifies a plaintext password against the stored Argon2id hash (or a
+    /// legacy unsalted SHA-256 hash for accounts created before the migration).
+    pub fn verify_owner_login(&self, email: &str, password: &str) -> Result<Option<String>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             "SELECT company_name, password_hash FROM cloud_owner_accounts WHERE owner_email = ?1",
@@ -628,7 +630,7 @@ impl CloudDatabase {
         if let Some(row) = rows.next()? {
             let company_name: String = row.get(0)?;
             let stored_hash: String = row.get(1)?;
-            if stored_hash == password_hash {
+            if gympos_shared::verify_password(password, &stored_hash) {
                 return Ok(Some(company_name));
             }
         }
@@ -1338,10 +1340,7 @@ impl CloudDatabase {
             params_vec.push(Box::new(name.clone()));
         }
         if let Some(ref pin) = req.pin_code {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(pin.as_bytes());
-            let pin_hash = format!("{:x}", hasher.finalize());
+            let pin_hash = gympos_shared::hash_password(pin);
             updates.push("pin_hash = ?");
             params_vec.push(Box::new(pin_hash));
         }
@@ -1417,12 +1416,12 @@ impl CloudDatabase {
         let conn = self.conn.lock();
         let gym_id_str = gym_id.to_string();
         let mut stmt = conn.prepare(
-            "SELECT p.id, p.name, 
+            "SELECT p.id, p.name,
                     COALESCE(o.price, p.price) as effective_price,
                     COALESCE(o.stock, p.stock) as effective_stock,
                     p.category, p.updated_at
              FROM cloud_products p
-             LEFT JOIN cloud_branch_product_overrides o 
+             LEFT JOIN cloud_branch_product_overrides o
                     ON p.id = o.product_id AND o.gym_id = ?2
              WHERE p.owner_email = ?1
              ORDER BY p.category, p.name",
@@ -1651,5 +1650,3 @@ impl CloudDatabase {
         }
     }
 }
-
-

@@ -164,6 +164,17 @@ async function invokeTauri(command, args = {}) {
             ];
         } else if (command === 'trigger_tailgate_alarm') {
             return { status: "ALARM_TRIGGERED", reason: "Turnstile ROI multi-occupancy violation" };
+        } else if (command === 'scan_face_frame') {
+            // Browser-preview-only mock (no Tauri/ONNX backend available outside
+            // the desktop app) — fabricates a plausible embedding so the UI can
+            // still be exercised. The real desktop app always uses the actual
+            // ONNX detection/embedding pipeline in `vision.rs`.
+            const seed = (args.imageBase64 || '').length % 997;
+            return { face_detected: true, confidence: 0.9, vector: generateNormalizedFaceEmbedding(seed, 0), box: { x: 0, y: 0, w: 0, h: 0 } };
+        } else if (command === 'count_persons_in_frame') {
+            // Browser-preview-only mock for the YOLOv8n person counter
+            // (Task 5.4). Single occupant by default so previews don't alarm.
+            return { person_count: 1 };
         }
         return { success: true };
     }
@@ -600,7 +611,7 @@ async function startAutonomousBiometricEngine() {
                     if (!probe || probe.length === 0) {
                         const seed = candidate.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
                         probe = [];
-                        for (let i = 0; i < 128; i++) probe.push(Math.sin(seed + i));
+                        for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
                     }
 
                         const lastDir = memberCooldownMap.get(candidate.id + '_dir') || null;
@@ -688,12 +699,24 @@ function armDoorOpenTailgateSurveillance(durationMs = 3500) {
         }
         doorOpenFrameCount++;
 
-        // Deterministic frame analysis: simulate motion density from Camera 3 ROI region
-        // In production, this evaluates actual YOLO person-count from the overhead feed.
-        // Here we model a consistent occupancy state per transit window.
-        const transitDensity = Math.sin(doorOpenFrameCount * 0.7 + Date.now() * 0.00001);
-        if (transitDensity > (sensitivity / 100) * 0.9) {
-            suspiciousFrames++;
+        // Real overhead person-count via YOLOv8n (Task 5.4): capture Camera 3
+        // and count persons inside the calibrated ROI. person_count > 1
+        // means a second person tailgated through the open door.
+        const video = document.getElementById('kiosk-cam3-tailgate') || document.getElementById('dash-cam3-tailgate');
+        if (video && video.videoWidth > 0) {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                const frame = canvas.toDataURL('image/jpeg', 0.7);
+                const cfg = appSettings.camera_config || {};
+                const res = await invokeTauri('count_persons_in_frame', {
+                    imageBase64: frame,
+                    roiX: cfg.roi_x ?? 20, roiY: cfg.roi_y ?? 20,
+                    roiWidth: cfg.roi_width ?? 60, roiHeight: cfg.roi_height ?? 60,
+                });
+                if (res && res.person_count > 1) suspiciousFrames++;
+            } catch (e) { console.debug('tailgate frame count failed:', e); }
         }
 
         if (doorOpenFrameCount >= maxFrames) {
@@ -975,18 +998,23 @@ function selectRegistrationAngle(idx) {
     if (guide) guide.innerText = anglePrompts[idx].guide;
 }
 
-function captureCurrentAngleSnapshot() {
+async function captureCurrentAngleSnapshot() {
     const video = document.getElementById('reg-studio-video');
     const canvas = document.getElementById('reg-studio-canvas');
     if (!video || !canvas) return;
 
-    // Validate camera feed is active before capturing
-    if (!video.videoWidth || video.videoWidth === 0 || !video.videoHeight || video.videoHeight === 0) {
-        const errorEl = document.getElementById('reg-error-msg');
+    const errorEl = document.getElementById('reg-error-msg');
+    const clearError = () => { if (errorEl) errorEl.innerText = ""; };
+    const showError = (msg) => {
         if (errorEl) {
-            errorEl.innerText = "Camera feed not ready. Please wait for the live preview to initialize.";
+            errorEl.innerText = msg;
             errorEl.className = "text-xs text-amber-400";
         }
+    };
+
+    // Validate camera feed is active before capturing
+    if (!video.videoWidth || video.videoWidth === 0 || !video.videoHeight || video.videoHeight === 0) {
+        showError("Camera feed not ready. Please wait for the live preview to initialize.");
         return;
     }
 
@@ -996,19 +1024,37 @@ function captureCurrentAngleSnapshot() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-    capturedRegFrames[selectedRegAngle] = dataUrl;
 
-    // Generate high-dimensional vector for this angle
-    const fn = document.getElementById('reg-mem-first-name')?.value || "Member";
-    const ln = document.getElementById('reg-mem-last-name')?.value || "Capture";
-    const seed = (fn + ln).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const vector = generateNormalizedFaceEmbedding(seed + selectedRegAngle * 7, anglePrompts[selectedRegAngle].offset);
-    capturedRegVectors[selectedRegAngle] = vector;
+    const badge = document.getElementById(`badge-angle-${selectedRegAngle}`);
+    if (badge) {
+        badge.innerText = "Scanning...";
+        badge.className = "text-[9px] text-blue-400 font-bold font-mono mt-0.5";
+    }
+
+    // Run the REAL ONNX face detection + embedding pipeline (desktop/src-tauri/src/vision.rs)
+    // on the captured frame, replacing the previous fabricated/simulated vector.
+    let result;
+    try {
+        result = await invokeTauri('scan_face_frame', { imageBase64: dataUrl });
+    } catch (e) {
+        showError(`Face scan failed: ${e?.message || e}`);
+        if (badge) { badge.innerText = "Failed"; badge.className = "text-[9px] text-red-400 font-bold font-mono mt-0.5"; }
+        return;
+    }
+
+    if (!result || !result.face_detected || !result.vector) {
+        showError("No face detected in frame. Center your face in the camera and try again.");
+        if (badge) { badge.innerText = "No Face"; badge.className = "text-[9px] text-red-400 font-bold font-mono mt-0.5"; }
+        return;
+    }
+    clearError();
+
+    capturedRegFrames[selectedRegAngle] = dataUrl;
+    capturedRegVectors[selectedRegAngle] = result.vector;
 
     // Update thumbnail card
     const thumb = document.getElementById(`thumb-angle-${selectedRegAngle}`);
     const ph = document.getElementById(`placeholder-angle-${selectedRegAngle}`);
-    const badge = document.getElementById(`badge-angle-${selectedRegAngle}`);
 
     if (thumb) {
         thumb.src = dataUrl;
@@ -1016,7 +1062,8 @@ function captureCurrentAngleSnapshot() {
     }
     if (ph) ph.classList.add('hidden');
     if (badge) {
-        badge.innerText = "✓ 99.4% Clarity";
+        const pct = Math.round((result.confidence || 0.9) * 1000) / 10;
+        badge.innerText = `\u2713 ${pct}% Confidence`;
         badge.className = "text-[9px] text-emerald-400 font-bold font-mono mt-0.5";
     }
 
@@ -1100,15 +1147,15 @@ async function submitStudioRegistration() {
         return;
     }
 
-    // Synthesize any missing angles from the frontal capture
-    const baseSeed = (firstName + lastName).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    // Multi-angle capture is optional (only the frontal angle is required);
+    // for any angle the user skipped, reuse the closest REAL captured vector
+    // rather than fabricating noise — a duplicated genuine embedding is a much
+    // better anchor for matching than a synthetic vector with no relation to
+    // this member's actual face.
+    const realVectors = capturedRegVectors.filter(v => v !== null);
     const finalVectors = [];
     for (let i = 0; i < 5; i++) {
-        if (capturedRegVectors[i]) {
-            finalVectors.push(capturedRegVectors[i]);
-        } else {
-            finalVectors.push(generateNormalizedFaceEmbedding(baseSeed, anglePrompts[i].offset));
-        }
+        finalVectors.push(capturedRegVectors[i] || realVectors[0]);
     }
 
     try {
@@ -1259,7 +1306,7 @@ async function submitWalkInPass() {
 
     const seed = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const tempVector = [];
-    for (let i = 0; i < 128; i++) {
+    for (let i = 0; i < FACE_EMBEDDING_DIM; i++) {
         tempVector.push(Math.sin(seed + i));
     }
 
@@ -1514,67 +1561,21 @@ function filterInterbranchList() {
     }).join('');
 }
 
-function openEnrollModal() {
-    document.getElementById('enroll-modal').classList.remove('hidden');
-}
+// Canonical embedding width for all fabricated/preview vectors (Task 5.2:
+// 512-d ArcFace). The real pipeline always returns genuine model embeddings
+// via `scan_face_frame`; these mocks only run in browser preview / tests.
+const FACE_EMBEDDING_DIM = 512;
 
-function closeEnrollModal() {
-    document.getElementById('enroll-modal').classList.add('hidden');
-}
-
-function generateNormalizedFaceEmbedding(seed, angleOffset = 0) {
+function generateNormalizedFaceEmbedding(seed, angleOffset = 0, dim = FACE_EMBEDDING_DIM) {
     const raw = [];
-    for (let i = 0; i < 128; i++) {
-        // High-order harmonic synthesis mimicking SFace 128-d deep facial feature activations
+    for (let i = 0; i < dim; i++) {
+        // High-order harmonic synthesis mimicking ArcFace 512-d deep facial feature activations
         const val = Math.sin(seed + i * 1.618 + angleOffset) * Math.cos(seed * 0.5 + i * 0.314) + Math.sin((seed + i) * 0.1);
         raw.push(val);
     }
     // L2-normalize
     const norm = Math.sqrt(raw.reduce((acc, v) => acc + v * v, 0));
     return raw.map(v => (norm > 1e-6 ? v / norm : 0));
-}
-
-async function submitEnrollMember() {
-    const firstName = document.getElementById('mem-first-name').value.trim();
-    const lastName = document.getElementById('mem-last-name').value.trim();
-    const phone = document.getElementById('mem-phone').value.trim();
-    const plan = document.getElementById('mem-plan').value;
-    const errorEl = document.getElementById('enroll-error-msg');
-
-    if (!firstName || !lastName) {
-        errorEl.innerText = "First and last name are required";
-        return;
-    }
-
-    const baseSeed = (firstName + lastName).split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    
-    // 5-Angle High-Precision Profiling (Front, Left 15°, Right 15°, Tilt Up, Tilt Down)
-    const angleOffsets = [0.0, 0.45, -0.45, 0.25, -0.25];
-    const vectors = angleOffsets.map(angle => generateNormalizedFaceEmbedding(baseSeed, angle));
-
-    try {
-        errorEl.innerText = "Extracting 5-angle biometric embeddings & L2 normalizing...";
-        errorEl.className = "text-xs text-blue-300";
-
-        await invokeTauri('register_member', {
-            req: {
-                first_name: firstName,
-                last_name: lastName,
-                email: `${firstName.toLowerCase()}@gym.local`,
-                phone: phone,
-                membership_type: plan,
-                face_vectors: vectors
-            }
-        });
-
-        closeEnrollModal();
-        await loadMembers();
-        await refreshDashboard();
-        showHudToast("Biometric Enrollment Complete", `Member <b>${firstName} ${lastName}</b> registered with 5-Angle Deep Metric Embeddings (99.8% Precision).`, "success");
-    } catch (e) {
-        errorEl.innerText = "Enrollment Error: " + e;
-        errorEl.className = "text-xs text-red-400";
-    }
 }
 
 function openEditMemberModal(id) {
@@ -2221,7 +2222,7 @@ async function simulateFaceScan(direction) {
     } else if (cachedWalkIns.length > 0) {
         const seed = cachedWalkIns[0].guest_name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
         probe = [];
-        for (let i = 0; i < 128; i++) probe.push(Math.sin(seed + i));
+        for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
     }
 
     try {
@@ -2269,7 +2270,7 @@ async function simulateWalkInScan(direction) {
     const guest = cachedWalkIns[0];
     const seed = guest.guest_name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const probe = [];
-    for (let i = 0; i < 128; i++) probe.push(Math.sin(seed + i));
+    for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
 
     try {
         const result = await invokeTauri('process_face_scan', {

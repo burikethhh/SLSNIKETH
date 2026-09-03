@@ -77,6 +77,11 @@ def main():
         
         env = os.environ.copy()
         env["PORT"] = str(CLOUD_PORT)
+        # Pin ADMIN_SECRET_KEY for deterministic local/CI test auth. The server
+        # now generates a random ephemeral admin key when this is unset (see
+        # cloud/src/main.rs), which is correct for production security but
+        # would otherwise make this script's hardcoded ADMIN_KEY mismatch.
+        env["ADMIN_SECRET_KEY"] = ADMIN_KEY
         server_proc = subprocess.Popen([exe_path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
         

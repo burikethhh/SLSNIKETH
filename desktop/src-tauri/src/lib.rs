@@ -5,6 +5,7 @@ pub mod hardware;
 pub mod license;
 pub mod sync;
 pub mod updater;
+pub mod vision;
 
 use commands::AppContext;
 use db::Database;
@@ -43,6 +44,40 @@ pub fn run() {
         }
     }
 
+    let face_engine = match vision::find_models_dir() {
+        Some(dir) => match vision::FaceEngine::load(&dir) {
+            Ok(engine) => {
+                tracing::info!("Loaded ONNX face detection/recognition models from {:?}", dir);
+                Some(engine)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load ONNX face models from {:?}: {}", dir, e);
+                None
+            }
+        },
+        None => {
+            tracing::warn!("Could not locate desktop/models/*.onnx — real face scanning (scan_face_frame) will be unavailable.");
+            None
+        }
+    };
+
+    let person_counter = match vision::find_models_dir() {
+        Some(dir) => match vision::PersonCounter::load(&dir) {
+            Ok(c) => {
+                tracing::info!("Loaded yolov8n.onnx person counter from {:?}", dir);
+                Some(c)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load yolov8n.onnx from {:?}: {}", dir, e);
+                None
+            }
+        },
+        None => {
+            tracing::warn!("Could not locate desktop/models/yolov8n.onnx — tailgate person counting will be unavailable.");
+            None
+        }
+    };
+
     let db_arc = Arc::new(db);
     let license_arc = Arc::new(license);
 
@@ -56,6 +91,8 @@ pub fn run() {
         hardware: HardwareManager::new(),
         face_store,
         session: Arc::new(parking_lot::RwLock::new(None)),
+        face_engine: Arc::new(face_engine),
+        person_counter: Arc::new(person_counter),
     };
 
     tauri::Builder::default()
@@ -88,6 +125,8 @@ pub fn run() {
             commands::list_walk_ins,
             commands::extend_walk_in,
             commands::void_walk_in,
+            commands::scan_face_frame,
+            commands::count_persons_in_frame,
             commands::process_face_scan,
             commands::log_tailgate_event,
             commands::list_recent_attendance,

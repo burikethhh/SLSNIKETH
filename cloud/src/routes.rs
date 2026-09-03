@@ -1,11 +1,15 @@
 use axum::{
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 use axum::extract::Query;
 use chrono::{Duration, Utc};
+use std::net::SocketAddr;
+use std::time::Duration as StdDuration;
+
+use crate::rate_limit::{client_ip, too_many_requests, RateLimiter};
 use gympos_shared::{
     AdminCreateBranchForOwnerRequest, CreateStaffRequest, FaceVectorSyncItem, IssueBranchKeyRequest,
     LicenseClaims, OwnerLoginRequest, OwnerLoginResponse, OwnerRegisterRequest, PublishReleaseRequest,
@@ -33,17 +37,26 @@ pub struct AppState {
     pub disabled_gyms: Arc<RwLock<HashSet<Uuid>>>,
     pub revoked_licenses: Arc<RwLock<HashSet<Uuid>>>,
     pub admin_key: String,
+    pub login_limiter: Arc<RateLimiter>,
 }
 
 fn verify_admin_auth(headers: &HeaderMap, admin_key: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    use subtle::ConstantTimeEq;
+
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
         .or_else(|| headers.get("x-admin-key").and_then(|v| v.to_str().ok()));
 
-    match auth_header {
-        Some(token) if token.trim() == admin_key => Ok(()),
+    // Constant-time comparison to avoid leaking key material via response-timing
+    // side channels on this security-critical CEO/admin gate.
+    let matches = auth_header
+        .map(|token| token.trim().as_bytes().ct_eq(admin_key.as_bytes()).into())
+        .unwrap_or(false);
+
+    match matches {
+        true => Ok(()),
         _ => Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -92,9 +105,23 @@ pub async fn health_check() -> impl IntoResponse {
 
 pub async fn admin_login(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<AdminLoginRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    if payload.admin_key.trim() == state.admin_key {
+) -> Result<impl IntoResponse, axum::response::Response> {
+    // This is the single most sensitive endpoint in the system (the CEO/master
+    // key gates license issuance for the entire fleet) — limit brute-force
+    // guesses tightly: 5 attempts per IP per 15 minutes.
+    let ip = client_ip(&headers, Some(addr));
+    let key = format!("admin-login:{}", ip);
+    if let Err(retry_after) = state.login_limiter.check(&key, 5, StdDuration::from_secs(15 * 60)) {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+
+    use subtle::ConstantTimeEq;
+    let ok: bool = payload.admin_key.trim().as_bytes().ct_eq(state.admin_key.as_bytes()).into();
+    if ok {
+        state.login_limiter.reset(&key);
         Ok((
             StatusCode::OK,
             Json(json!({
@@ -107,7 +134,8 @@ pub async fn admin_login(
         Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "Invalid Master Admin Key", "authenticated": false })),
-        ))
+        )
+            .into_response())
     }
 }
 
@@ -570,13 +598,9 @@ pub async fn analytics_fleet(
 }
 
 // --- Owner Portal Authentication & Scoped Management ---
-
-fn hash_password(password: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
+// Password/PIN hashing lives in `gympos_shared::{hash_password, verify_password}`
+// (Argon2id) so cloud and desktop always agree on the hash format — see that
+// crate for details, including transparent legacy SHA-256 verification.
 
 fn extract_owner_email(headers: &HeaderMap) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let auth_header = headers
@@ -606,22 +630,35 @@ fn extract_owner_email(headers: &HeaderMap) -> Result<String, (StatusCode, Json<
 
 pub async fn owner_register(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<OwnerRegisterRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<impl IntoResponse, axum::response::Response> {
+    // Cap registrations per IP to slow down mass account creation / enumeration.
+    let ip = client_ip(&headers, Some(addr));
+    if let Err(retry_after) = state
+        .login_limiter
+        .check(&format!("owner-register:{}", ip), 5, StdDuration::from_secs(60 * 60))
+    {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+
     let email_norm = payload.email.trim().to_lowercase();
     if !is_qualified_email(&email_norm) || payload.password.len() < 4 {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "Qualified email and minimum 4-char password required", "code": "INVALID_CREDENTIALS" })),
-        ));
+        )
+            .into_response());
     }
     if state.db.owner_exists(&email_norm).unwrap_or(false) {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({ "error": "Email already registered — please login", "code": "EMAIL_EXISTS" })),
-        ));
+        )
+            .into_response());
     }
-    let password_hash = hash_password(&payload.password);
+    let password_hash = gympos_shared::hash_password(&payload.password);
     let _ = state.db.create_owner_account(&email_norm, &password_hash, &payload.company_name);
     let _ = state.db.log_audit(&email_norm, None, "owner_register", Some(&payload.company_name));
 
@@ -638,18 +675,34 @@ pub async fn owner_register(
 
 pub async fn owner_login(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<OwnerLoginRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<impl IntoResponse, axum::response::Response> {
     let email_norm = payload.email.trim().to_lowercase();
     if !is_qualified_email(&email_norm) {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))).into_response());
     }
-    let password_hash = hash_password(&payload.password);
-    let company_name = state.db.verify_owner_login(&email_norm, &password_hash).unwrap_or(None);
+
+    // Two layers: a per-(IP, email) limit that catches credential stuffing
+    // against one account, and a coarser per-IP limit that catches an
+    // attacker sweeping through many different email addresses.
+    let ip = client_ip(&headers, Some(addr));
+    let per_account_key = format!("owner-login:{}:{}", ip, email_norm);
+    let per_ip_key = format!("owner-login-ip:{}", ip);
+    if let Err(retry_after) = state.login_limiter.check(&per_account_key, 8, StdDuration::from_secs(10 * 60)) {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+    if let Err(retry_after) = state.login_limiter.check(&per_ip_key, 30, StdDuration::from_secs(10 * 60)) {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+
+    let company_name = state.db.verify_owner_login(&email_norm, &payload.password).unwrap_or(None);
     if company_name.is_none() {
         // Strict: no auto-create on bad password — return 401, do not overwrite hash
-        return Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"}))));
+        return Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"}))).into_response());
     }
+    state.login_limiter.reset(&per_account_key);
     let company = company_name.unwrap();
     let _ = state.db.log_audit(&email_norm, None, "owner_login", None);
     Ok((
@@ -728,7 +781,7 @@ pub async fn admin_list_owners_hierarchy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _ = verify_admin_auth(&headers, &state.admin_key);
+    verify_admin_auth(&headers, &state.admin_key)?;
     let hierarchy = state.db.list_all_owners_with_branches().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -744,7 +797,7 @@ pub async fn admin_create_branch_for_owner(
     Path(owner_email): Path<String>,
     Json(payload): Json<AdminCreateBranchForOwnerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _ = verify_admin_auth(&headers, &state.admin_key);
+    verify_admin_auth(&headers, &state.admin_key)?;
     let owner_norm = owner_email.trim().to_lowercase();
     let branch_name = payload.branch_name.trim().to_string();
 
@@ -827,7 +880,7 @@ pub async fn admin_issue_branch_key(
     Path(gym_id): Path<Uuid>,
     Json(payload): Json<IssueBranchKeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _ = verify_admin_auth(&headers, &state.admin_key);
+    verify_admin_auth(&headers, &state.admin_key)?;
 
     let gym = state.db.get_gym_by_id(&gym_id).map_err(|e| {
         (
@@ -1054,7 +1107,7 @@ pub async fn owner_create_staff(
         ));
     }
 
-    let pin_hash = hash_password(&pin_code);
+    let pin_hash = gympos_shared::hash_password(&pin_code);
     let staff_id = Uuid::new_v4().to_string();
     let now = Utc::now();
 
@@ -1299,6 +1352,3 @@ pub async fn list_releases_endpoint(
     let list = state.db.list_releases().unwrap_or_default();
     Ok((StatusCode::OK, Json(list)))
 }
-
-
-

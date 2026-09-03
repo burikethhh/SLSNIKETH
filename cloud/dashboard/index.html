@@ -527,12 +527,10 @@
         let disabledGymIds = new Set();
 
         function getAdminKey() {
-            let key = localStorage.getItem('gympos_admin_key');
-            if (!key) {
-                key = "gympos_master_ceo_secret_2026";
-                localStorage.setItem('gympos_admin_key', key);
-            }
-            return key;
+            // No hardcoded default: the real admin key is only ever the value
+            // configured server-side via the ADMIN_SECRET_KEY secret. Operators
+            // must enter it once; it is then cached in localStorage.
+            return localStorage.getItem('gympos_admin_key') || "";
         }
 
         function promptAdminKey() {
