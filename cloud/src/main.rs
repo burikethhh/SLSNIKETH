@@ -25,8 +25,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    // SECURITY: do NOT reintroduce a hardcoded fallback key/secret here — a
+    // checked-in RSA private key or admin secret is not actually secret (see
+    // the audit notes in crypto.rs and MASTER_ARCHITECTURE_AND_CLAUDE_ROADMAP.md
+    // section 3.1). `rsa_private_key.pem` is gitignored and safe to use as a
+    // LOCAL persistence convenience (so the key survives restarts without an
+    // env var), but it must never be committed, and there is still a secure
+    // ephemeral fallback if neither is present.
     let signer = if let Ok(pem) = std::env::var("RSA_PRIVATE_KEY_PEM") {
-        tracing::info!("Loaded RSA private key from environment");
+        tracing::info!("Loaded RSA private key from RSA_PRIVATE_KEY_PEM environment variable");
         LicenseSigner::from_pem(&pem)?
     } else if let Ok(pem) = std::fs::read_to_string("rsa_private_key.pem") {
         tracing::info!("Loaded RSA private key from rsa_private_key.pem");
@@ -36,9 +43,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         LicenseSigner::generate_ephemeral()?
     };
 
-    let admin_key = match std::env::var("ADMIN_SECRET_KEY") {
-        Ok(key) => key,
-        Err(_) => "gympos_master_ceo_secret_2026".to_string(),
+    let admin_key = if let Ok(key) = std::env::var("ADMIN_SECRET_KEY") {
+        key
+    } else if let Ok(key) = std::fs::read_to_string("admin_secret_key.txt") {
+        key.trim().to_string()
+    } else {
+        let generated = crypto::generate_random_secret();
+        let _ = std::fs::write("admin_secret_key.txt", &generated);
+        tracing::warn!("================================================================");
+        tracing::warn!("SECURITY WARNING: ADMIN_SECRET_KEY is not set.");
+        tracing::warn!("Generated a random CEO admin key and saved it to admin_secret_key.txt");
+        tracing::warn!("(gitignored) so it persists across restarts on this machine.");
+        tracing::warn!("Set ADMIN_SECRET_KEY as a real secret for production deployments.");
+        tracing::warn!("================================================================");
+        generated
     };
     tracing::info!("Master Admin Authentication active");
 
@@ -136,16 +154,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or(8080);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    tracing::info!("GymPOS Cloud Backend listening on http://{}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await?;
+    loop {
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!("Failed to bind to {}: {}. Retrying in 2s...", addr, e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                continue;
+            }
+        };
 
-    Ok(())
+        tracing::info!("GymPOS Cloud Backend listening on http://{}", addr);
+
+        if let Err(err) = axum::serve(
+            listener,
+            app.clone().into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        {
+            tracing::error!("Server error: {}. Restarting listener in 1s...", err);
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    }
 }
 
 async fn serve_portal_html() -> impl axum::response::IntoResponse {
