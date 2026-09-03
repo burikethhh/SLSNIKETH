@@ -7,9 +7,10 @@ use axum::{
 use axum::extract::Query;
 use chrono::{Duration, Utc};
 use gympos_shared::{
-    FaceVectorSyncItem, LicenseClaims, OwnerLoginRequest, OwnerLoginResponse,
+    CreateStaffRequest, FaceVectorSyncItem, LicenseClaims, OwnerLoginRequest, OwnerLoginResponse,
     OwnerRegisterRequest, PublishReleaseRequest, ReleaseInfo, SavePlansRequest, SaveProductsRequest,
-    SavePromosRequest, SyncPushPayload, SyncResponse, UpdateCheckRequest, UpdateCheckResponse,
+    SavePromosRequest, StaffAccount, StaffRole, SyncPushPayload, SyncResponse, UpdateCheckRequest,
+    UpdateCheckResponse, UpdateStaffRequest,
 };
 use parking_lot::RwLock;
 use serde_json::json;
@@ -462,10 +463,11 @@ pub async fn sync_push(
     // 5. Query all inter-branch members from sister gyms under the same owner (trusted)
     let sister_branch_members = state.db.get_sister_branch_members(&trusted_owner, &payload.gym_id).unwrap_or_default();
 
-    // 6. Query updated remote catalog, plans, and promos for this owner
-    let remote_catalog = state.db.get_products(&trusted_owner).ok();
+    // 6. Query updated remote catalog, plans, promos, and staff for this branch (with branch overrides)
+    let remote_catalog = state.db.get_branch_products(&trusted_owner, &payload.gym_id).ok();
     let remote_plans = state.db.get_plans(&trusted_owner).ok();
     let remote_promos = state.db.get_promos(&trusted_owner).ok();
+    let staff_accounts = state.db.list_staff_for_branch(&trusted_owner, &payload.gym_id).ok();
 
     Ok((
         StatusCode::OK,
@@ -479,6 +481,7 @@ pub async fn sync_push(
             remote_catalog,
             remote_plans,
             remote_promos,
+            staff_accounts,
             server_time: Utc::now(),
         }),
     ))
@@ -819,6 +822,188 @@ pub async fn owner_save_promos(
             "status": "success",
             "saved_count": count,
             "message": "Promo vouchers updated and queued for POS terminal sync"
+        })),
+    ))
+}
+
+// --- Staff & Cashier Management (Owner Scoped) ---
+
+pub async fn owner_list_staff(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let staff = state.db.list_staff_by_owner(&owner_email).unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "owner_email": owner_email,
+            "staff": staff,
+            "count": staff.len()
+        })),
+    ))
+}
+
+pub async fn owner_create_staff(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateStaffRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+
+    let full_name = payload.full_name.trim().to_string();
+    let username = payload.username.trim().to_lowercase();
+    let pin_code = payload.pin_code.trim().to_string();
+
+    if full_name.is_empty() || username.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Full name and username are required", "code": "VALIDATION_FAILED" })),
+        ));
+    }
+    if pin_code.len() < 4 || pin_code.len() > 8 || !pin_code.chars().all(|c| c.is_ascii_digit()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "PIN code must be 4 to 8 numeric digits", "code": "INVALID_PIN_FORMAT" })),
+        ));
+    }
+
+    let pin_hash = hash_password(&pin_code);
+    let staff_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+
+    let staff = StaffAccount {
+        id: staff_id.clone(),
+        owner_email: owner_email.clone(),
+        gym_id: payload.gym_id,
+        gym_name: payload.gym_name,
+        full_name,
+        username,
+        pin_hash,
+        role: payload.role.unwrap_or(StaffRole::Staff),
+        is_active: true,
+        created_at: now,
+        updated_at: now,
+    };
+
+    state.db.create_staff_account(&staff).map_err(|e| {
+        (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": format!("Could not create staff: {}", e), "code": "STAFF_CREATE_ERROR" })),
+        )
+    })?;
+
+    let _ = state.db.log_audit(&owner_email, staff.gym_id.as_ref(), "create_staff", Some(&staff.full_name));
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "status": "created",
+            "staff": staff
+        })),
+    ))
+}
+
+pub async fn owner_update_staff(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+    Json(payload): Json<UpdateStaffRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+
+    if let Some(ref pin) = payload.pin_code {
+        let pin = pin.trim();
+        if pin.len() < 4 || pin.len() > 8 || !pin.chars().all(|c| c.is_ascii_digit()) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "PIN code must be 4 to 8 numeric digits", "code": "INVALID_PIN_FORMAT" })),
+            ));
+        }
+    }
+
+    let updated = state.db.update_staff_account(&owner_email, &staff_id, &payload).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Update staff error: {}", e) })),
+        )
+    })?;
+
+    if updated {
+        let _ = state.db.log_audit(&owner_email, None, "update_staff", Some(&staff_id));
+        Ok((
+            StatusCode::OK,
+            Json(json!({ "status": "updated", "staff_id": staff_id })),
+        ))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Staff account not found", "code": "STAFF_NOT_FOUND" })),
+        ))
+    }
+}
+
+pub async fn owner_delete_staff(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(staff_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    let deleted = state.db.delete_staff_account(&owner_email, &staff_id).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Delete staff error: {}", e) })),
+        )
+    })?;
+
+    if deleted {
+        let _ = state.db.log_audit(&owner_email, None, "delete_staff", Some(&staff_id));
+        Ok((
+            StatusCode::OK,
+            Json(json!({ "status": "deleted", "staff_id": staff_id })),
+        ))
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Staff account not found", "code": "STAFF_NOT_FOUND" })),
+        ))
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct BranchOverridePayload {
+    pub gym_id: Uuid,
+    pub product_id: String,
+    pub price: f64,
+    pub stock: i32,
+}
+
+pub async fn owner_save_branch_override(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BranchOverridePayload>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers)?;
+    state.db.save_branch_product_override(
+        &owner_email,
+        &payload.gym_id,
+        &payload.product_id,
+        payload.price,
+        payload.stock,
+    ).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to save branch override: {}", e) })),
+        )
+    })?;
+
+    Ok((
+        StatusCode::OK,
+        Json(json!({
+            "status": "success",
+            "gym_id": payload.gym_id,
+            "product_id": payload.product_id,
+            "message": "Branch price override saved"
         })),
     ))
 }

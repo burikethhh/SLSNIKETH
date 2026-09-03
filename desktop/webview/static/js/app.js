@@ -22,6 +22,28 @@ async function invokeTauri(command, args = {}) {
             return args.settings;
         } else if (command === 'get_license_status') {
             return { status: "Unlicensed", claims: null };
+        } else if (command === 'authenticate_staff_pin') {
+            if (args.pin === '1234') {
+                return { authenticated: true, staff_id: 'staff-default-1', full_name: 'Front-Desk Cashier', username: 'cashier1', role: 'staff', gym_id: null, gym_name: 'Default Branch' };
+            } else if (args.pin === '8888') {
+                return { authenticated: true, staff_id: 'staff-default-2', full_name: 'Duty Manager', username: 'manager1', role: 'manager', gym_id: null, gym_name: 'Default Branch' };
+            }
+            throw new Error("Invalid PIN. Access Denied.");
+        } else if (command === 'authenticate_owner') {
+            if (args.password && args.password.length >= 6) {
+                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: null, gym_name: null };
+            }
+            throw new Error("Invalid owner credentials.");
+        } else if (command === 'get_terminal_session') {
+            return currentTerminalSession;
+        } else if (command === 'logout_terminal_session') {
+            currentTerminalSession = null;
+            return null;
+        } else if (command === 'list_terminal_staff') {
+            return [
+                { id: 'staff-1', full_name: 'Front-Desk Cashier', username: 'cashier1', role: 'staff', is_active: true },
+                { id: 'staff-2', full_name: 'Duty Manager', username: 'manager1', role: 'manager', is_active: true }
+            ];
         } else if (command === 'get_dashboard_summary') {
             return {
                 active_members: cachedMembers.length,
@@ -2536,15 +2558,216 @@ async function triggerUpdateInstall() {
     }
 }
 
-// Hook checkAppVersion and checkForUpdatesSilent into initApp
+// Hook checkAppVersion, checkForUpdatesSilent, and checkExistingTerminalSession into initApp
 const origInitApp = initApp;
 initApp = async function() {
     await origInitApp();
     await checkAppVersion();
+    await checkExistingTerminalSession();
     setTimeout(checkForUpdatesSilent, 3000);
     // Background interval check every 1 hour
     setInterval(checkForUpdatesSilent, 3600000);
 };
 
+// --- Terminal Role-Based Access Control (RBAC) & PIN Lock Screen ---
+
+let currentTerminalSession = null;
+let currentEnteredPin = "";
+
+function updatePinDots() {
+    for (let i = 1; i <= 4; i++) {
+        const dot = document.getElementById(`pin-dot-${i}`);
+        if (dot) {
+            if (i <= currentEnteredPin.length) {
+                dot.className = "w-4 h-4 rounded-full bg-purple-400 border-2 border-purple-300 shadow-md shadow-purple-500/50 transition-all scale-110";
+            } else {
+                dot.className = "w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all";
+            }
+        }
+    }
+}
+
+function pressPinKey(digit) {
+    const err = document.getElementById('pin-error-text');
+    if (err) err.innerText = "";
+    if (currentEnteredPin.length < 4) {
+        currentEnteredPin += digit;
+        updatePinDots();
+        if (currentEnteredPin.length === 4) {
+            setTimeout(submitPinLogin, 150);
+        }
+    }
+}
+
+function clearPin() {
+    currentEnteredPin = "";
+    updatePinDots();
+    const err = document.getElementById('pin-error-text');
+    if (err) err.innerText = "";
+}
+
+async function submitPinLogin() {
+    if (currentEnteredPin.length < 4) return;
+    const pin = currentEnteredPin;
+    const err = document.getElementById('pin-error-text');
+
+    try {
+        const res = await invokeTauri('authenticate_staff_pin', { pin });
+        if (res && res.authenticated) {
+            currentTerminalSession = {
+                is_authenticated: true,
+                user_id: res.staff_id,
+                display_name: res.full_name,
+                role: res.role,
+                gym_id: res.gym_id,
+                gym_name: res.gym_name
+            };
+            localStorage.setItem('gympos_terminal_session', JSON.stringify(currentTerminalSession));
+            unlockTerminalUI();
+        } else {
+            if (err) err.innerText = "Invalid PIN. Access Denied.";
+            clearPin();
+        }
+    } catch (e) {
+        if (err) err.innerText = e || "Invalid PIN. Access Denied.";
+        clearPin();
+    }
+}
+
+function openOwnerLoginModal() {
+    const modal = document.getElementById('modal-owner-login');
+    if (modal) modal.classList.remove('hidden');
+    const err = document.getElementById('owner-login-error');
+    if (err) err.classList.add('hidden');
+}
+
+function closeOwnerLoginModal() {
+    const modal = document.getElementById('modal-owner-login');
+    if (modal) modal.classList.add('hidden');
+}
+
+async function submitOwnerLogin(e) {
+    if (e) e.preventDefault();
+    const email = document.getElementById('owner-login-email').value.trim();
+    const password = document.getElementById('owner-login-pass').value.trim();
+    const err = document.getElementById('owner-login-error');
+
+    try {
+        const res = await invokeTauri('authenticate_owner', { email, password });
+        if (res && res.authenticated) {
+            currentTerminalSession = {
+                is_authenticated: true,
+                user_id: res.staff_id,
+                display_name: res.full_name,
+                role: 'owner',
+                gym_id: null,
+                gym_name: null
+            };
+            localStorage.setItem('gympos_terminal_session', JSON.stringify(currentTerminalSession));
+            closeOwnerLoginModal();
+            unlockTerminalUI();
+        } else {
+            if (err) {
+                err.innerText = "Invalid Owner Credentials.";
+                err.classList.remove('hidden');
+            }
+        }
+    } catch (e) {
+        if (err) {
+            err.innerText = e || "Authentication failed.";
+            err.classList.remove('hidden');
+        }
+    }
+}
+
+function lockTerminal() {
+    currentTerminalSession = null;
+    localStorage.removeItem('gympos_terminal_session');
+    clearPin();
+    const lockScreen = document.getElementById('terminal-lock-screen');
+    if (lockScreen) lockScreen.classList.remove('hidden');
+}
+
+function unlockTerminalUI() {
+    const lockScreen = document.getElementById('terminal-lock-screen');
+    if (lockScreen) lockScreen.classList.add('hidden');
+
+    const nameEl = document.getElementById('session-user-name');
+    const roleEl = document.getElementById('session-user-role');
+
+    if (currentTerminalSession) {
+        if (nameEl) nameEl.innerText = currentTerminalSession.display_name;
+        if (roleEl) {
+            if (currentTerminalSession.role === 'owner') {
+                roleEl.innerText = "Master Owner";
+                roleEl.className = "text-[10px] uppercase font-mono font-bold text-amber-400";
+            } else if (currentTerminalSession.role === 'manager') {
+                roleEl.innerText = "Branch Manager";
+                roleEl.className = "text-[10px] uppercase font-mono font-bold text-blue-400";
+            } else {
+                roleEl.innerText = "Cashier Mode";
+                roleEl.className = "text-[10px] uppercase font-mono font-bold text-purple-400";
+            }
+        }
+
+        applyRolePermissions(currentTerminalSession.role);
+    }
+}
+
+function applyRolePermissions(role) {
+    const isStaff = (role === 'staff');
+
+    // Hide or restrict views for front-desk staff
+    document.querySelectorAll('.nav-item').forEach(item => {
+        const text = item.innerText.toLowerCase();
+        // Staff should not see settings, hardware, or license
+        if (isStaff && (text.includes('hardware') || text.includes('branding') || text.includes('settings'))) {
+            item.style.display = 'none';
+        } else {
+            item.style.display = '';
+        }
+    });
+
+    // License button in header
+    const licenseBtn = document.querySelector('button[onclick*="openLicenseModal"]');
+    if (licenseBtn) {
+        licenseBtn.style.display = isStaff ? 'none' : '';
+    }
+
+    // If staff was on a restricted screen, switch to POS or Gate
+    if (isStaff && (currentView === 'hardware' || currentView === 'branding')) {
+        switchView('pos');
+    }
+}
+
+async function checkExistingTerminalSession() {
+    try {
+        const session = await invokeTauri('get_terminal_session');
+        if (session && session.is_authenticated) {
+            currentTerminalSession = session;
+            unlockTerminalUI();
+            return;
+        }
+    } catch (e) {
+        // Fallback
+    }
+
+    const saved = localStorage.getItem('gympos_terminal_session');
+    if (saved) {
+        try {
+            currentTerminalSession = JSON.parse(saved);
+            if (currentTerminalSession && currentTerminalSession.is_authenticated) {
+                unlockTerminalUI();
+                return;
+            }
+        } catch (e) {}
+    }
+
+    // Default: Show Lock Screen
+    const lockScreen = document.getElementById('terminal-lock-screen');
+    if (lockScreen) lockScreen.classList.remove('hidden');
+}
+
 document.addEventListener('DOMContentLoaded', initApp);
+
 

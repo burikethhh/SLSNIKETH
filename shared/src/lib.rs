@@ -361,6 +361,8 @@ pub struct RemoteCatalogProduct {
     pub price: f64,
     pub stock: i32,
     pub category: String,
+    #[serde(default)]
+    pub target_gym_id: Option<Uuid>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
 }
@@ -371,6 +373,8 @@ pub struct MembershipPlanConfig {
     pub name: String,
     pub price_monthly: f64,
     pub student_discount_pct: f64,
+    #[serde(default)]
+    pub target_gym_id: Option<Uuid>,
     #[serde(default)]
     pub benefits: Vec<String>,
     #[serde(default = "Utc::now")]
@@ -507,6 +511,7 @@ pub struct SyncResponse {
     pub remote_catalog: Option<Vec<RemoteCatalogProduct>>,
     pub remote_plans: Option<Vec<MembershipPlanConfig>>,
     pub remote_promos: Option<Vec<PromoVoucherConfig>>,
+    pub staff_accounts: Option<Vec<StaffAccount>>,
     pub server_time: DateTime<Utc>,
 }
 
@@ -557,5 +562,87 @@ pub struct PublishReleaseRequest {
     pub rollout_percentage: Option<u32>,
     pub is_mandatory: Option<bool>,
 }
+
+// --- Role-Based Access Control (RBAC) & Staff Accounts ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StaffRole {
+    Staff,    // Front-desk cashier, gate kiosk, walk-in check-in
+    Manager,  // Branch manager, inventory restock, shifts
+    Owner,    // Franchise gym owner (master administrative privileges)
+}
+
+impl Default for StaffRole {
+    fn default() -> Self {
+        StaffRole::Staff
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaffAccount {
+    pub id: String,
+    pub owner_email: String,
+    pub gym_id: Option<Uuid>, // None means roaming across all owner branches
+    pub gym_name: Option<String>,
+    pub full_name: String,
+    pub username: String,
+    #[serde(default)]
+    pub pin_hash: String,
+    pub role: StaffRole,
+    pub is_active: bool,
+    #[serde(default = "Utc::now")]
+    pub created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateStaffRequest {
+    pub full_name: String,
+    pub username: String,
+    pub pin_code: String, // 4-6 digit numeric PIN
+    pub role: Option<StaffRole>,
+    pub gym_id: Option<Uuid>,
+    pub gym_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateStaffRequest {
+    pub full_name: Option<String>,
+    pub pin_code: Option<String>,
+    pub role: Option<StaffRole>,
+    pub gym_id: Option<Uuid>,
+    pub gym_name: Option<String>,
+    pub is_active: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaffLoginRequest {
+    pub pin_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StaffLoginResponse {
+    pub authenticated: bool,
+    pub staff_id: String,
+    pub full_name: String,
+    pub username: String,
+    pub role: StaffRole,
+    pub gym_id: Option<Uuid>,
+    pub gym_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalSession {
+    pub is_authenticated: bool,
+    pub user_id: String,
+    pub display_name: String,
+    pub role: StaffRole,
+    pub gym_id: Option<Uuid>,
+    pub gym_name: Option<String>,
+    pub logged_in_at: DateTime<Utc>,
+}
+
 
 

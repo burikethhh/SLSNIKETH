@@ -142,7 +142,15 @@ impl CloudSyncWorker {
                                         }
                                     }
 
-                                    // D. Check kill-switch
+                                    // D. Ingest staff accounts synced from cloud owner portal
+                                    if let Some(ref staff) = body.staff_accounts {
+                                        if !staff.is_empty() {
+                                            let count = self.db.upsert_synced_staff(staff).unwrap_or(0);
+                                            info!("Staff sync: Ingested {} staff accounts from Cloud Owner Portal", count);
+                                        }
+                                    }
+
+                                    // E. Check kill-switch
                                     if body.remote_disabled {
                                         warn!("REMOTE KILL SWITCH ACTIVATED: CEO Command Center disabled gym {}. Revoking local license.", claims.gym_name);
                                         self.license.revoke();

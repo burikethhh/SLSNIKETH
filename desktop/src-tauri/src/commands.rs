@@ -1,7 +1,7 @@
 use gympos_shared::{
     AppSettings, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest, CreateProductRequest,
-    CreateWalkInRequest, LicenseStatus, Member, ProductItem, SaleTransaction, UpdateCoachRequest, UpdateMemberRequest,
-    UpdateProductRequest, WalkInRecord,
+    CreateWalkInRequest, LicenseStatus, Member, ProductItem, SaleTransaction, StaffAccount, StaffLoginResponse,
+    StaffRole, TerminalSession, UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -17,6 +17,7 @@ pub struct AppContext {
     pub license: Arc<LicenseManager>,
     pub hardware: HardwareManager,
     pub face_store: FaceVectorStore,
+    pub session: Arc<parking_lot::RwLock<Option<TerminalSession>>>,
 }
 
 fn check_license_active(state: &AppContext) -> Result<(), String> {
@@ -569,4 +570,139 @@ pub async fn download_and_install_update(
 pub fn get_app_version() -> Result<String, String> {
     Ok(crate::updater::CURRENT_APP_VERSION.to_string())
 }
+
+// --- Terminal Role-Based Access Control (RBAC) Commands ---
+
+#[tauri::command]
+pub fn authenticate_staff_pin(
+    pin: String,
+    state: State<'_, AppContext>,
+) -> Result<StaffLoginResponse, String> {
+    let pin = pin.trim();
+    if pin.is_empty() {
+        return Err("PIN code cannot be empty".to_string());
+    }
+
+    let staff = state.db.authenticate_staff_pin(pin)
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or_else(|| "Invalid PIN. Access Denied.".to_string())?;
+
+    let session = TerminalSession {
+        is_authenticated: true,
+        user_id: staff.id.clone(),
+        display_name: staff.full_name.clone(),
+        role: staff.role,
+        gym_id: staff.gym_id,
+        gym_name: staff.gym_name.clone(),
+        logged_in_at: chrono::Utc::now(),
+    };
+
+    *state.session.write() = Some(session);
+
+    Ok(StaffLoginResponse {
+        authenticated: true,
+        staff_id: staff.id,
+        full_name: staff.full_name,
+        username: staff.username,
+        role: staff.role,
+        gym_id: staff.gym_id,
+        gym_name: staff.gym_name,
+    })
+}
+
+#[tauri::command]
+pub async fn authenticate_owner(
+    email: String,
+    password: String,
+    state: State<'_, AppContext>,
+) -> Result<StaffLoginResponse, String> {
+    let email = email.trim().to_lowercase();
+    let password = password.trim();
+
+    if email.is_empty() || password.is_empty() {
+        return Err("Email and password are required".to_string());
+    }
+
+    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client.post(format!("{}/api/v1/owner/auth/login", cloud_url))
+        .json(&serde_json::json!({
+            "email": email,
+            "password": password
+        }))
+        .send()
+        .await;
+
+    let mut authenticated = false;
+    let mut company_name = "Franchise Owner".to_string();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            if let Ok(data) = r.json::<serde_json::Value>().await {
+                if data["authenticated"].as_bool().unwrap_or(false) {
+                    authenticated = true;
+                    if let Some(comp) = data["company_name"].as_str() {
+                        company_name = comp.to_string();
+                    }
+                }
+            }
+        }
+        _ => {
+            // Offline fallback: Check if email matches active license claims and password length >= 6
+            if let Some(claims) = state.license.current_claims() {
+                if claims.owner_email.to_lowercase() == email && password.len() >= 6 {
+                    authenticated = true;
+                    company_name = format!("Owner ({})", claims.gym_name);
+                }
+            }
+        }
+    }
+
+    if !authenticated {
+        return Err("Invalid owner email or password.".to_string());
+    }
+
+    let session = TerminalSession {
+        is_authenticated: true,
+        user_id: email.clone(),
+        display_name: format!("Owner Admin ({})", company_name),
+        role: StaffRole::Owner,
+        gym_id: None,
+        gym_name: None,
+        logged_in_at: chrono::Utc::now(),
+    };
+
+    *state.session.write() = Some(session);
+
+    Ok(StaffLoginResponse {
+        authenticated: true,
+        staff_id: format!("owner:{}", email),
+        full_name: company_name,
+        username: email,
+        role: StaffRole::Owner,
+        gym_id: None,
+        gym_name: None,
+    })
+}
+
+#[tauri::command]
+pub fn get_terminal_session(state: State<'_, AppContext>) -> Result<Option<TerminalSession>, String> {
+    Ok(state.session.read().clone())
+}
+
+#[tauri::command]
+pub fn logout_terminal_session(state: State<'_, AppContext>) -> Result<(), String> {
+    *state.session.write() = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_terminal_staff(state: State<'_, AppContext>) -> Result<Vec<StaffAccount>, String> {
+    state.db.list_local_staff().map_err(|e| e.to_string())
+}
+
 

@@ -101,6 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/owner/catalog/products", post(routes::owner_save_products))
         .route("/api/v1/owner/catalog/plans", post(routes::owner_save_plans))
         .route("/api/v1/owner/catalog/promos", post(routes::owner_save_promos))
+        .route("/api/v1/owner/catalog/override", post(routes::owner_save_branch_override))
+        .route("/api/v1/owner/staff", get(routes::owner_list_staff).post(routes::owner_create_staff))
+        .route("/api/v1/owner/staff/:id", axum::routing::put(routes::owner_update_staff).delete(routes::owner_delete_staff))
         // Scalable Auto-Updater & Release Controller
         .route("/api/v1/updates/check", get(routes::check_for_updates))
         .route("/api/v1/updates/publish", post(routes::publish_release_endpoint))

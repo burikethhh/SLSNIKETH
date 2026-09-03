@@ -2,8 +2,8 @@ use chrono::{DateTime, Duration, Utc};
 use gympos_shared::{
     AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest,
     CreateProductRequest, CreateWalkInRequest, Member, MembershipPlanConfig, ProductItem, PromoVoucherConfig,
-    RemoteCatalogProduct, SaleTransaction, UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest,
-    WalkInRecord,
+    RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole, UpdateCoachRequest, UpdateMemberRequest,
+    UpdateProductRequest, WalkInRecord,
 };
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -134,6 +134,19 @@ impl Database {
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (coach_id) REFERENCES coaches(id)
             );
+
+            CREATE TABLE IF NOT EXISTS local_staff_accounts (
+                id TEXT PRIMARY KEY,
+                owner_email TEXT NOT NULL,
+                gym_id TEXT,
+                gym_name TEXT,
+                full_name TEXT NOT NULL,
+                username TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'staff',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
             "#,
         )?;
 
@@ -186,6 +199,31 @@ impl Database {
                     ('coach-2', 'Elena Rostova', 'HIIT & Mobility Conditioning', '0917-555-0102', 18),
                     ('coach-3', 'Darius Stone', 'Powerlifting & Athletic Prep', '0917-555-0103', 10);
                 "#,
+            )?;
+        }
+
+        // Seed default staff accounts if empty (Default cashiers for instant out-of-the-box operation)
+        let staff_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_staff_accounts", [], |r| r.get(0)).unwrap_or(0);
+        if staff_count == 0 {
+            use sha2::{Digest, Sha256};
+            let mut h1 = Sha256::new();
+            h1.update(b"1234");
+            let pin_1234 = format!("{:x}", h1.finalize());
+
+            let mut h2 = Sha256::new();
+            h2.update(b"8888");
+            let pin_8888 = format!("{:x}", h2.finalize());
+
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at)
+                 VALUES ('staff-default-1', 'system@local', NULL, 'Default Branch', 'Front-Desk Cashier', 'cashier1', ?1, 'staff', 1, ?2)",
+                params![pin_1234, now],
+            )?;
+            conn.execute(
+                "INSERT INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at)
+                 VALUES ('staff-default-2', 'system@local', NULL, 'Default Branch', 'Duty Manager', 'manager1', ?1, 'manager', 1, ?2)",
+                params![pin_8888, now],
             )?;
         }
 
@@ -1263,5 +1301,150 @@ impl Database {
         let now = Utc::now() - Duration::hours(1);
         conn.execute("UPDATE walk_ins SET expires_at = ?1 WHERE id = ?2", params![now.to_rfc3339(), id])?;
         Ok(())
+    }
+
+    // --- Local Staff & Cashier RBAC Methods ---
+
+    pub fn upsert_synced_staff(&self, staff_list: &[StaffAccount]) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut count = 0;
+        for s in staff_list {
+            let gym_id_str = s.gym_id.map(|u| u.to_string());
+            conn.execute(
+                "INSERT INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(id) DO UPDATE SET
+                    full_name = ?5,
+                    username = ?6,
+                    pin_hash = ?7,
+                    role = ?8,
+                    gym_id = ?3,
+                    gym_name = ?4,
+                    is_active = ?9,
+                    updated_at = ?10",
+                params![
+                    s.id,
+                    s.owner_email,
+                    gym_id_str,
+                    s.gym_name,
+                    s.full_name,
+                    s.username,
+                    s.pin_hash,
+                    match s.role {
+                        StaffRole::Manager => "manager",
+                        StaffRole::Owner => "owner",
+                        StaffRole::Staff => "staff",
+                    },
+                    if s.is_active { 1 } else { 0 },
+                    s.updated_at.to_rfc3339(),
+                ],
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    pub fn authenticate_staff_pin(&self, pin: &str) -> Result<Option<StaffAccount>> {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(pin.as_bytes());
+        let pin_hash = format!("{:x}", hasher.finalize());
+
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at
+             FROM local_staff_accounts
+             WHERE pin_hash = ?1 AND is_active = 1
+             LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query(params![pin_hash])?;
+        if let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let owner_email: String = row.get(1)?;
+            let gym_id_str: Option<String> = row.get(2)?;
+            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+            let gym_name: Option<String> = row.get(3)?;
+            let full_name: String = row.get(4)?;
+            let username: String = row.get(5)?;
+            let pin_hash: String = row.get(6)?;
+            let role_str: String = row.get(7)?;
+            let role = match role_str.as_str() {
+                "manager" => StaffRole::Manager,
+                "owner" => StaffRole::Owner,
+                _ => StaffRole::Staff,
+            };
+            let is_active_int: i32 = row.get(8)?;
+            let updated_at_str: String = row.get(9)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            return Ok(Some(StaffAccount {
+                id,
+                owner_email,
+                gym_id,
+                gym_name,
+                full_name,
+                username,
+                pin_hash,
+                role,
+                is_active: is_active_int > 0,
+                created_at: updated_at,
+                updated_at,
+            }));
+        }
+        Ok(None)
+    }
+
+    pub fn list_local_staff(&self) -> Result<Vec<StaffAccount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at
+             FROM local_staff_accounts
+             ORDER BY full_name",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let owner_email: String = row.get(1)?;
+            let gym_id_str: Option<String> = row.get(2)?;
+            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+            let gym_name: Option<String> = row.get(3)?;
+            let full_name: String = row.get(4)?;
+            let username: String = row.get(5)?;
+            let pin_hash: String = row.get(6)?;
+            let role_str: String = row.get(7)?;
+            let role = match role_str.as_str() {
+                "manager" => StaffRole::Manager,
+                "owner" => StaffRole::Owner,
+                _ => StaffRole::Staff,
+            };
+            let is_active_int: i32 = row.get(8)?;
+            let updated_at_str: String = row.get(9)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            Ok(StaffAccount {
+                id,
+                owner_email,
+                gym_id,
+                gym_name,
+                full_name,
+                username,
+                pin_hash,
+                role,
+                is_active: is_active_int > 0,
+                created_at: updated_at,
+                updated_at,
+            })
+        })?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
     }
 }

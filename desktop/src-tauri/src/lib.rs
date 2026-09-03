@@ -55,6 +55,7 @@ pub fn run() {
         license: license_arc,
         hardware: HardwareManager::new(),
         face_store,
+        session: Arc::new(parking_lot::RwLock::new(None)),
     };
 
     tauri::Builder::default()
@@ -106,6 +107,11 @@ pub fn run() {
             commands::check_for_updates,
             commands::download_and_install_update,
             commands::get_app_version,
+            commands::authenticate_staff_pin,
+            commands::authenticate_owner,
+            commands::get_terminal_session,
+            commands::logout_terminal_session,
+            commands::list_terminal_staff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running GymPOS tauri application");

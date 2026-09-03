@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use gympos_shared::{
     CartItem, LicenseTier, MembershipPlanConfig, OwnerBranchSummary, OwnerDashboardAnalytics,
-    PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct, SaleTransaction, UpdateGymRequest,
+    PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct, SaleTransaction, StaffAccount,
+    StaffRole, UpdateGymRequest, UpdateStaffRequest,
 };
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, Result};
@@ -152,6 +153,31 @@ impl CloudDatabase {
                 is_mandatory INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY(version, channel)
+            );
+
+            CREATE TABLE IF NOT EXISTS cloud_staff_accounts (
+                id TEXT PRIMARY KEY,
+                owner_email TEXT NOT NULL,
+                gym_id TEXT,
+                gym_name TEXT,
+                full_name TEXT NOT NULL,
+                username TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'staff',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(owner_email, username)
+            );
+
+            CREATE TABLE IF NOT EXISTS cloud_branch_product_overrides (
+                product_id TEXT NOT NULL,
+                gym_id TEXT NOT NULL,
+                owner_email TEXT NOT NULL,
+                price REAL NOT NULL,
+                stock INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(product_id, gym_id)
             );
             "#,
         )?;
@@ -677,6 +703,7 @@ impl CloudDatabase {
                 price,
                 stock,
                 category,
+                target_gym_id: None,
                 updated_at,
             })
         })?;
@@ -732,6 +759,7 @@ impl CloudDatabase {
                 name,
                 price_monthly,
                 student_discount_pct,
+                target_gym_id: None,
                 benefits,
                 updated_at,
             })
@@ -1142,6 +1170,275 @@ impl CloudDatabase {
             })
         })?;
 
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    // --- Staff & Cashier RBAC Management ---
+
+    pub fn create_staff_account(&self, staff: &StaffAccount) -> Result<()> {
+        let conn = self.conn.lock();
+        let gym_id_str = staff.gym_id.map(|u| u.to_string());
+        conn.execute(
+            "INSERT INTO cloud_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                staff.id,
+                staff.owner_email,
+                gym_id_str,
+                staff.gym_name,
+                staff.full_name,
+                staff.username,
+                staff.pin_hash,
+                match staff.role {
+                    StaffRole::Manager => "manager",
+                    StaffRole::Owner => "owner",
+                    StaffRole::Staff => "staff",
+                },
+                if staff.is_active { 1 } else { 0 },
+                staff.created_at.to_rfc3339(),
+                staff.updated_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_staff_by_owner(&self, owner_email: &str) -> Result<Vec<StaffAccount>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at
+             FROM cloud_staff_accounts WHERE owner_email = ?1 ORDER BY full_name",
+        )?;
+        let rows = stmt.query_map(params![owner_email], |row| {
+            let id: String = row.get(0)?;
+            let owner_email: String = row.get(1)?;
+            let gym_id_str: Option<String> = row.get(2)?;
+            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+            let gym_name: Option<String> = row.get(3)?;
+            let full_name: String = row.get(4)?;
+            let username: String = row.get(5)?;
+            let pin_hash: String = row.get(6)?;
+            let role_str: String = row.get(7)?;
+            let role: StaffRole = match role_str.to_lowercase().as_str() {
+                "manager" => StaffRole::Manager,
+                "owner" => StaffRole::Owner,
+                _ => StaffRole::Staff,
+            };
+            let is_active_int: i32 = row.get(8)?;
+            let created_at_str: String = row.get(9)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at_str: String = row.get(10)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(StaffAccount {
+                id,
+                owner_email,
+                gym_id,
+                gym_name,
+                full_name,
+                username,
+                pin_hash,
+                role,
+                is_active: is_active_int > 0,
+                created_at,
+                updated_at,
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn list_staff_for_branch(&self, owner_email: &str, gym_id: &Uuid) -> Result<Vec<StaffAccount>> {
+        let conn = self.conn.lock();
+        let gym_id_str = gym_id.to_string();
+        let mut stmt = conn.prepare(
+            "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at
+             FROM cloud_staff_accounts
+             WHERE owner_email = ?1 AND (gym_id = ?2 OR gym_id IS NULL OR gym_id = '') AND is_active = 1
+             ORDER BY full_name",
+        )?;
+        let rows = stmt.query_map(params![owner_email, gym_id_str], |row| {
+            let id: String = row.get(0)?;
+            let owner_email: String = row.get(1)?;
+            let gym_id_str: Option<String> = row.get(2)?;
+            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+            let gym_name: Option<String> = row.get(3)?;
+            let full_name: String = row.get(4)?;
+            let username: String = row.get(5)?;
+            let pin_hash: String = row.get(6)?;
+            let role_str: String = row.get(7)?;
+            let role: StaffRole = match role_str.to_lowercase().as_str() {
+                "manager" => StaffRole::Manager,
+                "owner" => StaffRole::Owner,
+                _ => StaffRole::Staff,
+            };
+            let is_active_int: i32 = row.get(8)?;
+            let created_at_str: String = row.get(9)?;
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at_str: String = row.get(10)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(StaffAccount {
+                id,
+                owner_email,
+                gym_id,
+                gym_name,
+                full_name,
+                username,
+                pin_hash,
+                role,
+                is_active: is_active_int > 0,
+                created_at,
+                updated_at,
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    pub fn delete_staff_account(&self, owner_email: &str, staff_id: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "DELETE FROM cloud_staff_accounts WHERE id = ?1 AND owner_email = ?2",
+            params![staff_id, owner_email],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn update_staff_account(&self, owner_email: &str, staff_id: &str, req: &UpdateStaffRequest) -> Result<bool> {
+        let conn = self.conn.lock();
+        let mut updates = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(ref name) = req.full_name {
+            updates.push("full_name = ?");
+            params_vec.push(Box::new(name.clone()));
+        }
+        if let Some(ref pin) = req.pin_code {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(pin.as_bytes());
+            let pin_hash = format!("{:x}", hasher.finalize());
+            updates.push("pin_hash = ?");
+            params_vec.push(Box::new(pin_hash));
+        }
+        if let Some(ref role) = req.role {
+            let role_str = match role {
+                StaffRole::Manager => "manager",
+                StaffRole::Owner => "owner",
+                StaffRole::Staff => "staff",
+            };
+            updates.push("role = ?");
+            params_vec.push(Box::new(role_str.to_string()));
+        }
+        if let Some(ref gym_id) = req.gym_id {
+            updates.push("gym_id = ?");
+            params_vec.push(Box::new(gym_id.to_string()));
+        }
+        if let Some(ref gym_name) = req.gym_name {
+            updates.push("gym_name = ?");
+            params_vec.push(Box::new(gym_name.clone()));
+        }
+        if let Some(is_active) = req.is_active {
+            updates.push("is_active = ?");
+            params_vec.push(Box::new(if is_active { 1 } else { 0 }));
+        }
+
+        if updates.is_empty() {
+            return Ok(false);
+        }
+
+        updates.push("updated_at = ?");
+        params_vec.push(Box::new(Utc::now().to_rfc3339()));
+
+        let query = format!(
+            "UPDATE cloud_staff_accounts SET {} WHERE id = ? AND owner_email = ?",
+            updates.join(", ")
+        );
+        params_vec.push(Box::new(staff_id.to_string()));
+        params_vec.push(Box::new(owner_email.to_string()));
+
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = conn.execute(&query, rusqlite::params_from_iter(params_refs))?;
+        Ok(rows > 0)
+    }
+
+    // --- Branch Catalog Overrides ---
+
+    pub fn save_branch_product_override(
+        &self,
+        owner_email: &str,
+        gym_id: &Uuid,
+        product_id: &str,
+        price: f64,
+        stock: i32,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO cloud_branch_product_overrides (product_id, gym_id, owner_email, price, stock, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(product_id, gym_id) DO UPDATE SET price = ?4, stock = ?5, updated_at = ?6",
+            params![
+                product_id,
+                gym_id.to_string(),
+                owner_email,
+                price,
+                stock,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_branch_products(&self, owner_email: &str, gym_id: &Uuid) -> Result<Vec<RemoteCatalogProduct>> {
+        let conn = self.conn.lock();
+        let gym_id_str = gym_id.to_string();
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, 
+                    COALESCE(o.price, p.price) as effective_price,
+                    COALESCE(o.stock, p.stock) as effective_stock,
+                    p.category, p.updated_at
+             FROM cloud_products p
+             LEFT JOIN cloud_branch_product_overrides o 
+                    ON p.id = o.product_id AND o.gym_id = ?2
+             WHERE p.owner_email = ?1
+             ORDER BY p.category, p.name",
+        )?;
+        let rows = stmt.query_map(params![owner_email, gym_id_str], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let price: f64 = row.get(2)?;
+            let stock: i32 = row.get(3)?;
+            let category: String = row.get(4)?;
+            let updated_at_str: String = row.get(5)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(RemoteCatalogProduct {
+                id,
+                name,
+                price,
+                stock,
+                category,
+                target_gym_id: Some(*gym_id),
+                updated_at,
+            })
+        })?;
         let mut list = Vec::new();
         for r in rows {
             list.push(r?);

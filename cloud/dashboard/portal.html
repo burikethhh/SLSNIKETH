@@ -171,6 +171,7 @@
             <div class="flex space-x-2 bg-slate-950/60 p-1.5 rounded-lg border border-slate-800">
                 <button onclick="switchPortalTab('overview')" id="tab-overview" class="tab-btn active">Revenue & Analytics</button>
                 <button onclick="switchPortalTab('keys')" id="tab-keys" class="tab-btn">Multi-Branch Keys</button>
+                <button onclick="switchPortalTab('staff')" id="tab-staff" class="tab-btn">Staff & Cashiers</button>
                 <button onclick="switchPortalTab('catalog')" id="tab-catalog" class="tab-btn">POS Products & Pricing</button>
                 <button onclick="switchPortalTab('plans')" id="tab-plans" class="tab-btn">Membership Plans</button>
                 <button onclick="switchPortalTab('promos')" id="tab-promos" class="tab-btn">Promo Vouchers</button>
@@ -519,6 +520,60 @@
                 </div>
             </div>
         </div>
+
+        <!-- ================= TAB: STAFF & CASHIERS ================= -->
+        <div id="view-staff" class="tab-content space-y-6 hidden">
+            <div class="glass-panel p-6">
+                <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                    <div>
+                        <h3 class="text-xl font-bold text-slate-200">Staff Credentials & Terminal RBAC</h3>
+                        <p class="text-xs text-slate-400">Create staff and cashier credentials with 4-to-6 digit PINs. Staff can only access POS checkout, gate kiosk, and check-ins on the desktop terminal without seeing revenue or master settings.</p>
+                    </div>
+                    <button onclick="openAddStaffModal()" class="btn-purple px-4 py-2 rounded-lg text-xs flex items-center space-x-1.5 shadow-lg shadow-purple-900/30">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+                        <span>+ Add Staff Member</span>
+                    </button>
+                </div>
+
+                <!-- 3 Staff KPI Cards -->
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                    <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80">
+                        <div class="text-xs text-slate-400 uppercase font-semibold">Total Staff Accounts</div>
+                        <div id="stat-total-staff" class="text-2xl font-bold text-purple-400 mt-1">0</div>
+                    </div>
+                    <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80">
+                        <div class="text-xs text-slate-400 uppercase font-semibold">Active Cashiers</div>
+                        <div id="stat-active-staff" class="text-2xl font-bold text-emerald-400 mt-1">0</div>
+                    </div>
+                    <div class="bg-slate-900/60 p-4 rounded-xl border border-slate-800/80">
+                        <div class="text-xs text-slate-400 uppercase font-semibold">Branch Managers</div>
+                        <div id="stat-branch-managers" class="text-2xl font-bold text-blue-400 mt-1">0</div>
+                    </div>
+                </div>
+
+                <!-- Staff Accounts Table -->
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
+                            <tr>
+                                <th class="py-3 px-4">Staff Member</th>
+                                <th class="py-3 px-4">Username</th>
+                                <th class="py-3 px-4">Assigned Branch</th>
+                                <th class="py-3 px-4">Role & Access</th>
+                                <th class="py-3 px-4">Status</th>
+                                <th class="py-3 px-4">Last Updated</th>
+                                <th class="py-3 px-4 text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="staff-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr>
+                                <td colspan="7" class="py-8 text-center text-slate-500">No staff members created yet. Click "+ Add Staff Member" to provision front-desk cashiers.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- Modal: Add Product -->
@@ -594,6 +649,51 @@
             <div class="mt-6 flex justify-end space-x-2">
                 <button onclick="closePromoModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
                 <button onclick="submitAddPromo()" class="btn-purple px-4 py-1.5 rounded text-xs">Create Voucher</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Add / Edit Staff Member -->
+    <div id="modal-staff" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+        <div class="glass-panel p-6 w-full max-w-md border border-purple-500/40 shadow-2xl">
+            <h3 id="modal-staff-title" class="text-lg font-bold text-slate-200 mb-4">Add Staff Member / Cashier</h3>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block text-slate-400 mb-1">Full Name</label>
+                    <input id="staff-fullname-input" type="text" class="input-dark w-full" placeholder="e.g. Maria Santos">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Username / ID</label>
+                        <input id="staff-username-input" type="text" class="input-dark w-full" placeholder="e.g. maria_cashier">
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Terminal PIN (4-6 Digits)</label>
+                        <input id="staff-pin-input" type="password" maxlength="6" class="input-dark w-full font-mono text-center tracking-widest text-sm" placeholder="••••">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Assigned Branch</label>
+                        <select id="staff-branch-select" class="input-dark w-full">
+                            <option value="">All Branches (Roaming)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Role & Privileges</label>
+                        <select id="staff-role-select" class="input-dark w-full">
+                            <option value="staff">Front-Desk Staff / Cashier</option>
+                            <option value="manager">Branch Manager</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="p-2.5 rounded-lg bg-purple-950/40 border border-purple-900/40 text-[11px] text-purple-300">
+                    <span class="font-bold">Access Guarantee:</span> Staff accounts can only unlock the POS register, member attendance, and turnstile monitoring. Total business revenue, license keys, and price editing remain strictly protected.
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end space-x-2">
+                <button onclick="closeAddStaffModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
+                <button onclick="submitAddStaff()" class="btn-purple px-4 py-1.5 rounded text-xs font-bold">Save Staff Credential</button>
             </div>
         </div>
     </div>
@@ -767,6 +867,14 @@
                     renderCatalogTable();
                     renderPlansGrid();
                     renderPromosTable();
+                }
+
+                // 3. Fetch Staff Accounts
+                const staffRes = await fetch(`${API_BASE}/api/v1/owner/staff`, { headers });
+                if (staffRes.ok) {
+                    const staffData = await staffRes.json();
+                    cachedStaff = staffData.staff || [];
+                    renderStaffTable();
                 }
             } catch (err) {
                 console.error('Failed to load telemetry:', err);
@@ -1221,6 +1329,212 @@
 
         function testKeyHealth(gymId) {
             alert(`Terminal Verified: Branch ${gymId} is active, HWID hardware lock validated, and last sync timestamp is within 7-day heartbeat window.`);
+        }
+
+        let cachedStaff = [];
+
+        function renderStaffTable() {
+            const tbody = document.getElementById('staff-tbody');
+            if (!tbody) return;
+
+            const totalEl = document.getElementById('stat-total-staff');
+            const activeEl = document.getElementById('stat-active-staff');
+            const mgrEl = document.getElementById('stat-branch-managers');
+
+            if (totalEl) totalEl.textContent = cachedStaff.length;
+            if (activeEl) activeEl.textContent = cachedStaff.filter(s => s.is_active).length;
+            if (mgrEl) mgrEl.textContent = cachedStaff.filter(s => s.role === 'manager').length;
+
+            if (cachedStaff.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="py-8 text-center text-slate-500">No staff members created yet. Click "+ Add Staff Member" to provision front-desk cashiers.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = cachedStaff.map(s => {
+                const roleBadge = s.role === 'manager'
+                    ? `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">BRANCH MANAGER</span>`
+                    : `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">FRONT-DESK CASHIER</span>`;
+
+                const branchLabel = s.gym_name || 'All Branches (Roaming)';
+                const statusBadge = s.is_active
+                    ? `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">ACTIVE</span>`
+                    : `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-500/20 text-red-300 border border-red-500/30">DISABLED</span>`;
+
+                const updated = s.updated_at ? new Date(s.updated_at).toLocaleDateString() : 'Recent';
+
+                return `
+                    <tr class="hover:bg-slate-900/40 transition">
+                        <td class="py-3 px-4 font-semibold text-slate-200">
+                            <div class="flex items-center space-x-2">
+                                <div class="w-7 h-7 rounded-full bg-purple-900/40 border border-purple-500/30 flex items-center justify-center text-xs text-purple-300 font-bold">
+                                    ${escapeHtml(s.full_name.slice(0, 2).toUpperCase())}
+                                </div>
+                                <span>${escapeHtml(s.full_name)}</span>
+                            </div>
+                        </td>
+                        <td class="py-3 px-4 font-mono text-purple-300">${escapeHtml(s.username)}</td>
+                        <td class="py-3 px-4 text-slate-300">${escapeHtml(branchLabel)}</td>
+                        <td class="py-3 px-4">${roleBadge}</td>
+                        <td class="py-3 px-4">${statusBadge}</td>
+                        <td class="py-3 px-4 text-slate-400">${updated}</td>
+                        <td class="py-3 px-4 text-right space-x-2">
+                            <button onclick="resetStaffPin('${s.id}')" class="text-xs text-purple-400 hover:text-purple-300 underline">Reset PIN</button>
+                            <button onclick="toggleStaffActive('${s.id}', ${!s.is_active})" class="text-xs ${s.is_active ? 'text-amber-400 hover:text-amber-300' : 'text-emerald-400 hover:text-emerald-300'} underline">
+                                ${s.is_active ? 'Disable' : 'Enable'}
+                            </button>
+                            <button onclick="deleteStaff('${s.id}')" class="text-xs text-red-400 hover:text-red-300 underline">Delete</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function openAddStaffModal() {
+            document.getElementById('staff-fullname-input').value = '';
+            document.getElementById('staff-username-input').value = '';
+            document.getElementById('staff-pin-input').value = '';
+            document.getElementById('staff-role-select').value = 'staff';
+
+            // Populate branch options
+            const branchSelect = document.getElementById('staff-branch-select');
+            branchSelect.innerHTML = '<option value="">All Branches (Roaming)</option>';
+            if (currentAnalytics && currentAnalytics.branches) {
+                currentAnalytics.branches.forEach(b => {
+                    const opt = document.createElement('option');
+                    opt.value = b.gym_id;
+                    opt.textContent = b.name;
+                    branchSelect.appendChild(opt);
+                });
+            }
+
+            document.getElementById('modal-staff').classList.remove('hidden');
+        }
+
+        function closeAddStaffModal() {
+            document.getElementById('modal-staff').classList.add('hidden');
+        }
+
+        async function submitAddStaff() {
+            if (!ownerSession) return;
+            const fullName = document.getElementById('staff-fullname-input').value.trim();
+            const username = document.getElementById('staff-username-input').value.trim();
+            const pinCode = document.getElementById('staff-pin-input').value.trim();
+            const gymId = document.getElementById('staff-branch-select').value || null;
+            const role = document.getElementById('staff-role-select').value;
+
+            if (!fullName || !username) {
+                alert('Please enter full name and username.');
+                return;
+            }
+            if (pinCode.length < 4 || pinCode.length > 8 || !/^\d+$/.test(pinCode)) {
+                alert('Terminal PIN must be 4 to 8 numeric digits.');
+                return;
+            }
+
+            let gymName = null;
+            if (gymId && currentAnalytics && currentAnalytics.branches) {
+                const br = currentAnalytics.branches.find(b => b.gym_id === gymId);
+                if (br) gymName = br.name;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/staff`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({
+                        full_name: fullName,
+                        username: username,
+                        pin_code: pinCode,
+                        role: role,
+                        gym_id: gymId,
+                        gym_name: gymName
+                    })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`Staff member ${fullName} provisioned with PIN ${pinCode}!`);
+                    closeAddStaffModal();
+                    await loadOwnerDashboardData();
+                } else {
+                    alert(data.error || 'Failed to create staff account');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Error connecting to server.');
+            }
+        }
+
+        async function toggleStaffActive(staffId, newStatus) {
+            if (!ownerSession) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({ is_active: newStatus })
+                });
+                if (res.ok) {
+                    await loadOwnerDashboardData();
+                } else {
+                    const data = await res.json();
+                    alert(data.error || 'Failed to update staff status');
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function resetStaffPin(staffId) {
+            if (!ownerSession) return;
+            const newPin = prompt('Enter new 4-digit PIN for this staff member:');
+            if (!newPin) return;
+            if (newPin.length < 4 || newPin.length > 8 || !/^\d+$/.test(newPin)) {
+                alert('PIN must be 4 to 8 numeric digits.');
+                return;
+            }
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${ownerSession.token}`
+                    },
+                    body: JSON.stringify({ pin_code: newPin })
+                });
+                if (res.ok) {
+                    alert('Staff PIN updated successfully.');
+                    await loadOwnerDashboardData();
+                } else {
+                    const data = await res.json();
+                    alert(data.error || 'Failed to reset PIN');
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function deleteStaff(staffId) {
+            if (!ownerSession) return;
+            if (!confirm('Are you sure you want to remove this staff account?')) return;
+            try {
+                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${ownerSession.token}` }
+                });
+                if (res.ok) {
+                    await loadOwnerDashboardData();
+                } else {
+                    const data = await res.json();
+                    alert(data.error || 'Failed to delete staff member');
+                }
+            } catch (err) {
+                console.error(err);
+            }
         }
 
         function escapeHtml(str) {
