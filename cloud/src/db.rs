@@ -296,6 +296,10 @@ impl CloudDatabase {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM cloud_gyms WHERE id = ?1", params![gym_id.to_string()])?;
         conn.execute("DELETE FROM cloud_disabled_gyms WHERE gym_id = ?1", params![gym_id.to_string()])?;
+        let _ = conn.execute(
+            "UPDATE cloud_licenses SET is_revoked = 1, revoked_reason = 'Branch deleted by CEO' WHERE gym_id = ?1",
+            params![gym_id.to_string()],
+        );
         Ok(())
     }
 
@@ -344,6 +348,10 @@ impl CloudDatabase {
                 if claims.tailgate_detection_enabled { 1 } else { 0 },
             ],
         )?;
+        let _ = conn.execute(
+            "UPDATE cloud_gyms SET is_active = 1, tier = ?2 WHERE id = ?1",
+            params![claims.gym_id.to_string(), tier_str],
+        );
         Ok(())
     }
 

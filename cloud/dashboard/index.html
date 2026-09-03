@@ -1098,36 +1098,9 @@
         }
 
         async function renewGymLicense(gymId, gymName, tier) {
-            const daysStr = prompt(`Issue new / renewed RSA License for "${gymName}". Enter validity period in days:`, "30");
-            if (!daysStr) return;
-            const days = parseInt(daysStr) || 30;
-
             const gym = registeredGyms.find(g => g.id === gymId);
             const ownerEmail = gym ? gym.owner_email : "owner@gym.com";
-
-            try {
-                const res = await fetch('/api/v1/licenses/generate', {
-                    method: 'POST',
-                    headers: getAdminHeaders(),
-                    body: JSON.stringify({
-                        gym_name: gymName,
-                        owner_email: ownerEmail,
-                        tier: tier,
-                        duration_days: days
-                    })
-                });
-
-                if (res.ok) {
-                    const data = await res.json();
-                    document.getElementById('output-license-key').value = data.license_key;
-                    document.getElementById('license-output-modal').classList.remove('hidden');
-                    await refreshAllData();
-                } else {
-                    alert("Renewal license generation failed: " + res.statusText);
-                }
-            } catch (e) {
-                alert("Network error: " + e);
-            }
+            openIssueBranchKeyModal(gymId, gymName, ownerEmail, tier);
         }
 
         async function toggleKillSwitch(gymId, disable) {

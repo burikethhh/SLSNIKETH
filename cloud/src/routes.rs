@@ -877,6 +877,10 @@ pub async fn admin_issue_branch_key(
     })?;
 
     let _ = state.db.insert_license(&claims, &license_key);
+    if let Some(record) = state.gyms.write().get_mut(&gym_id) {
+        record.is_active = true;
+        record.tier = tier;
+    }
     let _ = state.db.log_audit(&gym.owner_email, Some(&gym_id), "admin_issue_branch_key", Some(&gym.name));
 
     Ok((
