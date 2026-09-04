@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GymPOS SaaS — CEO Cloud Command Center</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🟣</text></svg>">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Rajdhani:wght@600;700&display=swap" rel="stylesheet">
     <style>
@@ -588,8 +589,7 @@
         }
 
         async function refreshAllData() {
-            await fetchGyms();
-            await fetchLicenses();
+            await Promise.all([fetchGyms(), fetchLicenses(), fetchReleases()]);
         }
 
         let ownerHierarchy = [];
@@ -924,8 +924,24 @@
             }
         }
 
-        function renderLicenses() {
-            const tbody = document.getElementById('license-vault-tbody');
+        async function fetchLicenses() {
+            try {
+                const res = await fetch('/api/v1/licenses', { headers: getAdminHeaders() });
+                if (res.status === 401) {
+                    promptAdminKey();
+                    return;
+                }
+                if (res.ok) {
+                    storedLicenses = await res.json();
+                    renderLicenses();
+                    updateMetrics();
+                }
+            } catch (e) {
+                console.error("Failed to fetch license vault:", e);
+            }
+        }
+
+        function renderLicenses() {            const tbody = document.getElementById('license-vault-tbody');
             if (!tbody) return;
 
             if (storedLicenses.length === 0) {
@@ -1277,10 +1293,6 @@
             } catch (e) {
                 alert("Network error: " + e);
             }
-        }
-
-        async function refreshAllData() {
-            await Promise.all([fetchGyms(), fetchLicenses(), fetchReleases()]);
         }
 
         document.addEventListener('DOMContentLoaded', refreshAllData);
