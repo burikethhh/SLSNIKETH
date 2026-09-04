@@ -136,25 +136,25 @@ pub fn is_heartbeat_expired(now_unix: i64, last_verify_unix: i64) -> bool {
     last_verify_unix != 0 && now_unix - last_verify_unix > HEARTBEAT_SECONDS
 }
 
-// SECURITY: The key below was rotated because the RSA keypair it used to pair
-// with (`DEFAULT_PRODUCTION_PRIVATE_KEY_PEM` in cloud/src/crypto.rs) was
-// checked into source control and therefore never actually secret. Anyone
-// with repo/binary access could have extracted that private key and forged
-// arbitrary GymPOS licenses. A brand-new keypair was generated out-of-band
-// with `cargo run --bin gen_keys -p gympos-cloud`; only the PUBLIC half is
-// embedded here (public keys are safe to ship). The matching PRIVATE key was
-// handed to the operator separately and must be set as the `RSA_PRIVATE_KEY_PEM`
-// secret on the cloud deployment — it is intentionally NOT committed anywhere.
+// SECURITY: Rotated 2026-09-04. The previously embedded public key did NOT
+// match any private key on record (verified: derived-pubkey mismatch), so
+// CEO-issued license tokens failed PSS verification on the exe. A fresh pair
+// was generated with `cargo run --bin gen_keys -p gympos-cloud`; only the
+// PUBLIC half is embedded here. The matching PRIVATE key lives in the
+// gitignored `rsa_private_key.pem` (workspace root + cloud/) for local dev
+// and MUST be set as the `RSA_PRIVATE_KEY_PEM` secret on the cloud
+// deployment — it is intentionally NOT committed anywhere.
 // If you rotate keys again: generate a new pair, set the private half as the
 // cloud's `RSA_PRIVATE_KEY_PEM` secret, and update the public half below.
+// Every rotation invalidates all previously issued license tokens.
 pub const EMBEDDED_PUBLIC_KEY_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyt1jUCRmAr15EyDuBTWa
-Kpfq2RoMO6lLBssi+WAqkNsEpN4LbVSoV7056Xd3DftHQRSRXP8+b2woHKiQGbdC
-wIPohbtwCmOru6arJabHtOnunntl0JYp4V8R6AjA3DKYyt4GgFp96gs0Lxr/pZDD
-T4F7q0oGusRkRiYHqGjRPlNgIb/h02hGue7cVIn+W4VzBci/o8dX3Utfw8a/wQ+r
-s7pSJrV99uaBRd+zng77JE98fga+ixgMVdaQ+nu8+62IcxmXTeuerdB/jbDyJfY6
-dNcFJu63gidHtMKoedubYGuyrl74RSK1K0VO5/VCmhr3WYbqaRHOd67eZ78OyBAa
-7QIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA61t5dzowTjok07+i+yvS
+Lp+PEio8bVXLdFAK/04+zdnpHOctvtVA87uoRgICX4XZTKxsLpgTGhJz+IVm1Y8J
+0Sqk3lYW+8/ZVaLIqUFMb4/j9OyyvkAUKDPIUPVpKAc88/rlH0MgQAz4PM3Uut4f
+sPUJNPSKybtAddeYIWvps9DwQaRwrmcjytIVZZxJOo8+k26bel/NdnvkMc44h1mC
+TQjhVClenD6aD5I5Xeougp66ZLnNKMH/zwowJFOtpeYaHXpvYc5yTntXR8NA9NSC
+O+dR8ZjkW7ZUVflnAGC3HBZaaQVDN/2qQvmAuxmYZAx2g5jl0QuqimLIWIgqIt9e
++wIDAQAB
 -----END PUBLIC KEY-----"#;
 
 pub struct LicenseManager {
