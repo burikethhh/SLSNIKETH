@@ -890,6 +890,16 @@ pub fn poll_hardware_buttons(state: State<'_, AppContext>) -> Result<Vec<crate::
 }
 
 #[tauri::command]
+pub fn list_remote_plans(state: State<'_, AppContext>) -> Result<Vec<gympos_shared::MembershipPlanConfig>, String> {
+    state.db.list_remote_plans().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_remote_promos(state: State<'_, AppContext>) -> Result<Vec<gympos_shared::PromoVoucherConfig>, String> {
+    state.db.list_remote_promos().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_terminal_session(state: State<'_, AppContext>) -> Result<Option<TerminalSession>, String> {
     Ok(state.session.read().clone())
 }

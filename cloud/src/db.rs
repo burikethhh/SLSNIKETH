@@ -927,7 +927,7 @@ impl CloudDatabase {
         let mut count = 0;
         for s in sales {
             let items_json = serde_json::to_string(&s.items).unwrap_or_else(|_| "[]".to_string());
-            conn.execute(
+            let inserted = conn.execute(
                 "INSERT INTO cloud_sales (id, gym_id, owner_email, member_id, total_amount, payment_method, items_json, timestamp, discount_type, discount_amount)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO NOTHING",
@@ -944,6 +944,20 @@ impl CloudDatabase {
                     s.discount_amount
                 ],
             )?;
+            // Decrement base catalog stock so the next down-sync carries the
+            // true remaining quantity (prevents sold stock resurrecting on the
+            // terminal). Branch overrides are manual adjustments — untouched.
+            // Only on first insert: retried pushes must not double-decrement.
+            if inserted > 0 {
+                for item in &s.items {
+                    if item.quantity > 0 {
+                        let _ = conn.execute(
+                            "UPDATE cloud_products SET stock = MAX(0, stock - ?1) WHERE id = ?2 AND owner_email = ?3",
+                            params![item.quantity as i64, item.product_id, owner_email],
+                        );
+                    }
+                }
+            }
             count += 1;
         }
         Ok(count)
@@ -1026,6 +1040,11 @@ impl CloudDatabase {
                 expires_at,
                 is_heartbeat_healthy: true,
                 is_active,
+                is_disabled: conn.query_row(
+                    "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = ?1",
+                    params![gym_id.to_string()],
+                    |r| r.get::<_, i64>(0),
+                ).unwrap_or(0) > 0,
             });
         }
 
@@ -1683,6 +1702,11 @@ impl CloudDatabase {
                     active_members: active_members as u32,
                     today_sales,
                     created_at: b_created,
+                    is_disabled: conn.query_row(
+                        "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = ?1",
+                        params![gym_id.to_string()],
+                        |r| r.get::<_, i64>(0),
+                    ).unwrap_or(0) > 0,
                 });
             }
 

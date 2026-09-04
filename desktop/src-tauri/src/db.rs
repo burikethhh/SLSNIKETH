@@ -104,6 +104,27 @@ impl Database {
                 category TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS remote_plans (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                tag TEXT NOT NULL DEFAULT '',
+                billing_period TEXT NOT NULL DEFAULT 'monthly',
+                price_monthly REAL NOT NULL DEFAULT 0,
+                student_discount_pct REAL NOT NULL DEFAULT 0,
+                benefits_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS remote_promos (
+                code TEXT PRIMARY KEY,
+                label TEXT NOT NULL DEFAULT '',
+                discount_type TEXT NOT NULL DEFAULT 'percent',
+                discount_value REAL NOT NULL DEFAULT 0,
+                min_spend REAL NOT NULL DEFAULT 0,
+                expires_at TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE TABLE IF NOT EXISTS transactions (
                 id TEXT PRIMARY KEY,
                 member_id TEXT,
@@ -1425,8 +1446,8 @@ impl Database {
     pub fn ingest_remote_catalog(
         &self,
         products: &[RemoteCatalogProduct],
-        _plans: &[MembershipPlanConfig],
-        _promos: &[PromoVoucherConfig],
+        plans: &[MembershipPlanConfig],
+        promos: &[PromoVoucherConfig],
     ) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let mut count = 0;
@@ -1439,7 +1460,84 @@ impl Database {
             )?;
             count += 1;
         }
+        for p in plans {
+            let benefits_json = serde_json::to_string(&p.benefits).unwrap_or_else(|_| "[]".to_string());
+            conn.execute(
+                "INSERT INTO remote_plans (id, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET name = ?2, tag = ?3, billing_period = ?4, price_monthly = ?5, student_discount_pct = ?6, benefits_json = ?7, updated_at = ?8",
+                params![p.id, p.name, p.tag, p.billing_period, p.price_monthly, p.student_discount_pct, benefits_json, p.updated_at.to_rfc3339()],
+            )?;
+            count += 1;
+        }
+        for pr in promos {
+            let exp = pr.expires_at.map(|e| e.to_rfc3339());
+            conn.execute(
+                "INSERT INTO remote_promos (code, label, discount_type, discount_value, min_spend, expires_at, is_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(code) DO UPDATE SET label = ?2, discount_type = ?3, discount_value = ?4, min_spend = ?5, expires_at = ?6, is_active = ?7",
+                params![pr.code, pr.label, pr.discount_type, pr.discount_value, pr.min_spend, exp, if pr.is_active { 1 } else { 0 }],
+            )?;
+            count += 1;
+        }
         Ok(count)
+    }
+
+    pub fn list_remote_plans(&self) -> Result<Vec<MembershipPlanConfig>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at FROM remote_plans ORDER BY price_monthly",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let benefits_json: String = row.get(6)?;
+            let benefits = serde_json::from_str(&benefits_json).unwrap_or_default();
+            let updated_str: String = row.get(7)?;
+            let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(MembershipPlanConfig {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                tag: row.get::<_, Option<String>>(2).unwrap_or(None).unwrap_or_default(),
+                billing_period: row.get::<_, Option<String>>(3).unwrap_or(None).unwrap_or_else(|| "monthly".to_string()),
+                price_monthly: row.get(4)?,
+                student_discount_pct: row.get(5)?,
+                target_gym_id: None,
+                benefits,
+                updated_at,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn list_remote_promos(&self) -> Result<Vec<PromoVoucherConfig>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT code, label, discount_type, discount_value, min_spend, expires_at, is_active FROM remote_promos WHERE is_active = 1",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let exp_str: Option<String> = row.get(5)?;
+            let expires_at = exp_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc)));
+            let active_int: i32 = row.get(6)?;
+            Ok(PromoVoucherConfig {
+                code: row.get(0)?,
+                label: row.get::<_, Option<String>>(1).unwrap_or(None).unwrap_or_default(),
+                discount_type: row.get(2)?,
+                discount_value: row.get(3)?,
+                min_spend: row.get(4)?,
+                expires_at,
+                is_active: active_int == 1,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     // --- Coaches CRUD Operations ---

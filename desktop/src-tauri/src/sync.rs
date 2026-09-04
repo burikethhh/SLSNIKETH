@@ -61,13 +61,18 @@ impl CloudSyncWorker {
                     let unsynced_sales = self.db.get_unsynced_sales().unwrap_or_default();
                     let unsynced_sale_ids: Vec<String> = unsynced_sales.iter().map(|s| s.id.clone()).collect();
 
-                    // 4. Idle heartbeat: even with no new data, the network is reachable — refresh 7-day heartbeat
-                    // Prevents idle kiosks (no check-ins for days) from false LOCK due to heartbeat starvation.
-                    if unsynced_members.is_empty() && unsynced_att.is_empty() && unsynced_sales.is_empty() {
+                    // 4. Idle terminal: no new data, but the kill-switch MUST still be
+                    // polled — previously this branch `continue`d without ever
+                    // contacting the cloud, so CEO Kill/Revoke never landed on
+                    // idle terminals (and catalog went stale). Fall through to
+                    // a lightweight empty push when we have a bearer token; the
+                    // server returns remote_disabled + fresh catalog/plans/promos.
+                    let has_bearer = self.db.get_cached_license().ok().flatten().is_some();
+                    if unsynced_members.is_empty() && unsynced_att.is_empty() && unsynced_sales.is_empty() && !has_bearer {
                         if consecutive_failures > 0 {
                             consecutive_failures = 0;
                         }
-                        // Lightweight online proof: refresh heartbeat without full sync push
+                        // No bearer: cannot poll kill-switch; local heartbeat only.
                         let _ = self.db.heartbeat_ok();
                         continue;
                     }

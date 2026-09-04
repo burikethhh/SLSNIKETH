@@ -417,7 +417,7 @@
                             </div>
                             <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
                                 <span>CAM-1 [IN]</span>
-                                <span class="text-emerald-400">1080P @ 30FPS</span>
+                                <span class="text-emerald-400">LIVE @ 30FPS</span>
                             </div>
                         </div>
                     </div>
@@ -442,7 +442,7 @@
                             </div>
                             <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
                                 <span>CAM-2 [OUT]</span>
-                                <span class="text-blue-400">1080P @ 30FPS</span>
+                                <span class="text-blue-400">LIVE @ 30FPS</span>
                             </div>
                         </div>
                     </div>
@@ -992,6 +992,14 @@
                         </div>
 
                         <div class="border-t border-slate-800 pt-3 space-y-3">
+                            <div>
+                                <label class="block text-[10px] text-slate-400 mb-1">Promo Code (synced from owner portal)</label>
+                                <div class="flex gap-2">
+                                    <input type="text" id="pos-promo-input" class="input-dark text-xs flex-1 uppercase" placeholder="e.g. BIRTHMONTH">
+                                    <button onclick="applyPosPromo()" class="px-3 py-1.5 rounded-lg text-xs bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-500/30 font-bold whitespace-nowrap">Apply</button>
+                                </div>
+                                <div id="pos-promo-msg" class="text-[10px] mt-1 text-slate-500"></div>
+                            </div>
                             <div class="grid grid-cols-2 gap-2">
                                 <div>
                                     <label class="block text-[10px] text-slate-400 mb-1">Discount ID (20% off)</label>
@@ -1297,41 +1305,65 @@
 
                 <!-- Section 2: 3-Camera Live Assignment & Viewfinder Matrix -->
                 <div class="glass-panel p-5 space-y-4 border border-slate-800">
-                    <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
                         <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
                             <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                             <span>Dedicated 3-Camera Assignment Matrix & Live Test Viewfinders</span>
                         </h3>
-                        <button onclick="saveCameraRouting()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                            <span>Save & Bind Routing</span>
-                        </button>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="scanActiveCameras(true)" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition" title="Probe system webcams and check for occupied devices">
+                                <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                <span>Probe Active Cameras</span>
+                            </button>
+                            <button onclick="saveCameraRouting()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                <span>Save & Bind Routing</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Camera Health & Occupancy Status Bar -->
+                    <div id="cam-health-bar" class="text-xs px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex items-center justify-between text-slate-300 flex-wrap gap-2">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-slate-500" id="cam-health-dot"></span>
+                            <span id="cam-health-summary" class="font-mono text-[11px]">Detecting active camera hardware...</span>
+                        </div>
+                        <span id="cam-health-detail" class="text-[10px] text-slate-400"></span>
                     </div>
 
                     <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <!-- Camera 1 Card: Face Scan Entry -->
-                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3">
+                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3 relative">
                             <div class="flex items-center justify-between">
                                 <span class="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
                                     <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
                                     <span>Camera 1: Face Scan Entry</span>
                                 </span>
-                                <span class="text-[9px] font-mono text-slate-400 bg-black/60 px-1.5 py-0.5 rounded">30 FPS</span>
+                                <span id="cam-badge-1" class="text-[9px] font-mono text-slate-400 bg-black/60 px-1.5 py-0.5 rounded">30 FPS</span>
                             </div>
 
                             <!-- Live Test Preview Window -->
                             <div class="w-full h-36 rounded-lg bg-black border border-slate-700 overflow-hidden relative flex items-center justify-center">
                                 <video id="test-preview-cam1" autoplay muted playsinline class="w-full h-full object-cover"></video>
-                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-300">
+                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-300 z-10">
                                     LIVE ENTRY FEED
                                 </div>
+                                <!-- Occupied Overlay -->
+                                <div id="cam-occupied-overlay-1" class="hidden absolute inset-0 bg-black/90 z-20 flex flex-col items-center justify-center p-3 text-center">
+                                    <svg class="w-7 h-7 text-amber-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                    <span class="text-xs font-bold text-amber-300">USB BUS LIMIT / OCCUPIED</span>
+                                    <span class="text-[10px] text-slate-400 mt-0.5">Plug camera directly into another PC USB port</span>
+                                </div>
                             </div>
+
+                            <!-- Alert Notification Banner -->
+                            <div id="cam-status-msg-1" class="hidden text-[11px] p-2 rounded-lg leading-relaxed"></div>
 
                             <div class="space-y-2 text-xs">
                                 <div>
                                     <label class="block text-[11px] text-slate-400 mb-1">Assigned Hardware Device</label>
                                     <select id="cam-assign-entry" onchange="previewSelectedCamera(1, this.value)" class="input-dark text-xs w-full">
-                                        <option value="">Default System Webcam</option>
+                                        <option value="">Probing cameras...</option>
                                     </select>
                                 </div>
                                 <div class="flex gap-2">
@@ -1343,28 +1375,37 @@
                         </div>
 
                         <!-- Camera 2 Card: Face Scan Exit -->
-                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3">
+                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3 relative">
                             <div class="flex items-center justify-between">
                                 <span class="text-xs font-bold text-blue-400 flex items-center gap-1.5">
                                     <span class="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>
                                     <span>Camera 2: Face Scan Exit</span>
                                 </span>
-                                <span class="text-[9px] font-mono text-slate-400 bg-black/60 px-1.5 py-0.5 rounded">30 FPS</span>
+                                <span id="cam-badge-2" class="text-[9px] font-mono text-slate-400 bg-black/60 px-1.5 py-0.5 rounded">30 FPS</span>
                             </div>
 
                             <!-- Live Test Preview Window -->
                             <div class="w-full h-36 rounded-lg bg-black border border-slate-700 overflow-hidden relative flex items-center justify-center">
                                 <video id="test-preview-cam2" autoplay muted playsinline class="w-full h-full object-cover"></video>
-                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-blue-300">
+                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-blue-300 z-10">
                                     LIVE EXIT FEED
                                 </div>
+                                <!-- Occupied Overlay -->
+                                <div id="cam-occupied-overlay-2" class="hidden absolute inset-0 bg-black/90 z-20 flex flex-col items-center justify-center p-3 text-center">
+                                    <svg class="w-7 h-7 text-amber-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                    <span class="text-xs font-bold text-amber-300">USB BUS LIMIT / OCCUPIED</span>
+                                    <span class="text-[10px] text-slate-400 mt-0.5">Plug camera directly into another PC USB port</span>
+                                </div>
                             </div>
+
+                            <!-- Alert Notification Banner -->
+                            <div id="cam-status-msg-2" class="hidden text-[11px] p-2 rounded-lg leading-relaxed"></div>
 
                             <div class="space-y-2 text-xs">
                                 <div>
                                     <label class="block text-[11px] text-slate-400 mb-1">Assigned Hardware Device</label>
                                     <select id="cam-assign-exit" onchange="previewSelectedCamera(2, this.value)" class="input-dark text-xs w-full">
-                                        <option value="">Default System Webcam</option>
+                                        <option value="">Probing cameras...</option>
                                     </select>
                                 </div>
                                 <div class="flex gap-2">
@@ -1376,29 +1417,38 @@
                         </div>
 
                         <!-- Camera 3 Card: Anti-Tailgate Overhead -->
-                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3">
+                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3 relative">
                             <div class="flex items-center justify-between">
                                 <span class="text-xs font-bold text-purple-400 flex items-center gap-1.5">
                                     <span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
                                     <span>Camera 3: Overhead Anti-Tailgate</span>
                                 </span>
-                                <span class="text-[9px] font-mono text-purple-300 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-800/60 font-semibold">1:1 POLICY</span>
+                                <span id="cam-badge-3" class="text-[9px] font-mono text-purple-300 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-800/60 font-semibold">1:1 POLICY</span>
                             </div>
 
                             <!-- Live Test Preview Window with Calibrated ROI Overlay -->
                             <div class="w-full h-36 rounded-lg bg-black border border-slate-700 overflow-hidden relative flex items-center justify-center">
                                 <video id="test-preview-cam3" autoplay muted playsinline class="w-full h-full object-cover"></video>
-                                <div id="test-roi-box" class="absolute border border-dashed border-purple-400 bg-purple-500/20 rounded pointer-events-none" style="left: 20%; top: 20%; width: 60%; height: 60%;"></div>
-                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-purple-300">
+                                <div id="test-roi-box" class="absolute border border-dashed border-purple-400 bg-purple-500/20 rounded pointer-events-none z-10" style="left: 20%; top: 20%; width: 60%; height: 60%;"></div>
+                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-purple-300 z-10">
                                     OVERHEAD ROI ZONE
                                 </div>
+                                <!-- Occupied Overlay -->
+                                <div id="cam-occupied-overlay-3" class="hidden absolute inset-0 bg-black/90 z-20 flex flex-col items-center justify-center p-3 text-center">
+                                    <svg class="w-7 h-7 text-amber-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                                    <span class="text-xs font-bold text-amber-300">USB BUS LIMIT / OCCUPIED</span>
+                                    <span class="text-[10px] text-slate-400 mt-0.5">Plug camera directly into another PC USB port</span>
+                                </div>
                             </div>
+
+                            <!-- Alert Notification Banner -->
+                            <div id="cam-status-msg-3" class="hidden text-[11px] p-2 rounded-lg leading-relaxed"></div>
 
                             <div class="space-y-2 text-xs">
                                 <div>
                                     <label class="block text-[11px] text-slate-400 mb-1">Assigned Hardware Device</label>
                                     <select id="cam-assign-tailgate" onchange="previewSelectedCamera(3, this.value)" class="input-dark text-xs w-full">
-                                        <option value="">Default System Webcam</option>
+                                        <option value="">Probing cameras...</option>
                                     </select>
                                 </div>
                                 <div class="flex gap-2">

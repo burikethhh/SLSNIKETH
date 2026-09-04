@@ -853,6 +853,13 @@
             } else {
                 document.getElementById('modal-auth').classList.remove('hidden');
             }
+            // Auto-refresh keys/catalog telemetry every 60s while visible so a
+            // CEO kill or price change appears without manual refresh.
+            if (!window.__portalAutoRefresh) {
+                window.__portalAutoRefresh = setInterval(() => {
+                    if (!document.hidden && ownerSession && ownerSession.token) loadOwnerDashboardData();
+                }, 60000);
+            }
         });
 
         function switchAuthTab(tab) {
@@ -1110,8 +1117,14 @@
 
             tbody.innerHTML = branches.map(b => {
                 const hasKey = b.license_key && b.license_key.length > 20;
+                const isKilled = b.is_disabled === true;
 
-                const keyDisplay = hasKey 
+                const keyDisplay = isKilled
+                    ? `<span class="inline-flex items-center gap-1.5 text-[11px] font-bold text-red-300 bg-red-950/70 border border-red-600 px-2.5 py-1 rounded-full" title="Suspended by CEO — terminal locked. Contact support to restore service.">
+                        <span class="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse"></span>
+                        ⛔ SUSPENDED BY CEO
+                       </span>`
+                    : hasKey
                     ? `<div class="flex items-center gap-2">
                         <span class="font-mono text-[11px] bg-slate-900 px-2 py-1 rounded text-purple-300 border border-purple-900/50 select-all cursor-pointer" title="${b.license_key}">
                             ${b.license_key.substring(0, 20)}...
@@ -1125,7 +1138,11 @@
                         Awaiting CEO License Key
                        </span>`;
 
-                const statusDisplay = hasKey 
+                const statusDisplay = isKilled
+                    ? `<span class="text-xs text-red-400 font-semibold flex items-center">
+                        <span class="w-2 h-2 rounded-full bg-red-500 mr-1.5 animate-pulse"></span> Suspended (Kill Switch)
+                       </span>`
+                    : hasKey
                     ? `<span class="text-xs text-emerald-400 font-semibold flex items-center">
                         <span class="pulse-dot mr-1.5"></span> Active (Licensed)
                        </span>`

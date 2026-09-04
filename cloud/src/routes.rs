@@ -945,7 +945,7 @@ pub async fn admin_create_branch_for_owner(
             )
         })?;
 
-        let _ = state.db.insert_license(&claims, &license_key);
+    let _ = state.db.insert_license(&claims, &license_key);
         license_id_opt = Some(license_id);
         license_key_opt = Some(license_key);
     }
@@ -1020,6 +1020,12 @@ pub async fn admin_issue_branch_key(
     })?;
 
     let _ = state.db.insert_license(&claims, &license_key);
+    // Re-licensing restores service: a fresh CEO-issued key lifts any prior
+    // kill-switch on this gym (otherwise the new key would die on next sync
+    // and the Renew button would look broken).
+    if state.disabled_gyms.write().remove(&gym_id) {
+        let _ = state.db.set_disabled(&gym_id, false);
+    }
     if let Some(record) = state.gyms.write().get_mut(&gym_id) {
         record.is_active = true;
         record.tier = tier;

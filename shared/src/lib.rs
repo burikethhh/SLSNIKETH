@@ -541,6 +541,8 @@ pub struct OwnerBranchSummary {
     pub expires_at: DateTime<Utc>,
     pub is_heartbeat_healthy: bool,
     pub is_active: bool,
+    #[serde(default)]
+    pub is_disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -776,6 +778,8 @@ pub struct OwnerHierarchyBranch {
     pub active_members: u32,
     pub today_sales: f64,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub is_disabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

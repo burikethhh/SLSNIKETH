@@ -682,7 +682,17 @@
                 }
                 if (res.ok) {
                     ownerHierarchy = await res.json();
-                    
+
+                    // Seed kill-switch state from the SERVER (cloud_disabled_gyms),
+                    // not just local clicks — otherwise a refresh wipes Kill/Enable
+                    // state and a killed gym looks alive again.
+                    disabledGymIds = new Set();
+                    ownerHierarchy.forEach(owner => {
+                        (owner.branches || []).forEach(b => {
+                            if (b.is_disabled) disabledGymIds.add(b.gym_id);
+                        });
+                    });
+
                     // Flatten branches into registeredGyms for metrics and license checks
                     registeredGyms = [];
                     ownerHierarchy.forEach(owner => {
@@ -755,12 +765,20 @@
                 const branchRowsHtml = visibleBranches.length === 0 
                     ? `<tr><td colspan="6" class="py-4 text-center text-purple-400/50 text-xs">No branch locations registered yet. Click '+ Add Branch' to create one.</td></tr>`
                     : visibleBranches.map(b => {
-                        const isDisabled = disabledGymIds.has(b.gym_id);
+                        const isDisabled = disabledGymIds.has(b.gym_id) || b.is_disabled === true;
                         const tierColor = b.tier.toLowerCase() === 'ultra' ? 'text-amber-400 border-amber-500/40 bg-amber-950/40' : (b.tier.toLowerCase() === 'pro' ? 'text-purple-300 border-purple-500/40 bg-purple-950/40' : 'text-blue-300 border-blue-500/40 bg-blue-950/40');
-                        
+
+                        const killedBadge = isDisabled ? `<span class="inline-flex items-center gap-1 text-[10px] font-bold text-red-200 bg-red-900/80 border border-red-500 px-2 py-0.5 rounded animate-pulse" title="Killed by CEO — terminal locked on next sync">⛔ KILLED</span>` : '';
                         let licBadge = '';
-                        const branchIsAtRisk = b.is_license_active && b.license_key && b.days_remaining !== undefined && b.days_remaining <= 7;
-                        if (b.is_license_active && b.license_key) {
+                        const branchIsAtRisk = !isDisabled && b.is_license_active && b.license_key && b.days_remaining !== undefined && b.days_remaining <= 7;
+                        if (isDisabled) {
+                            licBadge = `
+                                <div class="flex items-center gap-1.5">
+                                    ${killedBadge}
+                                    <span class="text-[10px] text-red-400/70 font-mono">terminal locked</span>
+                                </div>
+                            `;
+                        } else if (b.is_license_active && b.license_key) {
                             licBadge = `
                                 <div class="flex items-center gap-1.5">
                                     <span class="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2 py-0.5 rounded">
@@ -1357,6 +1375,13 @@
                 document.getElementById('admin-auth-badge').innerText = `CEO: ${em}`;
             }
             refreshAllData();
+            // Auto-refresh fleet state every 30s while visible so Kill/Revoke,
+            // at-risk and census never go stale in another tab's actions.
+            if (!window.__ceoAutoRefresh) {
+                window.__ceoAutoRefresh = setInterval(() => {
+                    if (!document.hidden && getAdminKey()) refreshAllData();
+                }, 30000);
+            }
         });
     </script>
 </body>

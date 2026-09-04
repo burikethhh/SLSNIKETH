@@ -239,167 +239,520 @@ let appSettings = {
     }
 };
 
-// --- Multi-Camera Stream Controller ---
+// --- Multi-Camera Stream Controller & Occupancy Prober ---
 let streamCam1 = null;
 let streamCam2 = null;
 let streamCam3 = null;
+let streamCam1DeviceId = null;
+let streamCam2DeviceId = null;
+let streamCam3DeviceId = null;
+let probedDevicesCache = [];
 
+/**
+ * Safely requests a video stream for a given deviceId.
+ * Uses bandwidth-safe 640x480 constraints so that 3 simultaneous USB webcams
+ * do not saturate the Windows USB 2.0/3.0 root hub isochronous transfer bandwidth.
+ */
 async function getStreamForDevice(deviceId) {
-    const videoConstraints = deviceId
-        ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-        : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: "user" };
-    return await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+        return {
+            stream: null,
+            error: { isOccupied: false, name: 'Unsupported', message: 'getUserMedia is not supported on this platform' }
+        };
+    }
+
+    // Windows UVC bandwidth optimization: 640x480 uncompressed YUY2 is ~147Mbps.
+    // Three 640x480 cameras can stream simultaneously on a single USB root hub
+    // without triggering NotReadableError (USB isochronous bandwidth starvation).
+    const attempts = [
+        deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30, max: 30 } }
+            : { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: "user" },
+        // Fallback for bandwidth-constrained hubs (360p / 24fps)
+        deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } }
+            : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } },
+        // Minimum viable fallback
+        deviceId
+            ? { deviceId: { exact: deviceId } }
+            : { video: true }
+    ];
+
+    let lastErr = null;
+    for (const constraints of attempts) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+            return { stream, error: null };
+        } catch (err) {
+            lastErr = err;
+            console.warn("getStreamForDevice constraint attempt failed:", constraints, err);
+            if (err.name === 'OverconstrainedError') continue;
+            if ((err.name === 'NotReadableError' || err.name === 'TrackStartError') && constraints === attempts[0]) {
+                await new Promise(r => setTimeout(r, 120));
+                continue;
+            }
+            break;
+        }
+    }
+
+    const isOccupied = lastErr && (
+        lastErr.name === 'NotReadableError'
+        || lastErr.name === 'TrackStartError'
+        || lastErr.name === 'AbortError'
+        || (lastErr.message && /in use|busy|occupied|could not start|concurrent|exclusive/i.test(lastErr.message))
+    );
+
+    const userMsg = isOccupied
+        ? "Camera is currently locked by another application or USB bus bandwidth is exceeded. Please close conflicting video apps (Zoom/OBS/Teams)."
+        : `Camera access error (${lastErr?.name || 'Error'}): ${lastErr?.message || lastErr}`;
+
+    return {
+        stream: null,
+        error: { isOccupied, name: lastErr?.name || 'Error', message: userMsg, raw: lastErr }
+    };
 }
 
 function stopStream(stream) {
     if (stream && typeof stream.getTracks === 'function') {
-        stream.getTracks().forEach(t => t.stop());
+        stream.getTracks().forEach(t => {
+            try { t.stop(); } catch (e) {}
+        });
     }
 }
 
-async function initCameraStreams() {
-    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
-
-    const cfg = appSettings.camera_config || {
-        camera1_entry_device_id: "",
-        camera2_exit_device_id: "",
-        camera3_tailgate_device_id: "",
-        roi_x: 20.0,
-        roi_y: 20.0,
-        roi_width: 60.0,
-        roi_height: 60.0,
-        roi_sensitivity: 85.0
+/**
+ * Universal Camera Viewport Synchronizer
+ * Binds active video streams and hides standby overlays across Dashboard, Kiosk, and Hardware previews.
+ */
+function syncAllCameraViewports() {
+    const bindViewport = (videoEl, standbyEl, stream) => {
+        if (!videoEl) return;
+        if (stream && stream.active) {
+            if (videoEl.srcObject !== stream) {
+                videoEl.srcObject = stream;
+            }
+            videoEl.play().catch(e => console.debug("Autoplay handled:", e));
+            if (standbyEl) standbyEl.classList.add('hidden');
+        } else {
+            videoEl.srcObject = null;
+            if (standbyEl) standbyEl.classList.remove('hidden');
+        }
     };
 
-    try {
-        // 1. Camera 1: Face Scan Entry
-        if (!streamCam1) {
-            try {
-                streamCam1 = await getStreamForDevice(cfg.camera1_entry_device_id);
-            } catch (e) {
-                console.warn("Cam 1 stream fallback to default:", e);
-                streamCam1 = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-            }
-        }
-        const v1Dash = document.getElementById('dash-cam1-entry');
-        const v1Kiosk = document.getElementById('kiosk-cam1-entry');
-        const v1Test = document.getElementById('test-preview-cam1');
-        if (v1Dash && streamCam1) { v1Dash.srcObject = streamCam1; v1Dash.play().catch(() => {}); }
-        if (v1Kiosk && streamCam1) { v1Kiosk.srcObject = streamCam1; v1Kiosk.play().catch(() => {}); }
-        if (v1Test && streamCam1) { v1Test.srcObject = streamCam1; v1Test.play().catch(() => {}); }
-        const o1Dash = document.getElementById('dash-cam1-standby');
-        const o1Kiosk = document.getElementById('kiosk-cam1-standby');
-        if (o1Dash) o1Dash.classList.add('hidden');
-        if (o1Kiosk) o1Kiosk.classList.add('hidden');
+    // Camera 1 (Entry Face Terminal)
+    bindViewport(document.getElementById('dash-cam1-entry'), document.getElementById('dash-cam1-standby'), streamCam1);
+    bindViewport(document.getElementById('kiosk-cam1-entry'), document.getElementById('kiosk-cam1-standby'), streamCam1);
+    bindViewport(document.getElementById('test-preview-cam1'), null, streamCam1);
+    bindViewport(document.getElementById('reg-studio-video'), null, streamCam1);
 
-        // 2. Camera 2: Face Scan Exit
-        if (!streamCam2) {
-            try {
-                if (cfg.camera2_exit_device_id) {
-                    streamCam2 = await getStreamForDevice(cfg.camera2_exit_device_id);
-                } else {
-                    streamCam2 = streamCam1; // Share default stream if no secondary camera is assigned
-                }
-            } catch (e) {
-                streamCam2 = streamCam1;
-            }
-        }
-        const v2Dash = document.getElementById('dash-cam2-exit');
-        const v2Kiosk = document.getElementById('kiosk-cam2-exit');
-        const v2Test = document.getElementById('test-preview-cam2');
-        if (v2Dash && streamCam2) { v2Dash.srcObject = streamCam2; v2Dash.play().catch(() => {}); }
-        if (v2Kiosk && streamCam2) { v2Kiosk.srcObject = streamCam2; v2Kiosk.play().catch(() => {}); }
-        if (v2Test && streamCam2) { v2Test.srcObject = streamCam2; v2Test.play().catch(() => {}); }
-        const o2Dash = document.getElementById('dash-cam2-standby');
-        const o2Kiosk = document.getElementById('kiosk-cam2-standby');
-        if (o2Dash) o2Dash.classList.add('hidden');
-        if (o2Kiosk) o2Kiosk.classList.add('hidden');
+    // Camera 2 (Exit Face Terminal)
+    bindViewport(document.getElementById('dash-cam2-exit'), document.getElementById('dash-cam2-standby'), streamCam2);
+    bindViewport(document.getElementById('kiosk-cam2-exit'), document.getElementById('kiosk-cam2-standby'), streamCam2);
+    bindViewport(document.getElementById('test-preview-cam2'), null, streamCam2);
 
-        // 3. Camera 3: Anti-Tailgate ROI
-        if (!streamCam3) {
-            try {
-                if (cfg.camera3_tailgate_device_id) {
-                    streamCam3 = await getStreamForDevice(cfg.camera3_tailgate_device_id);
-                } else {
-                    streamCam3 = streamCam1; // Share default stream for overhead simulation
-                }
-            } catch (e) {
-                streamCam3 = streamCam1;
-            }
-        }
-        const v3Dash = document.getElementById('dash-cam3-tailgate');
-        const v3Kiosk = document.getElementById('kiosk-cam3-tailgate');
-        const v3Roi = document.getElementById('roi-preview-video');
-        const v3Test = document.getElementById('test-preview-cam3');
-        if (v3Dash && streamCam3) { v3Dash.srcObject = streamCam3; v3Dash.play().catch(() => {}); }
-        if (v3Kiosk && streamCam3) { v3Kiosk.srcObject = streamCam3; v3Kiosk.play().catch(() => {}); }
-        if (v3Roi && streamCam3) { v3Roi.srcObject = streamCam3; v3Roi.play().catch(() => {}); }
-        if (v3Test && streamCam3) { v3Test.srcObject = streamCam3; v3Test.play().catch(() => {}); }
-        const o3Dash = document.getElementById('dash-cam3-standby');
-        const o3Kiosk = document.getElementById('kiosk-cam3-standby');
-        if (o3Dash) o3Dash.classList.add('hidden');
-        if (o3Kiosk) o3Kiosk.classList.add('hidden');
+    // Camera 3 (Anti-Tailgate Overhead Radar)
+    bindViewport(document.getElementById('dash-cam3-tailgate'), document.getElementById('dash-cam3-standby'), streamCam3);
+    bindViewport(document.getElementById('kiosk-cam3-tailgate'), document.getElementById('kiosk-cam3-standby'), streamCam3);
+    bindViewport(document.getElementById('test-preview-cam3'), null, streamCam3);
+    bindViewport(document.getElementById('roi-preview-video'), null, streamCam3);
+}
 
-        // Apply ROI Calibrated Zone styling across overlays
-        applyRoiConfigToOverlays(cfg);
-    } catch (err) {
-        console.warn("Camera streams standby / not granted:", err);
+/**
+ * Updates status alert banners and occupied overlay on Camera card 1, 2, or 3.
+ */
+function setCameraSlotFeedback(camNumber, state, detail = '') {
+    const msgEl = document.getElementById(`cam-status-msg-${camNumber}`);
+    const overlayEl = document.getElementById(`cam-occupied-overlay-${camNumber}`);
+    const badgeEl = document.getElementById(`cam-badge-${camNumber}`);
+
+    if (state === 'bandwidth' || state === 'occupied') {
+        if (msgEl) {
+            msgEl.className = "text-[11px] p-2.5 rounded-lg leading-snug bg-amber-950/80 border border-amber-600 text-amber-200 block";
+            msgEl.innerHTML = `<strong>⚠️ USB Hub Bandwidth Limit / Conflict:</strong> ${detail || 'Windows cannot stream 3 webcams through one shared USB hub. Plug 1 camera directly into another PC USB port (or select the laptop webcam).'}`;
+        }
+        if (overlayEl) overlayEl.classList.remove('hidden');
+        if (badgeEl) {
+            badgeEl.innerText = "USB BUS LIMIT";
+            badgeEl.className = "text-[9px] font-mono text-amber-400 bg-amber-950/80 px-1.5 py-0.5 rounded border border-amber-700 font-bold";
+        }
+    } else if (state === 'error') {
+        if (msgEl) {
+            msgEl.className = "text-[11px] p-2.5 rounded-lg leading-snug bg-red-950/80 border border-red-700 text-red-300 block";
+            msgEl.innerHTML = `<strong>🔴 Hardware Error:</strong> ${detail || 'Unable to access video stream.'}`;
+        }
+        if (overlayEl) overlayEl.classList.add('hidden');
+        if (badgeEl) {
+            badgeEl.innerText = "ERROR";
+            badgeEl.className = "text-[9px] font-mono text-red-400 bg-red-950/80 px-1.5 py-0.5 rounded border border-red-700";
+        }
+    } else if (state === 'shared') {
+        if (msgEl) {
+            msgEl.className = "text-[11px] p-2 rounded-lg leading-snug bg-blue-950/50 border border-blue-800 text-blue-300 block";
+            msgEl.innerHTML = `<strong>ℹ️ Notice:</strong> ${detail || 'Webcam mirrored with Camera 1 (Shared test mode).'}`;
+        }
+        if (overlayEl) overlayEl.classList.add('hidden');
+        if (badgeEl) {
+            badgeEl.innerText = "SHARED (30 FPS)";
+            badgeEl.className = "text-[9px] font-mono text-blue-400 bg-blue-950/80 px-1.5 py-0.5 rounded border border-blue-800";
+        }
+    } else if (state === 'active') {
+        if (msgEl) {
+            msgEl.className = "text-[11px] p-2 rounded-lg leading-snug bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 block";
+            msgEl.innerHTML = `<strong>✓ Ready:</strong> Video stream active and running at 30 FPS.`;
+        }
+        if (overlayEl) overlayEl.classList.add('hidden');
+        if (badgeEl) {
+            badgeEl.innerText = "30 FPS";
+            badgeEl.className = "text-[9px] font-mono text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-800";
+        }
+    } else {
+        if (msgEl) msgEl.classList.add('hidden');
+        if (overlayEl) overlayEl.classList.add('hidden');
     }
 }
 
-async function populateCameraDevices() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+/**
+ * Scans all video inputs on the system using passive enumeration (non-destructive).
+ * Disambiguates identical webcam labels (e.g. 3 x Web Camera 4a54:5232) with port indices.
+ */
+async function scanActiveCameras(notify = false) {
+    const summaryEl = document.getElementById('cam-health-summary');
+    const detailEl = document.getElementById('cam-health-detail');
+    const dotEl = document.getElementById('cam-health-dot');
+
+    if (summaryEl) summaryEl.innerText = "Scanning connected video devices...";
+    if (dotEl) dotEl.className = "w-2 h-2 rounded-full bg-amber-400 animate-pulse";
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        if (summaryEl) summaryEl.innerText = "MediaDevices API unavailable";
+        if (dotEl) dotEl.className = "w-2 h-2 rounded-full bg-red-500";
+        return;
+    }
+
     try {
         const devices = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = devices.filter(d => d.kind === 'videoinput');
 
+        let readyCount = 0;
+        let activeCount = 0;
+
+        probedDevicesCache = [];
+
+        // Active device IDs currently streaming in GymPOS
+        const activeGymPosDeviceIds = [streamCam1DeviceId, streamCam2DeviceId, streamCam3DeviceId].filter(Boolean);
+
+        // Count occurrences of labels to disambiguate identical camera models
+        const labelCounts = {};
+        videoDevices.forEach(d => {
+            const base = d.label || 'Web Camera';
+            labelCounts[base] = (labelCounts[base] || 0) + 1;
+        });
+        const labelOccurrences = {};
+
+        for (let i = 0; i < videoDevices.length; i++) {
+            const dev = videoDevices[i];
+            const baseLabel = dev.label || `Web Camera (${dev.deviceId.slice(0, 8)}...)`;
+            let displayLabel = baseLabel;
+            if (labelCounts[baseLabel] > 1) {
+                labelOccurrences[baseLabel] = (labelOccurrences[baseLabel] || 0) + 1;
+                displayLabel = `${baseLabel} [Port #${labelOccurrences[baseLabel]}]`;
+            }
+
+            let status = 'ready';
+            if (activeGymPosDeviceIds.includes(dev.deviceId)) {
+                status = 'active_by_us';
+                activeCount++;
+                readyCount++;
+            } else {
+                readyCount++;
+            }
+
+            probedDevicesCache.push({
+                deviceId: dev.deviceId,
+                label: displayLabel,
+                health: status,
+                healthObj: { status, label: displayLabel }
+            });
+        }
+
+        // Update Health Status Bar
+        if (dotEl) {
+            dotEl.className = readyCount > 0
+                ? "w-2 h-2 rounded-full bg-emerald-400"
+                : "w-2 h-2 rounded-full bg-slate-500";
+        }
+        if (summaryEl) {
+            summaryEl.innerText = `Detected ${videoDevices.length} camera(s): ${readyCount} Available${activeCount > 0 ? ` (${activeCount} active in GymPOS)` : ''}`;
+        }
+        if (detailEl) {
+            detailEl.innerText = readyCount >= 3 ? "All webcams detected and ready for routing" : "Cameras detected and ready for routing";
+        }
+
+        // Populate dropdowns with descriptive status indicators
         const sel1 = document.getElementById('cam-assign-entry');
         const sel2 = document.getElementById('cam-assign-exit');
         const sel3 = document.getElementById('cam-assign-tailgate');
 
-        const buildOptions = (selectedId) => {
-            let html = '<option value="">Default System Webcam</option>';
-            videoDevices.forEach((dev, idx) => {
-                const label = dev.label || `Camera ${idx + 1} (${dev.deviceId.slice(0, 8)}...)`;
-                const isSel = (dev.deviceId === selectedId) ? 'selected' : '';
-                html += `<option value="${dev.deviceId}" ${isSel}>${label}</option>`;
+        const cfg = appSettings.camera_config || {};
+
+        const buildOptions = (selectedId, fallbackIndex) => {
+            let html = '<option value="">-- Select Camera Device --</option>';
+            probedDevicesCache.forEach((item, idx) => {
+                const isSel = (item.deviceId && item.deviceId === selectedId)
+                    || (!selectedId && idx === fallbackIndex);
+                let prefix = "🟢";
+                let tag = "[Ready]";
+                if (item.health === 'active_by_us') {
+                    prefix = "🟢";
+                    tag = "[Streaming - GymPOS]";
+                } else if (item.health === 'occupied') {
+                    prefix = "⚠️";
+                    tag = "[USB LIMIT]";
+                }
+                html += `<option value="${item.deviceId}" ${isSel ? 'selected' : ''}>${prefix} ${tag} ${item.label}</option>`;
             });
             return html;
         };
 
-        const cfg = appSettings.camera_config || {};
-        if (sel1) sel1.innerHTML = buildOptions(cfg.camera1_entry_device_id || "");
-        if (sel2) sel2.innerHTML = buildOptions(cfg.camera2_exit_device_id || "");
-        if (sel3) sel3.innerHTML = buildOptions(cfg.camera3_tailgate_device_id || "");
+        if (sel1) sel1.innerHTML = buildOptions(cfg.camera1_entry_device_id || "", 0);
+        if (sel2) sel2.innerHTML = buildOptions(cfg.camera2_exit_device_id || "", 1);
+        if (sel3) sel3.innerHTML = buildOptions(cfg.camera3_tailgate_device_id || "", 2);
+
+        if (notify) {
+            showHudToast("Cameras Scanned", `Found ${videoDevices.length} camera(s). All devices ready for assignment.`, "success");
+        }
+
     } catch (e) {
-        console.error("Error enumerating video devices:", e);
+        console.error("Error scanning video devices:", e);
+        if (summaryEl) summaryEl.innerText = "Error scanning camera hardware: " + e;
+        if (dotEl) dotEl.className = "w-2 h-2 rounded-full bg-red-500";
     }
 }
 
-async function previewSelectedCamera(camNumber, deviceId) {
+async function populateCameraDevices() {
+    await scanActiveCameras(false);
+}
+
+/**
+ * Initializes streams on boot/settings load.
+ * Auto-discovers distinct physical webcams for Camera 1, 2, and 3.
+ * Includes graceful mirroring fallback if 3 webcams exceed single USB hub bandwidth.
+ */
+async function initCameraStreams() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
+
+    if (!appSettings.camera_config) {
+        appSettings.camera_config = {
+            camera1_entry_device_id: "",
+            camera2_exit_device_id: "",
+            camera3_tailgate_device_id: "",
+            roi_x: 20.0,
+            roi_y: 20.0,
+            roi_width: 60.0,
+            roi_height: 60.0,
+            roi_sensitivity: 85.0
+        };
+    }
+    const cfg = appSettings.camera_config;
+
     try {
-        const stream = await getStreamForDevice(deviceId);
+        // If device IDs are not explicitly configured, discover available webcams
+        // and assign distinct physical webcams to slots 1, 2, and 3 if available.
+        if (!cfg.camera1_entry_device_id && !cfg.camera2_exit_device_id && !cfg.camera3_tailgate_device_id) {
+            try {
+                const devs = await navigator.mediaDevices.enumerateDevices();
+                const vdevs = devs.filter(d => d.kind === 'videoinput');
+                if (vdevs.length >= 1) cfg.camera1_entry_device_id = vdevs[0].deviceId;
+                if (vdevs.length >= 2) cfg.camera2_exit_device_id = vdevs[1].deviceId;
+                if (vdevs.length >= 3) cfg.camera3_tailgate_device_id = vdevs[2].deviceId;
+            } catch (e) {
+                console.debug("Auto-assigning default devices failed:", e);
+            }
+        }
+
+        // 1. Camera 1: Face Scan Entry
+        if (!streamCam1 || !streamCam1.active) {
+            const res1 = await getStreamForDevice(cfg.camera1_entry_device_id);
+            if (res1.stream) {
+                streamCam1 = res1.stream;
+                streamCam1DeviceId = cfg.camera1_entry_device_id;
+                setCameraSlotFeedback(1, 'active');
+            } else if (res1.error) {
+                setCameraSlotFeedback(1, 'bandwidth', res1.error.message);
+                showHudToast("Camera 1 Error", res1.error.message, "danger");
+            }
+        }
+
+        // Brief delay between opening multiple USB webcams to allow bus initialization
+        await new Promise(r => setTimeout(r, 100));
+
+        // 2. Camera 2: Face Scan Exit
+        if (!streamCam2 || !streamCam2.active) {
+            if (cfg.camera2_exit_device_id && cfg.camera2_exit_device_id !== cfg.camera1_entry_device_id) {
+                const res2 = await getStreamForDevice(cfg.camera2_exit_device_id);
+                if (res2.stream) {
+                    streamCam2 = res2.stream;
+                    streamCam2DeviceId = cfg.camera2_exit_device_id;
+                    setCameraSlotFeedback(2, 'active');
+                } else if (res2.error) {
+                    setCameraSlotFeedback(2, 'bandwidth', "USB bus limit reached on shared hub. Mirroring Camera 1 until one camera is moved to a separate PC USB port.");
+                    // Fallback to streamCam1 so dashboard is never black
+                    if (streamCam1) {
+                        streamCam2 = streamCam1;
+                        streamCam2DeviceId = streamCam1DeviceId;
+                    }
+                }
+            } else if (streamCam1) {
+                streamCam2 = streamCam1;
+                streamCam2DeviceId = streamCam1DeviceId;
+                setCameraSlotFeedback(2, 'shared', 'Shared with Camera 1 (1-camera test mode)');
+            }
+        }
+
+        await new Promise(r => setTimeout(r, 100));
+
+        // 3. Camera 3: Anti-Tailgate Overhead
+        if (!streamCam3 || !streamCam3.active) {
+            let gotDedicatedCam3 = false;
+            if (cfg.camera3_tailgate_device_id && cfg.camera3_tailgate_device_id !== cfg.camera1_entry_device_id && cfg.camera3_tailgate_device_id !== cfg.camera2_exit_device_id) {
+                const res3 = await getStreamForDevice(cfg.camera3_tailgate_device_id);
+                if (res3.stream) {
+                    streamCam3 = res3.stream;
+                    streamCam3DeviceId = cfg.camera3_tailgate_device_id;
+                    setCameraSlotFeedback(3, 'active');
+                    gotDedicatedCam3 = true;
+                }
+            }
+
+            // If 3rd camera failed due to USB hub bandwidth limit:
+            if (!gotDedicatedCam3) {
+                // Check if an alternate available camera can be used (e.g. laptop camera)
+                let altFound = false;
+                try {
+                    const devs = await navigator.mediaDevices.enumerateDevices();
+                    const vdevs = devs.filter(d => d.kind === 'videoinput');
+                    const usedIds = [streamCam1DeviceId, streamCam2DeviceId].filter(Boolean);
+                    const freeDev = vdevs.find(d => !usedIds.includes(d.deviceId));
+                    if (freeDev) {
+                        const altRes = await getStreamForDevice(freeDev.deviceId);
+                        if (altRes.stream) {
+                            streamCam3 = altRes.stream;
+                            streamCam3DeviceId = freeDev.deviceId;
+                            setCameraSlotFeedback(3, 'active', `Streaming on ${freeDev.label || 'alternate webcam'}`);
+                            altFound = true;
+                        }
+                    }
+                } catch (e) {}
+
+                // Fallback to sharing Camera 1 so the dashboard is NEVER black
+                if (!altFound && streamCam1) {
+                    streamCam3 = streamCam1;
+                    streamCam3DeviceId = streamCam1DeviceId;
+                    setCameraSlotFeedback(3, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot stream 3 webcams through 1 hub. Move 1 camera to another PC USB port, or select the laptop camera.");
+                    showHudToast("USB Hub Limit Exceeded", "3 webcams cannot share 1 USB hub. Mirroring Camera 1 until one camera is moved to a separate PC USB port.", "warning");
+                }
+            }
+        }
+
+        // Synchronize all video viewports across the entire application immediately
+        syncAllCameraViewports();
+
+        // Apply ROI Calibrated Zone styling across overlays
+        applyRoiConfigToOverlays(cfg);
+    } catch (err) {
+        console.warn("Camera streams initialization error:", err);
+    }
+}
+
+/**
+ * Handles administrator camera dropdown selection change.
+ * Immediately updates live previews AND synchronizes to Dashboard and Kiosks.
+ */
+async function previewSelectedCamera(camNumber, deviceId) {
+    const feedbackPrefix = `Camera ${camNumber}`;
+    try {
+        if (!appSettings.camera_config) {
+            appSettings.camera_config = {
+                camera1_entry_device_id: "",
+                camera2_exit_device_id: "",
+                camera3_tailgate_device_id: "",
+                roi_x: 20.0, roi_y: 20.0, roi_width: 60.0, roi_height: 60.0, roi_sensitivity: 85.0
+            };
+        }
+
+        // Release old stream for this camera slot if dedicated
         if (camNumber === 1) {
-            // Stop old stream tracks to prevent hardware handle leak
             if (streamCam1 && streamCam1 !== streamCam2 && streamCam1 !== streamCam3) stopStream(streamCam1);
-            streamCam1 = stream;
-            const el = document.getElementById('test-preview-cam1');
-            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
+            streamCam1 = null;
+            streamCam1DeviceId = null;
+            appSettings.camera_config.camera1_entry_device_id = deviceId;
         } else if (camNumber === 2) {
             if (streamCam2 && streamCam2 !== streamCam1 && streamCam2 !== streamCam3) stopStream(streamCam2);
-            streamCam2 = stream;
-            const el = document.getElementById('test-preview-cam2');
-            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
+            streamCam2 = null;
+            streamCam2DeviceId = null;
+            appSettings.camera_config.camera2_exit_device_id = deviceId;
         } else if (camNumber === 3) {
             if (streamCam3 && streamCam3 !== streamCam1 && streamCam3 !== streamCam2) stopStream(streamCam3);
-            streamCam3 = stream;
-            const el = document.getElementById('test-preview-cam3');
-            const roiEl = document.getElementById('roi-preview-video');
-            if (el) { el.srcObject = stream; el.play().catch(() => {}); }
-            if (roiEl) { roiEl.srcObject = stream; roiEl.play().catch(() => {}); }
+            streamCam3 = null;
+            streamCam3DeviceId = null;
+            appSettings.camera_config.camera3_tailgate_device_id = deviceId;
         }
+
+        // Brief delay to allow Windows UVC driver to free USB endpoint lock
+        await new Promise(r => setTimeout(r, 100));
+
+        let streamToUse = null;
+
+        // Check if deviceId is already opened by another slot in GymPOS
+        if (camNumber !== 1 && deviceId && deviceId === streamCam1DeviceId && streamCam1) {
+            streamToUse = streamCam1;
+        } else if (camNumber !== 2 && deviceId && deviceId === streamCam2DeviceId && streamCam2) {
+            streamToUse = streamCam2;
+        } else if (camNumber !== 3 && deviceId && deviceId === streamCam3DeviceId && streamCam3) {
+            streamToUse = streamCam3;
+        }
+
+        if (!streamToUse) {
+            const res = await getStreamForDevice(deviceId);
+            if (res.error) {
+                setCameraSlotFeedback(camNumber, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot run 3 webcams on the same USB hub. Move this camera directly to a different PC USB port (not the hub), or choose the laptop webcam.");
+                showHudToast("USB Hub Limit Exceeded", "Windows cannot run 3 webcams on the same USB hub. Move one camera to another PC USB port, or choose the laptop webcam.", "danger");
+                // If it fails, fallback to streamCam1 so dashboard and preview don't go black
+                if (streamCam1) {
+                    streamToUse = streamCam1;
+                    deviceId = streamCam1DeviceId;
+                } else {
+                    syncAllCameraViewports();
+                    return;
+                }
+            } else {
+                streamToUse = res.stream;
+            }
+        }
+
+        if (camNumber === 1) {
+            streamCam1 = streamToUse;
+            streamCam1DeviceId = deviceId;
+            setCameraSlotFeedback(1, 'active');
+        } else if (camNumber === 2) {
+            streamCam2 = streamToUse;
+            streamCam2DeviceId = deviceId;
+            const isShared = (streamToUse === streamCam1);
+            setCameraSlotFeedback(2, isShared ? 'shared' : 'active', isShared ? 'Shared with Camera 1' : '');
+        } else if (camNumber === 3) {
+            streamCam3 = streamToUse;
+            streamCam3DeviceId = deviceId;
+            const isShared = (streamToUse === streamCam1);
+            setCameraSlotFeedback(3, isShared ? 'shared' : 'active', isShared ? 'Shared with Camera 1' : '');
+        }
+
+        // Synchronize immediately to Dashboard, Kiosk, and Hardware previews!
+        syncAllCameraViewports();
+        showHudToast("Camera Assigned", `${feedbackPrefix} bound successfully and streaming.`, "success");
+
     } catch (e) {
         console.warn(`Failed to preview camera ${camNumber}:`, e);
+        setCameraSlotFeedback(camNumber, 'error', String(e));
     }
 }
 
@@ -432,18 +785,31 @@ async function saveCameraRouting() {
         };
     }
 
-    if (sel1) appSettings.camera_config.camera1_entry_device_id = sel1.value;
-    if (sel2) appSettings.camera_config.camera2_exit_device_id = sel2.value;
-    if (sel3) appSettings.camera_config.camera3_tailgate_device_id = sel3.value;
+    const newId1 = sel1 ? sel1.value : appSettings.camera_config.camera1_entry_device_id;
+    const newId2 = sel2 ? sel2.value : appSettings.camera_config.camera2_exit_device_id;
+    const newId3 = sel3 ? sel3.value : appSettings.camera_config.camera3_tailgate_device_id;
+
+    appSettings.camera_config.camera1_entry_device_id = newId1;
+    appSettings.camera_config.camera2_exit_device_id = newId2;
+    appSettings.camera_config.camera3_tailgate_device_id = newId3;
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
-        // Stop ALL active streams safely before rebinding (null-safe guards)
+        localStorage.setItem('gympos_branding', JSON.stringify(appSettings));
+
+        // Re-initialize any streams cleanly
         const uniqueStreams = new Set([streamCam1, streamCam2, streamCam3].filter(Boolean));
         uniqueStreams.forEach(s => stopStream(s));
         streamCam1 = null; streamCam2 = null; streamCam3 = null;
+        streamCam1DeviceId = null; streamCam2DeviceId = null; streamCam3DeviceId = null;
+
+        await new Promise(r => setTimeout(r, 120));
         await initCameraStreams();
-        showHudToast("Camera Routing Saved", "All 3 camera assignments saved and live streams re-routed.", "success");
+
+        // Ensure all views are updated
+        syncAllCameraViewports();
+
+        showHudToast("Camera Routing Saved", "All 3 camera assignments saved to database and live streams routed to Dashboard & Kiosks.", "success");
     } catch (e) {
         alert("Failed to save camera routing: " + e);
     }
@@ -808,8 +1174,8 @@ async function initApp() {
     await loadCoaches();
     await loadCoachSessions();
     await refreshComPorts();
-    await populateCameraDevices();
     await initCameraStreams();
+    await populateCameraDevices();
     startAutonomousBiometricEngine();
     startHardwareButtonPoll();
 
@@ -1079,18 +1445,28 @@ function switchView(viewName) {
         if (el) el.classList.toggle('hidden', v !== viewName);
     });
 
-    if (viewName === 'dashboard') refreshDashboard();
+    if (viewName === 'dashboard') {
+        refreshDashboard();
+        syncAllCameraViewports();
+    }
     if (viewName === 'members') loadMembers();
     if (viewName === 'interbranch') loadInterbranchMembers();
-    if (viewName === 'register') initStudioCamera();
+    if (viewName === 'register') {
+        initStudioCamera();
+        syncAllCameraViewports();
+    }
     if (viewName === 'walkins') loadWalkIns();
-    if (viewName === 'attendance') loadAttendanceLogs();
+    if (viewName === 'attendance') {
+        loadAttendanceLogs();
+        syncAllCameraViewports();
+    }
     if (viewName === 'pos') loadProducts();
     if (viewName === 'eod') loadEndOfDay();
     if (viewName === 'expenses') loadExpenses();
     if (viewName === 'coaches') loadCoaches();
     if (viewName === 'hardware') {
         populateCameraDevices();
+        syncAllCameraViewports();
         // Bind onchange auto-preview for camera assignment dropdowns
         const sel1 = document.getElementById('cam-assign-entry');
         const sel2 = document.getElementById('cam-assign-exit');
@@ -1156,11 +1532,35 @@ const anglePrompts = [
     { label: "5. Tilt Down (10°)", guide: "Tilt chin slightly downward", offset: -0.25 }
 ];
 
-function initStudioCamera() {
+async function initStudioCamera() {
     const video = document.getElementById('reg-studio-video');
-    if (video && streamCam1) {
+    const errEl = document.getElementById('reg-error-msg');
+    if (!video) return;
+
+    if (streamCam1 && streamCam1.active) {
         video.srcObject = streamCam1;
         video.play().catch(() => {});
+        if (errEl) errEl.innerText = "";
+    } else {
+        const cfg = appSettings.camera_config || {};
+        const res = await getStreamForDevice(cfg.camera1_entry_device_id);
+        if (res.stream) {
+            streamCam1 = res.stream;
+            video.srcObject = res.stream;
+            video.play().catch(() => {});
+            if (errEl) errEl.innerText = "";
+        } else if (res.error && res.error.isOccupied) {
+            if (errEl) {
+                errEl.innerHTML = "<strong>⚠️ Camera Occupied:</strong> Webcam is in use by another application (Zoom, OBS, Teams). Close conflicting software to enable face enrollment.";
+                errEl.className = "text-xs text-amber-300 font-semibold p-2.5 bg-amber-950/80 rounded-lg border border-amber-600 block";
+            }
+            showHudToast("Camera Occupied", "Cannot start registration camera: device is locked by another program.", "danger");
+        } else {
+            if (errEl) {
+                errEl.innerText = "Camera not detected. Please verify webcam connection in Hardware Settings.";
+                errEl.className = "text-xs text-red-300 p-2 bg-red-950/60 rounded border border-red-800 block";
+            }
+        }
     }
 }
 
@@ -1975,6 +2375,24 @@ async function loadProducts() {
     } catch (e) {
         console.error("Load products error:", e);
     }
+    // Owner-customized rate cards + promo vouchers synced from the portal.
+    try {
+        const plans = await invokeTauri('list_remote_plans') || [];
+        populateRegPlanSelect(plans);
+    } catch (e) { /* offline/preview: keep hardcoded plans */ }
+    await loadRemotePromos();
+}
+
+function populateRegPlanSelect(plans) {
+    const sel = document.getElementById('reg-mem-plan');
+    if (!sel || !plans || plans.length === 0) return;
+    const prev = sel.value;
+    sel.innerHTML = plans.map(p => {
+        const tag = (p.tag || '').toUpperCase();
+        const per = { 'session': '/session', 'monthly': '/mo', '3-months': '/3mo', '6-months': '/6mo', '1-year': '/yr' }[p.billing_period] || '/mo';
+        return `<option value="${p.id}">${escapeHtml(p.name)}${tag ? ' [' + escapeHtml(tag) + ']' : ''} — ₱${p.price_monthly}${per}</option>`;
+    }).join('');
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
 }
 
 function renderProductsGrid() {
@@ -2164,24 +2582,74 @@ function renderCart() {
         `;
     }).join('');
 
-    const disc = currentPosDiscount();
+    const disc = currentPosDiscount(total);
     if (disc.pct > 0) {
         const gross = total;
         const off = Math.round(gross * disc.pct) / 100;
         if (totalEl) totalEl.innerHTML = `<span class="line-through text-slate-500 text-sm mr-2">$${gross.toFixed(2)}</span>$${(gross - off).toFixed(2)}`;
-        container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">ID Discount (${disc.label}, ${disc.pct}%): −$${off.toFixed(2)}</div>`);
+        container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">Discount (${disc.label}): −$${off.toFixed(2)}</div>`);
     } else if (totalEl) {
         totalEl.innerText = `$${total.toFixed(2)}`;
     }
 }
 
-function currentPosDiscount() {
+// Promo vouchers synced from the owner portal (list_remote_promos).
+let cachedPromos = [];
+let appliedPromo = null;
+
+async function loadRemotePromos() {
+    try {
+        cachedPromos = await invokeTauri('list_remote_promos') || [];
+    } catch (e) { cachedPromos = []; }
+}
+
+function applyPosPromo() {
+    const input = document.getElementById('pos-promo-input');
+    const msg = document.getElementById('pos-promo-msg');
+    const code = (input ? input.value.trim().toUpperCase() : '');
+    appliedPromo = null;
+    if (!code) {
+        if (msg) { msg.innerText = ''; }
+        renderCart();
+        return;
+    }
+    const now = new Date();
+    const pr = cachedPromos.find(p => (p.code || '').toUpperCase() === code && p.is_active !== false
+        && (!p.expires_at || new Date(p.expires_at) >= now));
+    if (!pr) {
+        if (msg) { msg.innerText = `Code ${code} not found, expired, or not yet synced from portal.`; msg.className = 'text-[10px] mt-1 text-red-400'; }
+        renderCart();
+        return;
+    }
+    appliedPromo = pr;
+    if (msg) { msg.innerText = `${pr.label || pr.code}: ${pr.discount_type === 'percent' ? pr.discount_value + '% off' : '₱' + pr.discount_value + ' off'} (min ₱${pr.min_spend || 0})`; msg.className = 'text-[10px] mt-1 text-emerald-400'; }
+    renderCart();
+}
+
+function currentPosDiscount(gross = 0) {
     const sel = document.getElementById('pos-discount-select');
     const v = sel ? sel.value : 'none';
-    if (v === 'senior') return { type: 'senior', label: 'Senior ID', pct: 20 };
-    if (v === 'student') return { type: 'student', label: 'Student ID', pct: 20 };
-    if (v === 'pwd') return { type: 'pwd', label: 'PWD ID', pct: 20 };
-    return { type: '', label: '', pct: 0 };
+    let type = '', label = '', pct = 0;
+    if (v === 'senior') { type = 'senior'; label = 'Senior ID'; pct = 20; }
+    else if (v === 'student') { type = 'student'; label = 'Student ID'; pct = 20; }
+    else if (v === 'pwd') { type = 'pwd'; label = 'PWD ID'; pct = 20; }
+    // Stack the promo voucher: fixed-amount promos convert to an effective pct
+    // of the gross so the single server-side discount path stays exact.
+    if (appliedPromo && gross > 0) {
+        let promoOff = 0;
+        if ((gross) >= (appliedPromo.min_spend || 0)) {
+            promoOff = appliedPromo.discount_type === 'percent'
+                ? gross * appliedPromo.discount_value / 100
+                : Math.min(gross, appliedPromo.discount_value);
+        }
+        if (promoOff > 0) {
+            const promoPct = promoOff / gross * 100;
+            // ID discount applies to the post-promo remainder: combined pct
+            const combined = promoPct + pct * (1 - promoPct / 100);
+            return { type: `${appliedPromo.code}${type ? '+' + type : ''}`, label: `${appliedPromo.label || appliedPromo.code}${label ? ' + ' + label : ''}`, pct: Math.min(100, combined) };
+        }
+    }
+    return { type, label, pct };
 }
 
 function removeFromCart(idx) {
@@ -2195,10 +2663,13 @@ async function checkoutCart(paymentMethod) {
         return;
     }
 
-    const disc = currentPosDiscount();
-    // Require an ID number when an ID discount is applied
+    const gross = cart.reduce((s, i) => s + i.unit_price * i.quantity, 0);
+    const disc = currentPosDiscount(gross);
+    // Require an ID number only when an ID discount (senior/student/pwd) is
+    // part of the discount — promo-only checkouts don't need one.
+    const needsId = /(senior|student|pwd)/i.test(disc.type || '');
     let idNote = '';
-    if (disc.pct > 0) {
+    if (needsId) {
         const idInput = document.getElementById('pos-discount-id-input');
         idNote = (idInput && idInput.value.trim()) || '';
         if (!idNote) {
@@ -2218,6 +2689,11 @@ async function checkoutCart(paymentMethod) {
 
         alert(`Sale Processed!\nTransaction ID: ${tx.id}\nGross: $${(tx.total_amount + (tx.discount_amount || 0)).toFixed(2)}\nDiscount: ${disc.label || 'None'} -$${(tx.discount_amount || 0).toFixed(2)}${idNote ? ` (ID: ${idNote})` : ''}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
         cart = [];
+        appliedPromo = null;
+        const promoInput = document.getElementById('pos-promo-input');
+        if (promoInput) promoInput.value = '';
+        const promoMsg = document.getElementById('pos-promo-msg');
+        if (promoMsg) promoMsg.innerText = '';
         renderCart();
         await loadProducts();
     } catch (e) {

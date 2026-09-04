@@ -158,6 +158,8 @@ pub fn run() {
             commands::authenticate_staff_pin,
             commands::authenticate_owner,
             commands::poll_hardware_buttons,
+            commands::list_remote_plans,
+            commands::list_remote_promos,
             commands::get_terminal_session,
             commands::get_license_key_diagnostics,
             commands::logout_terminal_session,
