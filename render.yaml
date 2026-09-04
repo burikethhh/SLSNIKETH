@@ -7,6 +7,10 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /api/v1/health
+    disk:
+      name: gympos-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PORT
         value: 8080

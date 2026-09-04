@@ -51,7 +51,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Do NOT reintroduce a hardcoded fallback key/secret here.
     tracing::info!("CEO account authentication active");
 
-    let cloud_db = Arc::new(CloudDatabase::new("gympos_cloud.sqlite")?);
+    // Render's filesystem is ephemeral — SQLite on ./gympos_cloud.sqlite is wiped
+    // on every deploy/restart unless it's on a persistent disk. Use /var/data
+    // when it exists (Render Disk mount), otherwise fall back to local file.
+    let db_path = if std::path::Path::new("/var/data").exists() {
+        "/var/data/gympos_cloud.sqlite"
+    } else {
+        "gympos_cloud.sqlite"
+    };
+    if db_path.starts_with("/var/data") {
+        let _ = std::fs::create_dir_all("/var/data");
+    }
+    tracing::info!("Using SQLite database at {}", db_path);
+    let cloud_db = Arc::new(CloudDatabase::new(db_path)?);
     if cloud_db.count_ceos().unwrap_or(0) == 0 {
         tracing::warn!("No CEO account exists yet — register the first one via POST /api/v1/auth/ceo-register (or the Command Center login screen).");
     }
