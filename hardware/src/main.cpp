@@ -5,15 +5,27 @@
   Controls door solenoid, buzzer, and 16x2 I2C LCD.
   RFID is handled by external USB reader on the PC side.
 
-  Pin Wiring:
-    Relay   → Direct COM/NC (no ESP pin, maglock power via board relay)
-    GPIO21  → LCD SDA           (I2C)
-    GPIO22  → LCD SCL           (I2C)
-    GPIO25  → 5V Buzzer         (active HIGH)
+  Pin Wiring (pins.jfif field map — 2026-09-04):
+    GPIO23  → Solenoid Relay   (5V relay, INPUT mode trick)
+                VCC→5V, GND→GND, IN→GPIO23
+                12V+ → Relay COM, Relay NO → Solenoid+
+                (moved off GPIO18 — now LCD SDA; override via -D LOCK_PIN=<pin>)
+    GPIO18  → LCD SDA           (software I2C, Wire.begin(18, 19))
+    GPIO19  → LCD SCL           (software I2C)
+    GPIO9   → 5V Buzzer         (active HIGH)
+    GPIO4   → Button 1          (ENTRY camera trigger, INPUT_PULLUP, active LOW)
+    GPIO8   → Button 2          (EXIT camera trigger, INPUT_PULLUP, active LOW)
     GPIO2   → Built-in LED      (status indicator)
 
-  Relay: direct-wired, ESP only signals LED/buzzer/LCD; unlock is
-  logical (ACK + beep) — physical release is via board power path.
+  Push-buttons (no tailgate role — tailgate stays fully automatic on entry):
+    Button 1 → enable ENTRY camera: sends EVT:ENTRY_BTN, LCD "ENTRY CAM ON"
+    Button 2 → enable EXIT camera:  sends EVT:EXIT_BTN,  LCD "EXIT CAM ON"
+    The PC decides what "enable" means (arm stream + auto face scan).
+    Buttons never unlock the door directly.
+
+  Relay Control (5V relay + 3.3V GPIO workaround):
+    relay OFF = pinMode(INPUT)  → high impedance → solenoid OUT (locked)
+    relay ON  = OUTPUT + LOW    → pulls IN to GND → solenoid IN (unlocked)
 
   Serial commands (case-insensitive, \n terminated):
     UNLOCK             → open solenoid 5s + success beep + LCD "Access Granted"
@@ -31,18 +43,49 @@
     READY              → sent once on boot
     ACK:<cmd>          → acknowledgement for every command
     ACK:RELOCK         → auto-lock after unlock timer expires
+    EVT:ENTRY_BTN      → Button 1 pressed (enable ENTRY camera + auto-scan)
+    EVT:EXIT_BTN       → Button 2 pressed (enable EXIT camera + auto-scan)
 */
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// ───────────── Pin Configuration ─────────────
-// Relay is direct COM/NC — no ESP pin (was SOLENOID_PIN=18, removed).
-static const int LCD_SDA_PIN    = 21;  // I2C SDA (Wire default)
-static const int LCD_SCL_PIN    = 22;  // I2C SCL (Wire default)
-static const int BUZZER_PIN     = 25;  // 5V active buzzer
-static const int STATUS_LED_PIN = 2;   // Built-in LED
+// ───────────── Lock Configuration ─────────────
+// All locks are direct-wired to board relay COM/NC (no ESP GPIO pin).
+// Physical release is handled via direct relay power path.
+// The ESP handles logical state tracking, status LED, buzzer, and LCD.
+#ifndef LOCK_PIN
+#define LOCK_PIN -1  // Direct-wired relay (no GPIO pin drive)
+#endif
+
+// ───────────── Pin Configuration (Field Map: pins.jfif) ─────────────
+// LCD SDA=18 / SCL=19, Button1=4 (Entry), Button2=8 (Exit), Buzzer=9, LED=2
+#ifndef LCD_SDA_PIN
+static const int LCD_SDA_PIN    = 18;  // I2C SDA (Wire.begin(18, 19))
+#endif
+#ifndef LCD_SCL_PIN
+static const int LCD_SCL_PIN    = 19;  // I2C SCL
+#endif
+#ifndef BUZZER_PIN
+static const int BUZZER_PIN     = 9;   // 5V active buzzer
+#endif
+#ifndef BTN_ENTRY_PIN
+static const int BTN_ENTRY_PIN  = 4;   // Button 1: ENTRY camera trigger (INPUT_PULLUP, active LOW)
+#endif
+#ifndef BTN_EXIT_PIN
+static const int BTN_EXIT_PIN   = 8;   // Button 2: EXIT camera trigger (INPUT_PULLUP, active LOW)
+#endif
+#ifndef STATUS_LED_PIN
+static const int STATUS_LED_PIN = 2;   // Built-in LED indicator
+#endif
+
+// Safety: GPIO8/9 are SPI-flash reserved on classic ESP32-WROOM-32 modules
+// (using them there crashes the chip); they are free on S2/S3/C3.
+// Warn only when building for the classic devkit with the field-map defaults.
+#if defined(ARDUINO_ESP32_DEV) && !defined(BTN_EXIT_PIN) && !defined(BUZZER_PIN)
+#warning "Field map uses GPIO8 (Button 2) + GPIO9 (buzzer): reserved for SPI flash on classic ESP32-WROOM-32. Use an S2/S3/C3 board, or override via -D BTN_EXIT_PIN=<pin> -D BUZZER_PIN=<pin>."
+#endif
 
 // ───────────── I2C Scanner ───────────────────
 static uint8_t scanLcdAddress() {
@@ -141,6 +184,45 @@ void buzzerTick() {
   }
 }
 
+// ───────────── Push-buttons (camera triggers) ─────────
+// BTN1 (pin 4) = ENTRY camera, BTN2 (pin 8) = EXIT camera. Active LOW with
+// INPUT_PULLUP. Fires once per press (edge + 300ms lockout doubles as
+// debounce); holding the button does NOT repeat. Buttons only notify the PC
+// via EVT: lines — they never drive the relay or the tailgate alarm.
+void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000);  // forward: defined in LCD Helpers below
+static const unsigned long BTN_LOCKOUT_MS = 300;
+bool btnEntryLastHigh = true;
+bool btnExitLastHigh  = true;
+unsigned long btnEntryLockout = 0;
+unsigned long btnExitLockout  = 0;
+
+void buttonsInit() {
+  pinMode(BTN_ENTRY_PIN, INPUT_PULLUP);
+  pinMode(BTN_EXIT_PIN, INPUT_PULLUP);
+}
+
+void pollButtons() {
+  unsigned long now = millis();
+
+  bool entryLow = (digitalRead(BTN_ENTRY_PIN) == LOW);
+  if (entryLow && btnEntryLastHigh && (long)(now - btnEntryLockout) >= 0) {
+    btnEntryLockout = now + BTN_LOCKOUT_MS;
+    Serial.println("EVT:ENTRY_BTN");
+    lcdShow("ENTRY CAM ON", "Face the camera");
+    buzzerStart(PAT_BEEP);
+  }
+  btnEntryLastHigh = !entryLow;
+
+  bool exitLow = (digitalRead(BTN_EXIT_PIN) == LOW);
+  if (exitLow && btnExitLastHigh && (long)(now - btnExitLockout) >= 0) {
+    btnExitLockout = now + BTN_LOCKOUT_MS;
+    Serial.println("EVT:EXIT_BTN");
+    lcdShow("EXIT CAM ON", "Face the camera");
+    buzzerStart(PAT_BEEP);
+  }
+  btnExitLastHigh = !exitLow;
+}
+
 // ───────────── LCD Helpers ───────────────────
 void lcdShowIdle() {
   lcd->clear();
@@ -148,10 +230,10 @@ void lcdShowIdle() {
   lcd->write(0);  // lock icon
   lcd->print(" GYMPOS READY");
   lcd->setCursor(0, 1);
-  lcd->print("Scan face/RFID");
+  lcd->print("Scan face");
 }
 
-void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000) {
+void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs) {
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->print(line1.substring(0, 16));
@@ -167,8 +249,8 @@ void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs 
 }
 
 // ───────────── Lock / Unlock ─────────────────
-// Relay is direct COM/NC — no ESP pin. Keep logical lock state for
-// STATUS/RELOCK ACKs and LED only; physical release is board power path.
+// All locks are direct-wired to the board relay COM/NC path.
+// The ESP maintains logical lock tracking, LED indicator, buzzer, and LCD feedback.
 void setLocked(bool locked) {
   isLocked = locked;
   digitalWrite(STATUS_LED_PIN, locked ? LOW : HIGH);
@@ -323,6 +405,7 @@ void setup() {
   // Pin modes
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
+  buttonsInit();
 
   // Default states — everything off, door locked
   digitalWrite(BUZZER_PIN, LOW);
@@ -365,6 +448,9 @@ void loop() {
 
   // ── Non-blocking buzzer tick ──
   buzzerTick();
+
+  // ── Push-button camera triggers (ENTRY / EXIT) ──
+  pollButtons();
 
   // ── Auto-relock after unlock timer ──
   if (unlockUntil > 0 && (long)(now - unlockUntil) >= 0) {
