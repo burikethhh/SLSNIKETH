@@ -6,17 +6,14 @@
   RFID is handled by external USB reader on the PC side.
 
   Pin Wiring:
-    GPIO18  → Solenoid Relay   (5V relay, INPUT mode trick)
-                VCC→5V, GND→GND, IN→GPIO18
-                12V+ → Relay COM, Relay NO → Solenoid+
+    Relay   → Direct COM/NC (no ESP pin, maglock power via board relay)
     GPIO21  → LCD SDA           (I2C)
     GPIO22  → LCD SCL           (I2C)
     GPIO25  → 5V Buzzer         (active HIGH)
     GPIO2   → Built-in LED      (status indicator)
 
-  Relay Control (5V relay + 3.3V GPIO workaround):
-    relay OFF = pinMode(INPUT)  → high impedance → solenoid OUT (locked)
-    relay ON  = OUTPUT + LOW    → pulls IN to GND → solenoid IN (unlocked)
+  Relay: direct-wired, ESP only signals LED/buzzer/LCD; unlock is
+  logical (ACK + beep) — physical release is via board power path.
 
   Serial commands (case-insensitive, \n terminated):
     UNLOCK             → open solenoid 5s + success beep + LCD "Access Granted"
@@ -41,7 +38,7 @@
 #include <LiquidCrystal_I2C.h>
 
 // ───────────── Pin Configuration ─────────────
-static const int SOLENOID_PIN   = 18;  // Solenoid relay (5V relay, INPUT mode trick)
+// Relay is direct COM/NC — no ESP pin (was SOLENOID_PIN=18, removed).
 static const int LCD_SDA_PIN    = 21;  // I2C SDA (Wire default)
 static const int LCD_SCL_PIN    = 22;  // I2C SCL (Wire default)
 static const int BUZZER_PIN     = 25;  // 5V active buzzer
@@ -170,17 +167,10 @@ void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs 
 }
 
 // ───────────── Lock / Unlock ─────────────────
-// INPUT mode trick: 5V relay can't be turned off by 3.3V HIGH (leaks current).
-// Instead: INPUT = high impedance (like disconnecting wire) = relay OFF = locked
-//          OUTPUT LOW = pulls relay IN to GND = relay ON = unlocked
+// Relay is direct COM/NC — no ESP pin. Keep logical lock state for
+// STATUS/RELOCK ACKs and LED only; physical release is board power path.
 void setLocked(bool locked) {
   isLocked = locked;
-  if (locked) {
-    pinMode(SOLENOID_PIN, INPUT);     // relay OFF → solenoid OUT (locked)
-  } else {
-    pinMode(SOLENOID_PIN, OUTPUT);
-    digitalWrite(SOLENOID_PIN, LOW);  // relay ON → solenoid IN (unlocked)
-  }
   digitalWrite(STATUS_LED_PIN, locked ? LOW : HIGH);
 }
 
