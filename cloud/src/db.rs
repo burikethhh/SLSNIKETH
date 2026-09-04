@@ -4,48 +4,47 @@ use gympos_shared::{
     OwnerHierarchyAccount, OwnerHierarchyBranch, PromoVoucherConfig, ReleaseInfo, RemoteCatalogProduct,
     SaleTransaction, StaffAccount, StaffRole, UpdateGymRequest, UpdateStaffRequest,
 };
-use parking_lot::Mutex;
-use rusqlite::{params, Connection, Result};
+use sqlx::{PgPool, Row};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::models::GymRecord;
 
+/// Cloud database backed by Postgres (`DATABASE_URL`).
+/// Single permanent backend for every environment — local runs point at the
+/// same Render `gympos-db` so CEOs/owners can never be split-brained or wiped
+/// by ephemeral container filesystems. REAL columns are DOUBLE PRECISION
+/// (Postgres REAL is float4 and would not decode into f64).
+#[derive(Clone)]
 pub struct CloudDatabase {
-    conn: Arc<Mutex<Connection>>,
+    pool: PgPool,
 }
 
 impl CloudDatabase {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        let db = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        db.init_schema()?;
+    pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
+        let pool = PgPool::connect(database_url).await?;
+        let db = Self { pool };
+        db.init_schema().await?;
         Ok(db)
     }
 
-    fn init_schema(&self) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS cloud_gyms (
+    async fn init_schema(&self) -> Result<(), sqlx::Error> {
+        // NOTE: sqlx uses the extended protocol (one statement per query), so
+        // each DDL statement is executed individually rather than as a batch.
+        const TABLES: &[&str] = &[
+            r#"CREATE TABLE IF NOT EXISTS cloud_gyms (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 tier TEXT NOT NULL,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_disabled_gyms (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_disabled_gyms (
                 gym_id TEXT PRIMARY KEY,
                 disabled_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_licenses (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_licenses (
                 license_id TEXT PRIMARY KEY,
                 raw_token TEXT NOT NULL,
                 gym_id TEXT NOT NULL,
@@ -60,9 +59,8 @@ impl CloudDatabase {
                 is_revoked INTEGER NOT NULL DEFAULT 0,
                 revoked_reason TEXT,
                 revoked_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_members (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_members (
                 id TEXT PRIMARY KEY,
                 owner_email TEXT NOT NULL,
                 home_gym_id TEXT NOT NULL,
@@ -76,10 +74,10 @@ impl CloudDatabase {
                 face_vectors_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                expires_at TEXT
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_attendance (
+                expires_at TEXT,
+                photo_data_url TEXT
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_attendance (
                 id TEXT PRIMARY KEY,
                 gym_id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
@@ -87,74 +85,67 @@ impl CloudDatabase {
                 member_name TEXT,
                 direction TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                confidence REAL,
+                confidence DOUBLE PRECISION,
                 tailgate_flag INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_owner_accounts (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_owner_accounts (
                 owner_email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
                 company_name TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_ceo_accounts (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_ceo_accounts (
                 ceo_email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
                 display_name TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_products (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_products (
                 id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 name TEXT NOT NULL,
-                price REAL NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
                 stock INTEGER NOT NULL DEFAULT 0,
                 category TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(id, owner_email)
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_plans (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_plans (
                 id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 name TEXT NOT NULL,
                 tag TEXT NOT NULL DEFAULT '',
                 billing_period TEXT NOT NULL DEFAULT 'monthly',
-                price_monthly REAL NOT NULL,
-                student_discount_pct REAL NOT NULL DEFAULT 0,
+                price_monthly DOUBLE PRECISION NOT NULL,
+                student_discount_pct DOUBLE PRECISION NOT NULL DEFAULT 0,
                 benefits_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(id, owner_email)
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_promos (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_promos (
                 code TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 label TEXT NOT NULL DEFAULT '',
                 discount_type TEXT NOT NULL,
-                discount_value REAL NOT NULL,
-                min_spend REAL NOT NULL DEFAULT 0,
+                discount_value DOUBLE PRECISION NOT NULL,
+                min_spend DOUBLE PRECISION NOT NULL DEFAULT 0,
                 expires_at TEXT,
                 is_active INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY(code, owner_email)
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_sales (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_sales (
                 id TEXT PRIMARY KEY,
                 gym_id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 member_id TEXT,
-                total_amount REAL NOT NULL,
+                total_amount DOUBLE PRECISION NOT NULL,
                 payment_method TEXT NOT NULL,
                 items_json TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 discount_type TEXT NOT NULL DEFAULT '',
-                discount_amount REAL NOT NULL DEFAULT 0
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_releases (
+                discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_releases (
                 version TEXT NOT NULL,
                 channel TEXT NOT NULL,
                 min_supported_version TEXT NOT NULL,
@@ -165,9 +156,8 @@ impl CloudDatabase {
                 is_mandatory INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY(version, channel)
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_staff_accounts (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_staff_accounts (
                 id TEXT PRIMARY KEY,
                 owner_email TEXT NOT NULL,
                 gym_id TEXT,
@@ -180,65 +170,98 @@ impl CloudDatabase {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(owner_email, username)
-            );
-
-            CREATE TABLE IF NOT EXISTS cloud_branch_product_overrides (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_branch_product_overrides (
                 product_id TEXT NOT NULL,
                 gym_id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
-                price REAL NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
                 stock INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY(product_id, gym_id)
-            );
-            "#,
-        )?;
-        // Phase 0 migrations — idempotent indices & audit log
-        let _ = conn.execute_batch(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_gyms_owner ON cloud_gyms(owner_email);
-            CREATE INDEX IF NOT EXISTS idx_licenses_owner ON cloud_licenses(owner_email);
-            CREATE INDEX IF NOT EXISTS idx_members_owner ON cloud_members(owner_email);
-            CREATE TABLE IF NOT EXISTS cloud_audit_logs (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cloud_audit_logs (
                 id TEXT PRIMARY KEY,
                 owner_email TEXT NOT NULL,
                 gym_id TEXT,
                 action TEXT NOT NULL,
                 target TEXT,
                 timestamp TEXT NOT NULL
-            );
-            "#,
-        );
-        // Add is_verified col if missing (legacy DBs)
-        for stmt in [
-            "ALTER TABLE cloud_owner_accounts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE cloud_owner_accounts ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE cloud_owner_accounts ADD COLUMN locked_until TEXT",
+            )"#,
+        ];
+        for ddl in TABLES {
+            sqlx::raw_sql(*ddl).execute(&self.pool).await?;
+        }
+        // Indices: pre-existing shapes plus the hot WHERE shapes from the
+        // scale audit (members/attendance/sales by gym+time, licenses by gym,
+        // staff/catalog by owner, releases by channel).
+        const INDICES: &[&str] = &[
+            "CREATE INDEX IF NOT EXISTS idx_gyms_owner ON cloud_gyms(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_licenses_owner ON cloud_licenses(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_licenses_gym ON cloud_licenses(gym_id)",
+            "CREATE INDEX IF NOT EXISTS idx_members_owner ON cloud_members(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_members_gym_status ON cloud_members(home_gym_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_gym_ts ON cloud_attendance(gym_id, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_owner_ts ON cloud_attendance(owner_email, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_gym_ts ON cloud_sales(gym_id, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_sales_owner_ts ON cloud_sales(owner_email, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_staff_owner_gym ON cloud_staff_accounts(owner_email, gym_id)",
+            "CREATE INDEX IF NOT EXISTS idx_products_owner ON cloud_products(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_plans_owner ON cloud_plans(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_promos_owner ON cloud_promos(owner_email)",
+            "CREATE INDEX IF NOT EXISTS idx_releases_channel_ts ON cloud_releases(channel, created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_owner_ts ON cloud_audit_logs(owner_email, timestamp)",
+        ];
+        for idx in INDICES {
+            sqlx::raw_sql(*idx).execute(&self.pool).await?;
+        }
+        // Legacy-alignment migrations. Postgres has no ADD COLUMN IF NOT
+        // EXISTS, so probe information_schema first and add only when missing.
+        // Errors are ignored: concurrent boots may race the same ALTER.
+        // `const` (not an inline array) so the DDL keeps its 'static lifetime
+        // for sqlx::raw_sql's SqlSafeStr bound.
+        const MIGRATIONS: &[(&str, &str, &str)] = &[
+            ("cloud_owner_accounts", "is_verified", "ALTER TABLE cloud_owner_accounts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0"),
+            ("cloud_owner_accounts", "failed_attempts", "ALTER TABLE cloud_owner_accounts ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0"),
+            ("cloud_owner_accounts", "locked_until", "ALTER TABLE cloud_owner_accounts ADD COLUMN locked_until TEXT"),
             // Member reference photos (local-first capture, cloud-synced for sister-branch reference)
-            "ALTER TABLE cloud_members ADD COLUMN photo_data_url TEXT",
+            ("cloud_members", "photo_data_url", "ALTER TABLE cloud_members ADD COLUMN photo_data_url TEXT"),
             // Customizable rate-card fields (owner-defined names/tags)
-            "ALTER TABLE cloud_plans ADD COLUMN tag TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE cloud_plans ADD COLUMN billing_period TEXT NOT NULL DEFAULT 'monthly'",
-            "ALTER TABLE cloud_promos ADD COLUMN label TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE cloud_sales ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE cloud_sales ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0",
-        ] {
-            let _ = conn.execute(stmt, []);
+            ("cloud_plans", "tag", "ALTER TABLE cloud_plans ADD COLUMN tag TEXT NOT NULL DEFAULT ''"),
+            ("cloud_plans", "billing_period", "ALTER TABLE cloud_plans ADD COLUMN billing_period TEXT NOT NULL DEFAULT 'monthly'"),
+            ("cloud_promos", "label", "ALTER TABLE cloud_promos ADD COLUMN label TEXT NOT NULL DEFAULT ''"),
+            ("cloud_sales", "discount_type", "ALTER TABLE cloud_sales ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''"),
+            ("cloud_sales", "discount_amount", "ALTER TABLE cloud_sales ADD COLUMN discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        ];
+        for (table, column, ddl) in MIGRATIONS {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)",
+            )
+            .bind(table)
+            .bind(column)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(true);
+            if !exists {
+                let _ = sqlx::raw_sql(*ddl).execute(&self.pool).await;
+            }
         }
         Ok(())
     }
 
-    pub fn load_all_gyms(&self) -> Result<HashMap<Uuid, GymRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, name, owner_email, tier, is_active, created_at FROM cloud_gyms")?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
+    pub async fn load_all_gyms(&self) -> sqlx::Result<HashMap<Uuid, GymRecord>> {
+        let rows = sqlx::query("SELECT id, name, owner_email, tier, is_active, created_at FROM cloud_gyms")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let id_str: String = row.try_get(0)?;
             let id = Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4());
-            let name: String = row.get(1)?;
-            let owner_email: String = row.get(2)?;
-            let tier_str: String = row.get(3)?;
-            let is_active: i32 = row.get(4)?;
-            let created_str: String = row.get(5)?;
+            let name: String = row.try_get(1)?;
+            let owner_email: String = row.try_get(2)?;
+            let tier_str: String = row.try_get(3)?;
+            let is_active: i32 = row.try_get(4)?;
+            let created_str: String = row.try_get(5)?;
 
             let tier = match tier_str.to_lowercase().as_str() {
                 "pro" => LicenseTier::Pro,
@@ -250,156 +273,156 @@ impl CloudDatabase {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
 
-            Ok(GymRecord {
+            let gym = GymRecord {
                 id,
                 name,
                 owner_email,
                 tier,
                 is_active: is_active == 1,
                 created_at,
-            })
-        })?;
-
-        let mut map = HashMap::new();
-        for r in rows {
-            let gym = r?;
+            };
             map.insert(gym.id, gym);
         }
         Ok(map)
     }
 
-    pub fn load_disabled_gyms(&self) -> Result<HashSet<Uuid>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT gym_id FROM cloud_disabled_gyms")?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            Ok(Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()))
-        })?;
-
+    pub async fn load_disabled_gyms(&self) -> sqlx::Result<HashSet<Uuid>> {
+        let rows = sqlx::query("SELECT gym_id FROM cloud_disabled_gyms")
+            .fetch_all(&self.pool)
+            .await?;
         let mut set = HashSet::new();
-        for r in rows {
-            set.insert(r?);
+        for row in rows {
+            let id_str: String = row.try_get(0)?;
+            set.insert(Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()));
         }
         Ok(set)
     }
 
-    pub fn upsert_gym(&self, gym: &GymRecord) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn upsert_gym(&self, gym: &GymRecord) -> sqlx::Result<()> {
         let tier_str = format!("{:?}", gym.tier).to_lowercase();
-        conn.execute(
+        sqlx::query(
             "INSERT INTO cloud_gyms (id, name, owner_email, tier, is_active, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(id) DO UPDATE SET name = ?2, owner_email = ?3, tier = ?4, is_active = ?5",
-            params![
-                gym.id.to_string(),
-                gym.name,
-                gym.owner_email,
-                tier_str,
-                if gym.is_active { 1 } else { 0 },
-                gym.created_at.to_rfc3339()
-            ],
-        )?;
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT(id) DO UPDATE SET name = $2, owner_email = $3, tier = $4, is_active = $5",
+        )
+        .bind(gym.id.to_string())
+        .bind(&gym.name)
+        .bind(&gym.owner_email)
+        .bind(&tier_str)
+        .bind(if gym.is_active { 1 } else { 0 })
+        .bind(gym.created_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn update_gym(&self, req: &UpdateGymRequest) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn update_gym(&self, req: &UpdateGymRequest) -> sqlx::Result<()> {
         let tier_str = format!("{:?}", req.tier).to_lowercase();
-        conn.execute(
-            "UPDATE cloud_gyms SET name = ?1, owner_email = ?2, tier = ?3 WHERE id = ?4",
-            params![req.name, req.contact_email, tier_str, req.id.to_string()],
-        )?;
+        sqlx::query("UPDATE cloud_gyms SET name = $1, owner_email = $2, tier = $3 WHERE id = $4")
+            .bind(&req.name)
+            .bind(&req.contact_email)
+            .bind(&tier_str)
+            .bind(req.id.to_string())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
-    pub fn delete_gym(&self, gym_id: &Uuid) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute("DELETE FROM cloud_gyms WHERE id = ?1", params![gym_id.to_string()])?;
-        conn.execute("DELETE FROM cloud_disabled_gyms WHERE gym_id = ?1", params![gym_id.to_string()])?;
-        let _ = conn.execute(
-            "UPDATE cloud_licenses SET is_revoked = 1, revoked_reason = 'Branch deleted by CEO' WHERE gym_id = ?1",
-            params![gym_id.to_string()],
-        );
+    pub async fn delete_gym(&self, gym_id: &Uuid) -> sqlx::Result<()> {
+        let gid = gym_id.to_string();
+        sqlx::query("DELETE FROM cloud_gyms WHERE id = $1").bind(&gid).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM cloud_disabled_gyms WHERE gym_id = $1").bind(&gid).execute(&self.pool).await?;
+        let _ = sqlx::query(
+            "UPDATE cloud_licenses SET is_revoked = 1, revoked_reason = 'Branch deleted by CEO' WHERE gym_id = $1",
+        )
+        .bind(&gid)
+        .execute(&self.pool)
+        .await;
         Ok(())
     }
 
-    pub fn set_disabled(&self, gym_id: &Uuid, disable: bool) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn set_disabled(&self, gym_id: &Uuid, disable: bool) -> sqlx::Result<()> {
         if disable {
-            conn.execute(
-                "INSERT OR REPLACE INTO cloud_disabled_gyms (gym_id, disabled_at) VALUES (?1, ?2)",
-                params![gym_id.to_string(), Utc::now().to_rfc3339()],
-            )?;
+            sqlx::query(
+                "INSERT INTO cloud_disabled_gyms (gym_id, disabled_at) VALUES ($1, $2)
+                 ON CONFLICT(gym_id) DO UPDATE SET disabled_at = EXCLUDED.disabled_at",
+            )
+            .bind(gym_id.to_string())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
         } else {
-            conn.execute(
-                "DELETE FROM cloud_disabled_gyms WHERE gym_id = ?1",
-                params![gym_id.to_string()],
-            )?;
+            sqlx::query("DELETE FROM cloud_disabled_gyms WHERE gym_id = $1")
+                .bind(gym_id.to_string())
+                .execute(&self.pool)
+                .await?;
         }
         Ok(())
     }
 
     // --- License Persistence & Revocation ---
 
-    pub fn insert_license(&self, claims: &gympos_shared::LicenseClaims, raw_token: &str) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn insert_license(&self, claims: &gympos_shared::LicenseClaims, raw_token: &str) -> sqlx::Result<()> {
         let tier_str = format!("{:?}", claims.tier).to_lowercase();
-        conn.execute(
+        sqlx::query(
             "INSERT INTO cloud_licenses (
                 license_id, raw_token, gym_id, gym_name, owner_email, tier,
                 issued_at, expires_at, max_members, hardware_lock_enabled,
                 tailgate_detection_enabled, is_revoked
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0)
              ON CONFLICT(license_id) DO UPDATE SET
-                raw_token = ?2, gym_name = ?4, owner_email = ?5, tier = ?6,
-                expires_at = ?8, max_members = ?9, hardware_lock_enabled = ?10,
-                tailgate_detection_enabled = ?11",
-            params![
-                claims.license_id.to_string(),
-                raw_token,
-                claims.gym_id.to_string(),
-                claims.gym_name,
-                claims.owner_email,
-                tier_str,
-                claims.issued_at.to_rfc3339(),
-                claims.expires_at.to_rfc3339(),
-                claims.max_members,
-                if claims.hardware_lock_enabled { 1 } else { 0 },
-                if claims.tailgate_detection_enabled { 1 } else { 0 },
-            ],
-        )?;
-        let _ = conn.execute(
-            "UPDATE cloud_gyms SET is_active = 1, tier = ?2 WHERE id = ?1",
-            params![claims.gym_id.to_string(), tier_str],
-        );
+                raw_token = $2, gym_name = $4, owner_email = $5, tier = $6,
+                expires_at = $8, max_members = $9, hardware_lock_enabled = $10,
+                tailgate_detection_enabled = $11",
+        )
+        .bind(claims.license_id.to_string())
+        .bind(raw_token)
+        .bind(claims.gym_id.to_string())
+        .bind(&claims.gym_name)
+        .bind(&claims.owner_email)
+        .bind(&tier_str)
+        .bind(claims.issued_at.to_rfc3339())
+        .bind(claims.expires_at.to_rfc3339())
+        .bind(claims.max_members as i64)
+        .bind(if claims.hardware_lock_enabled { 1 } else { 0 })
+        .bind(if claims.tailgate_detection_enabled { 1 } else { 0 })
+        .execute(&self.pool)
+        .await?;
+        let _ = sqlx::query("UPDATE cloud_gyms SET is_active = 1, tier = $2 WHERE id = $1")
+            .bind(claims.gym_id.to_string())
+            .bind(&tier_str)
+            .execute(&self.pool)
+            .await;
         Ok(())
     }
 
-    pub fn list_licenses(&self) -> Result<Vec<crate::models::CloudLicenseRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+    pub async fn list_licenses(&self) -> sqlx::Result<Vec<crate::models::CloudLicenseRecord>> {
+        let rows = sqlx::query(
             "SELECT license_id, raw_token, gym_id, gym_name, owner_email, tier,
                     issued_at, expires_at, max_members, hardware_lock_enabled,
                     tailgate_detection_enabled, is_revoked, revoked_reason, revoked_at
              FROM cloud_licenses
-             ORDER BY issued_at DESC"
-        )?;
+             ORDER BY issued_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        let rows = stmt.query_map([], |row| {
-            let lic_id_str: String = row.get(0)?;
-            let raw_token: String = row.get(1)?;
-            let gym_id_str: String = row.get(2)?;
-            let gym_name: String = row.get(3)?;
-            let owner_email: String = row.get(4)?;
-            let tier_str: String = row.get(5)?;
-            let issued_str: String = row.get(6)?;
-            let expires_str: String = row.get(7)?;
-            let max_members: u32 = row.get(8)?;
-            let hw_lock: i32 = row.get(9)?;
-            let tailgate: i32 = row.get(10)?;
-            let is_revoked: i32 = row.get(11)?;
-            let revoked_reason: Option<String> = row.get(12).unwrap_or(None);
-            let revoked_at_str: Option<String> = row.get(13).unwrap_or(None);
+        let mut list = Vec::new();
+        for row in rows {
+            let lic_id_str: String = row.try_get(0)?;
+            let raw_token: String = row.try_get(1)?;
+            let gym_id_str: String = row.try_get(2)?;
+            let gym_name: String = row.try_get(3)?;
+            let owner_email: String = row.try_get(4)?;
+            let tier_str: String = row.try_get(5)?;
+            let issued_str: String = row.try_get(6)?;
+            let expires_str: String = row.try_get(7)?;
+            let max_members: i32 = row.try_get(8)?;
+            let hw_lock: i32 = row.try_get(9)?;
+            let tailgate: i32 = row.try_get(10)?;
+            let is_revoked: i32 = row.try_get(11)?;
+            let revoked_reason: Option<String> = row.try_get(12).ok().flatten();
+            let revoked_at_str: Option<String> = row.try_get(13).ok().flatten();
 
             let tier = match tier_str.to_lowercase().as_str() {
                 "pro" => LicenseTier::Pro,
@@ -417,7 +440,7 @@ impl CloudDatabase {
                 .unwrap_or_else(|_| Utc::now());
             let revoked_at = revoked_at_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
 
-            Ok(crate::models::CloudLicenseRecord {
+            list.push(crate::models::CloudLicenseRecord {
                 license_id,
                 raw_token,
                 gym_id,
@@ -426,132 +449,126 @@ impl CloudDatabase {
                 tier,
                 issued_at,
                 expires_at,
-                max_members,
+                max_members: max_members as u32,
                 hardware_lock_enabled: hw_lock == 1,
                 tailgate_detection_enabled: tailgate == 1,
                 is_revoked: is_revoked == 1,
                 revoked_reason,
                 revoked_at,
-            })
-        })?;
-
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
-    pub fn revoke_license(&self, license_id: &Uuid, reason: &str) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
+    pub async fn revoke_license(&self, license_id: &Uuid, reason: &str) -> sqlx::Result<()> {
+        sqlx::query(
             "UPDATE cloud_licenses
-             SET is_revoked = 1, revoked_reason = ?1, revoked_at = ?2
-             WHERE license_id = ?3",
-            params![reason, Utc::now().to_rfc3339(), license_id.to_string()],
-        )?;
+             SET is_revoked = 1, revoked_reason = $1, revoked_at = $2
+             WHERE license_id = $3",
+        )
+        .bind(reason)
+        .bind(Utc::now().to_rfc3339())
+        .bind(license_id.to_string())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn is_license_revoked(&self, license_id: &Uuid) -> Result<bool> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT is_revoked FROM cloud_licenses WHERE license_id = ?1")?;
-        let mut rows = stmt.query(params![license_id.to_string()])?;
-        if let Some(row) = rows.next()? {
-            let is_revoked: i32 = row.get(0)?;
-            Ok(is_revoked == 1)
-        } else {
-            Ok(false)
-        }
+    pub async fn is_license_revoked(&self, license_id: &Uuid) -> sqlx::Result<bool> {
+        let row: Option<(i32,)> = sqlx::query_as("SELECT is_revoked FROM cloud_licenses WHERE license_id = $1")
+            .bind(license_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v == 1).unwrap_or(false))
     }
 
-    pub fn load_revoked_license_ids(&self) -> Result<HashSet<Uuid>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT license_id FROM cloud_licenses WHERE is_revoked = 1")?;
-        let rows = stmt.query_map([], |row| {
-            let id_str: String = row.get(0)?;
-            Ok(Uuid::parse_str(&id_str).unwrap_or_default())
-        })?;
-
+    pub async fn load_revoked_license_ids(&self) -> sqlx::Result<HashSet<Uuid>> {
+        let rows = sqlx::query("SELECT license_id FROM cloud_licenses WHERE is_revoked = 1")
+            .fetch_all(&self.pool)
+            .await?;
         let mut set = HashSet::new();
-        for r in rows {
-            set.insert(r?);
+        for row in rows {
+            let id_str: String = row.try_get(0)?;
+            set.insert(Uuid::parse_str(&id_str).unwrap_or_default());
         }
         Ok(set)
     }
 
     // --- Inter-Branch Multi-Gym Sync ---
 
-    pub fn upsert_cloud_members(&self, owner_email: &str, members: &[gympos_shared::CloudMemberSyncItem]) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn upsert_cloud_members(&self, owner_email: &str, members: &[gympos_shared::CloudMemberSyncItem]) -> sqlx::Result<usize> {
         let mut count = 0;
         for m in members {
             let vectors_json = serde_json::to_string(&m.face_vectors).unwrap_or_else(|_| "[]".to_string());
             let expires_str = m.expires_at.map(|e| e.to_rfc3339());
 
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO cloud_members (id, owner_email, home_gym_id, home_gym_name, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at, photo_data_url)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                  ON CONFLICT(id) DO UPDATE SET
-                    home_gym_name = ?4,
-                    first_name = ?5,
-                    last_name = ?6,
-                    email = ?7,
-                    phone = ?8,
-                    membership_type = ?9,
-                    status = ?10,
-                    face_vectors_json = ?11,
-                    updated_at = ?13,
-                    expires_at = ?14,
-                    photo_data_url = COALESCE(?15, photo_data_url)",
-                params![
-                    m.id,
-                    owner_email,
-                    m.home_gym_id.to_string(),
-                    m.home_gym_name,
-                    m.first_name,
-                    m.last_name,
-                    m.email,
-                    m.phone,
-                    m.membership_type,
-                    m.status,
-                    vectors_json,
-                    m.created_at.to_rfc3339(),
-                    m.updated_at.to_rfc3339(),
-                    expires_str,
-                    m.photo_data_url,
-                ],
-            )?;
+                    home_gym_name = $4,
+                    first_name = $5,
+                    last_name = $6,
+                    email = $7,
+                    phone = $8,
+                    membership_type = $9,
+                    status = $10,
+                    face_vectors_json = $11,
+                    updated_at = $13,
+                    expires_at = $14,
+                    photo_data_url = COALESCE($15, cloud_members.photo_data_url)",
+            )
+            .bind(&m.id)
+            .bind(owner_email)
+            .bind(m.home_gym_id.to_string())
+            .bind(&m.home_gym_name)
+            .bind(&m.first_name)
+            .bind(&m.last_name)
+            .bind(&m.email)
+            .bind(&m.phone)
+            .bind(&m.membership_type)
+            .bind(&m.status)
+            .bind(&vectors_json)
+            .bind(m.created_at.to_rfc3339())
+            .bind(m.updated_at.to_rfc3339())
+            .bind(expires_str)
+            .bind(&m.photo_data_url)
+            .execute(&self.pool)
+            .await?;
             count += 1;
         }
         Ok(count)
     }
 
-    pub fn get_sister_branch_members(&self, owner_email: &str, exclude_gym_id: &Uuid) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+    pub async fn get_sister_branch_members(&self, owner_email: &str, exclude_gym_id: &Uuid) -> sqlx::Result<Vec<gympos_shared::CloudMemberSyncItem>> {
+        let rows = sqlx::query(
             "SELECT id, home_gym_id, home_gym_name, owner_email, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at, photo_data_url
              FROM cloud_members
-             WHERE owner_email = ?1 AND home_gym_id != ?2"
-        )?;
+             WHERE owner_email = $1 AND home_gym_id != $2",
+        )
+        .bind(owner_email)
+        .bind(exclude_gym_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
 
-        let rows = stmt.query_map(params![owner_email, exclude_gym_id.to_string()], |row| {
-            let id: String = row.get(0)?;
-            let home_gym_id_str: String = row.get(1)?;
+        let mut list = Vec::new();
+        for row in rows {
+            let id: String = row.try_get(0)?;
+            let home_gym_id_str: String = row.try_get(1)?;
             let home_gym_id = Uuid::parse_str(&home_gym_id_str).unwrap_or_default();
-            let home_gym_name: String = row.get(2)?;
-            let owner_email: String = row.get(3)?;
-            let first_name: String = row.get(4)?;
-            let last_name: String = row.get(5)?;
-            let email: String = row.get(6).unwrap_or_default();
-            let phone: String = row.get(7).unwrap_or_default();
-            let membership_type: String = row.get(8)?;
-            let status: String = row.get(9)?;
-            let vectors_json: String = row.get(10)?;
-            let created_str: String = row.get(11)?;
-            let updated_str: String = row.get(12)?;
-            let expires_str: Option<String> = row.get(13).unwrap_or(None);
-            let photo_data_url: Option<String> = row.get(14).unwrap_or(None);
+            let home_gym_name: String = row.try_get(2)?;
+            let owner_email: String = row.try_get(3)?;
+            let first_name: String = row.try_get(4)?;
+            let last_name: String = row.try_get(5)?;
+            let email: Option<String> = row.try_get(6).ok().flatten();
+            let phone: Option<String> = row.try_get(7).ok().flatten();
+            let membership_type: String = row.try_get(8)?;
+            let status: String = row.try_get(9)?;
+            let vectors_json: String = row.try_get(10)?;
+            let created_str: String = row.try_get(11)?;
+            let updated_str: String = row.try_get(12)?;
+            let expires_str: Option<String> = row.try_get(13).ok().flatten();
+            let photo_data_url: Option<String> = row.try_get(14).ok().flatten();
 
             let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
             let created_at = DateTime::parse_from_rfc3339(&created_str)
@@ -562,15 +579,15 @@ impl CloudDatabase {
                 .unwrap_or_else(|_| Utc::now());
             let expires_at = expires_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
 
-            Ok(gympos_shared::CloudMemberSyncItem {
+            list.push(gympos_shared::CloudMemberSyncItem {
                 id,
                 home_gym_id,
                 home_gym_name,
                 owner_email,
                 first_name,
                 last_name,
-                email,
-                phone,
+                email: email.unwrap_or_default(),
+                phone: phone.unwrap_or_default(),
                 membership_type,
                 status,
                 face_vectors,
@@ -578,82 +595,82 @@ impl CloudDatabase {
                 created_at,
                 updated_at,
                 expires_at,
-            })
-        })?;
-
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
-    pub fn insert_attendance_logs(&self, owner_email: &str, logs: &[gympos_shared::AttendanceRecord], gym_id: &Uuid) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn insert_attendance_logs(&self, owner_email: &str, logs: &[gympos_shared::AttendanceRecord], gym_id: &Uuid) -> sqlx::Result<usize> {
         let mut count = 0;
         for l in logs {
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO cloud_attendance (id, gym_id, owner_email, member_id, member_name, direction, timestamp, confidence, tailgate_flag)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                  ON CONFLICT(id) DO NOTHING",
-                params![
-                    l.id,
-                    gym_id.to_string(),
-                    owner_email,
-                    l.member_id,
-                    l.member_name,
-                    l.direction,
-                    l.timestamp.to_rfc3339(),
-                    l.confidence,
-                    if l.tailgate_flag { 1 } else { 0 }
-                ],
-            )?;
+            )
+            .bind(&l.id)
+            .bind(gym_id.to_string())
+            .bind(owner_email)
+            .bind(&l.member_id)
+            .bind(&l.member_name)
+            .bind(&l.direction)
+            .bind(l.timestamp.to_rfc3339())
+            .bind(l.confidence)
+            .bind(if l.tailgate_flag { 1 } else { 0 })
+            .execute(&self.pool)
+            .await?;
             count += 1;
         }
         Ok(count)
     }
 
     // --- Analytics helpers (Stage 5.1) ---
-    pub fn count_cloud_members(&self) -> Result<usize> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_members", [], |r| r.get(0)).unwrap_or(0);
+    pub async fn count_cloud_members(&self) -> sqlx::Result<usize> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_members")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n as usize)
     }
-    pub fn count_attendance(&self) -> Result<usize> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_attendance", [], |r| r.get(0)).unwrap_or(0);
+    pub async fn count_attendance(&self) -> sqlx::Result<usize> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_attendance")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n as usize)
     }
-    pub fn count_tailgate_breaches(&self) -> Result<usize> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1", [], |r| r.get(0)).unwrap_or(0);
+    pub async fn count_tailgate_breaches(&self) -> sqlx::Result<usize> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n as usize)
     }
 
     // --- Owner Accounts & Authentication ---
 
-    pub fn create_owner_account(&self, email: &str, password_hash: &str, company_name: &str) -> Result<bool> {
-        let conn = self.conn.lock();
-        let res = conn.execute(
+    pub async fn create_owner_account(&self, email: &str, password_hash: &str, company_name: &str) -> sqlx::Result<bool> {
+        let res = sqlx::query(
             "INSERT INTO cloud_owner_accounts (owner_email, password_hash, company_name, created_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(owner_email) DO UPDATE SET password_hash = ?2, company_name = ?3",
-            params![email, password_hash, company_name, Utc::now().to_rfc3339()],
-        )?;
-        Ok(res > 0)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT(owner_email) DO UPDATE SET password_hash = $2, company_name = $3",
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(company_name)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Verifies a plaintext password against the stored Argon2id hash (or a
     /// legacy unsalted SHA-256 hash for accounts created before the migration).
-    pub fn verify_owner_login(&self, email: &str, password: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT company_name, password_hash FROM cloud_owner_accounts WHERE owner_email = ?1",
-        )?;
-        let mut rows = stmt.query(params![email])?;
-        if let Some(row) = rows.next()? {
-            let company_name: String = row.get(0)?;
-            let stored_hash: String = row.get(1)?;
+    pub async fn verify_owner_login(&self, email: &str, password: &str) -> sqlx::Result<Option<String>> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT company_name, password_hash FROM cloud_owner_accounts WHERE owner_email = $1",
+        )
+        .bind(email)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((company_name, stored_hash)) = row {
             if gympos_shared::verify_password(password, &stored_hash) {
                 return Ok(Some(company_name));
             }
@@ -661,60 +678,58 @@ impl CloudDatabase {
         Ok(None)
     }
 
-    pub fn owner_exists(&self, email: &str) -> Result<bool> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM cloud_owner_accounts WHERE owner_email = ?1",
-            params![email.to_lowercase().trim()],
-            |r| r.get(0),
-        ).unwrap_or(0);
+    pub async fn owner_exists(&self, email: &str) -> sqlx::Result<bool> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_owner_accounts WHERE owner_email = $1")
+            .bind(email.to_lowercase().trim().to_string())
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n > 0)
     }
 
     // --- CEO Accounts (platform super-admins; replaces the shared master key) ---
 
-    pub fn count_ceos(&self) -> Result<usize> {
-        let conn = self.conn.lock();
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM cloud_ceo_accounts", [], |r| r.get(0))
-            .unwrap_or(0);
+    pub async fn count_ceos(&self) -> sqlx::Result<usize> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_ceo_accounts")
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n as usize)
     }
 
-    pub fn ceo_exists(&self, email: &str) -> Result<bool> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM cloud_ceo_accounts WHERE ceo_email = ?1",
-            params![email.to_lowercase().trim()],
-            |r| r.get(0),
-        ).unwrap_or(0);
+    pub async fn ceo_exists(&self, email: &str) -> sqlx::Result<bool> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_ceo_accounts WHERE ceo_email = $1")
+            .bind(email.to_lowercase().trim().to_string())
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n > 0)
     }
 
     /// Creates a CEO account. Returns `false` when the email is already taken
     /// (never overwrites — use password reset flow instead of silent replace).
-    pub fn create_ceo_account(&self, email: &str, password_hash: &str, display_name: &str) -> Result<bool> {
-        let conn = self.conn.lock();
-        let res = conn.execute(
+    pub async fn create_ceo_account(&self, email: &str, password_hash: &str, display_name: &str) -> sqlx::Result<bool> {
+        let res = sqlx::query(
             "INSERT INTO cloud_ceo_accounts (ceo_email, password_hash, display_name, created_at)
-             VALUES (?1, ?2, ?3, ?4)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT(ceo_email) DO NOTHING",
-            params![email.to_lowercase().trim(), password_hash, display_name, Utc::now().to_rfc3339()],
-        )?;
-        Ok(res > 0)
+        )
+        .bind(email.to_lowercase().trim().to_string())
+        .bind(password_hash)
+        .bind(display_name)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// Verifies a CEO plaintext password against the stored Argon2id hash.
     /// Returns the display name on success.
-    pub fn verify_ceo_login(&self, email: &str, password: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT display_name, password_hash FROM cloud_ceo_accounts WHERE ceo_email = ?1",
-        )?;
-        let mut rows = stmt.query(params![email.to_lowercase().trim()])?;
-        if let Some(row) = rows.next()? {
-            let display_name: String = row.get(0)?;
-            let stored_hash: String = row.get(1)?;
+    pub async fn verify_ceo_login(&self, email: &str, password: &str) -> sqlx::Result<Option<String>> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT display_name, password_hash FROM cloud_ceo_accounts WHERE ceo_email = $1",
+        )
+        .bind(email.to_lowercase().trim().to_string())
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some((display_name, stored_hash)) = row {
             if gympos_shared::verify_password(password, &stored_hash) {
                 return Ok(Some(display_name));
             }
@@ -722,67 +737,73 @@ impl CloudDatabase {
         Ok(None)
     }
 
-    pub fn count_owner_gyms(&self, email: &str) -> Result<usize> {
-        let conn = self.conn.lock();
-        let n: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM cloud_gyms WHERE owner_email = ?1",
-            params![email.to_lowercase().trim()],
-            |r| r.get(0),
-        ).unwrap_or(0);
+    pub async fn count_owner_gyms(&self, email: &str) -> sqlx::Result<usize> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_gyms WHERE owner_email = $1")
+            .bind(email.to_lowercase().trim().to_string())
+            .fetch_one(&self.pool)
+            .await?;
         Ok(n as usize)
     }
 
-    pub fn log_audit(&self, owner_email: &str, gym_id: Option<&Uuid>, action: &str, target: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn log_audit(&self, owner_email: &str, gym_id: Option<&Uuid>, action: &str, target: Option<&str>) -> sqlx::Result<()> {
         let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO cloud_audit_logs (id, owner_email, gym_id, action, target, timestamp) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, owner_email.to_lowercase().trim(), gym_id.map(|u| u.to_string()), action, target, Utc::now().to_rfc3339()],
-        )?;
+        sqlx::query(
+            "INSERT INTO cloud_audit_logs (id, owner_email, gym_id, action, target, timestamp) VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(&id)
+        .bind(owner_email.to_lowercase().trim().to_string())
+        .bind(gym_id.map(|u| u.to_string()))
+        .bind(action)
+        .bind(target)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     // --- Remote Catalog & Pricing Management ---
 
-    pub fn upsert_products(&self, owner_email: &str, products: &[RemoteCatalogProduct]) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn upsert_products(&self, owner_email: &str, products: &[RemoteCatalogProduct]) -> sqlx::Result<usize> {
         let mut count = 0;
         for p in products {
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO cloud_products (id, owner_email, name, price, stock, category, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(id, owner_email) DO UPDATE SET name = ?3, price = ?4, stock = ?5, category = ?6, updated_at = ?7",
-                params![
-                    p.id,
-                    owner_email,
-                    p.name,
-                    p.price,
-                    p.stock,
-                    p.category,
-                    p.updated_at.to_rfc3339()
-                ],
-            )?;
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT(id, owner_email) DO UPDATE SET name = $3, price = $4, stock = $5, category = $6, updated_at = $7",
+            )
+            .bind(&p.id)
+            .bind(owner_email)
+            .bind(&p.name)
+            .bind(p.price)
+            .bind(p.stock)
+            .bind(&p.category)
+            .bind(p.updated_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
             count += 1;
         }
         Ok(count)
     }
 
-    pub fn get_products(&self, owner_email: &str) -> Result<Vec<RemoteCatalogProduct>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, price, stock, category, updated_at FROM cloud_products WHERE owner_email = ?1 ORDER BY category, name",
-        )?;
-        let rows = stmt.query_map(params![owner_email], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let price: f64 = row.get(2)?;
-            let stock: i32 = row.get(3)?;
-            let category: String = row.get(4)?;
-            let updated_at_str: String = row.get(5)?;
+    pub async fn get_products(&self, owner_email: &str) -> sqlx::Result<Vec<RemoteCatalogProduct>> {
+        let rows = sqlx::query(
+            "SELECT id, name, price, stock, category, updated_at FROM cloud_products WHERE owner_email = $1 ORDER BY category, name",
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut list = Vec::new();
+        for row in rows {
+            let id: String = row.try_get(0)?;
+            let name: String = row.try_get(1)?;
+            let price: f64 = row.try_get(2)?;
+            let stock: i32 = row.try_get(3)?;
+            let category: String = row.try_get(4)?;
+            let updated_at_str: String = row.try_get(5)?;
             let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            Ok(RemoteCatalogProduct {
+            list.push(RemoteCatalogProduct {
                 id,
                 name,
                 price,
@@ -790,171 +811,166 @@ impl CloudDatabase {
                 category,
                 target_gym_id: None,
                 updated_at,
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
-    pub fn upsert_plans(&self, owner_email: &str, plans: &[MembershipPlanConfig]) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn upsert_plans(&self, owner_email: &str, plans: &[MembershipPlanConfig]) -> sqlx::Result<usize> {
         let mut count = 0;
         for p in plans {
             let benefits_json = serde_json::to_string(&p.benefits).unwrap_or_else(|_| "[]".to_string());
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO cloud_plans (id, owner_email, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(id, owner_email) DO UPDATE SET name = ?3, tag = ?4, billing_period = ?5, price_monthly = ?6, student_discount_pct = ?7, benefits_json = ?8, updated_at = ?9",
-                params![
-                    p.id,
-                    owner_email,
-                    p.name,
-                    p.tag,
-                    p.billing_period,
-                    p.price_monthly,
-                    p.student_discount_pct,
-                    benefits_json,
-                    p.updated_at.to_rfc3339()
-                ],
-            )?;
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 ON CONFLICT(id, owner_email) DO UPDATE SET name = $3, tag = $4, billing_period = $5, price_monthly = $6, student_discount_pct = $7, benefits_json = $8, updated_at = $9",
+            )
+            .bind(&p.id)
+            .bind(owner_email)
+            .bind(&p.name)
+            .bind(&p.tag)
+            .bind(&p.billing_period)
+            .bind(p.price_monthly)
+            .bind(p.student_discount_pct)
+            .bind(&benefits_json)
+            .bind(p.updated_at.to_rfc3339())
+            .execute(&self.pool)
+            .await?;
             count += 1;
         }
         Ok(count)
     }
 
-    pub fn get_plans(&self, owner_email: &str) -> Result<Vec<MembershipPlanConfig>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at FROM cloud_plans WHERE owner_email = ?1 ORDER BY price_monthly",
-        )?;
-        let rows = stmt.query_map(params![owner_email], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let tag: String = row.get::<_, Option<String>>(2).unwrap_or(None).unwrap_or_default();
-            let billing_period: String = row.get::<_, Option<String>>(3).unwrap_or(None).unwrap_or_else(|| "monthly".to_string());
-            let price_monthly: f64 = row.get(4)?;
-            let student_discount_pct: f64 = row.get(5)?;
-            let benefits_json: String = row.get(6)?;
+    pub async fn get_plans(&self, owner_email: &str) -> sqlx::Result<Vec<MembershipPlanConfig>> {
+        let rows = sqlx::query(
+            "SELECT id, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at FROM cloud_plans WHERE owner_email = $1 ORDER BY price_monthly",
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut list = Vec::new();
+        for row in rows {
+            let id: String = row.try_get(0)?;
+            let name: String = row.try_get(1)?;
+            let tag: Option<String> = row.try_get(2).ok().flatten();
+            let billing_period: Option<String> = row.try_get(3).ok().flatten();
+            let price_monthly: f64 = row.try_get(4)?;
+            let student_discount_pct: f64 = row.try_get(5)?;
+            let benefits_json: String = row.try_get(6)?;
             let benefits = serde_json::from_str(&benefits_json).unwrap_or_default();
-            let updated_at_str: String = row.get(7)?;
+            let updated_at_str: String = row.try_get(7)?;
             let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            Ok(MembershipPlanConfig {
+            list.push(MembershipPlanConfig {
                 id,
                 name,
-                tag,
-                billing_period,
+                tag: tag.unwrap_or_default(),
+                billing_period: billing_period.unwrap_or_else(|| "monthly".to_string()),
                 price_monthly,
                 student_discount_pct,
                 target_gym_id: None,
                 benefits,
                 updated_at,
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
-    pub fn upsert_promos(&self, owner_email: &str, promos: &[PromoVoucherConfig]) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn upsert_promos(&self, owner_email: &str, promos: &[PromoVoucherConfig]) -> sqlx::Result<usize> {
         let mut count = 0;
         for pr in promos {
             let expires_at_str = pr.expires_at.map(|dt| dt.to_rfc3339());
-            conn.execute(
+            sqlx::query(
                 "INSERT INTO cloud_promos (code, owner_email, label, discount_type, discount_value, min_spend, expires_at, is_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(code, owner_email) DO UPDATE SET label = ?3, discount_type = ?4, discount_value = ?5, min_spend = ?6, expires_at = ?7, is_active = ?8",
-                params![
-                    pr.code,
-                    owner_email,
-                    pr.label,
-                    pr.discount_type,
-                    pr.discount_value,
-                    pr.min_spend,
-                    expires_at_str,
-                    if pr.is_active { 1 } else { 0 }
-                ],
-            )?;
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 ON CONFLICT(code, owner_email) DO UPDATE SET label = $3, discount_type = $4, discount_value = $5, min_spend = $6, expires_at = $7, is_active = $8",
+            )
+            .bind(&pr.code)
+            .bind(owner_email)
+            .bind(&pr.label)
+            .bind(&pr.discount_type)
+            .bind(pr.discount_value)
+            .bind(pr.min_spend)
+            .bind(expires_at_str)
+            .bind(if pr.is_active { 1 } else { 0 })
+            .execute(&self.pool)
+            .await?;
             count += 1;
         }
         Ok(count)
     }
 
-    pub fn get_promos(&self, owner_email: &str) -> Result<Vec<PromoVoucherConfig>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT code, label, discount_type, discount_value, min_spend, expires_at, is_active FROM cloud_promos WHERE owner_email = ?1",
-        )?;
-        let rows = stmt.query_map(params![owner_email], |row| {
-            let code: String = row.get(0)?;
-            let label: String = row.get::<_, Option<String>>(1).unwrap_or(None).unwrap_or_default();
-            let discount_type: String = row.get(2)?;
-            let discount_value: f64 = row.get(3)?;
-            let min_spend: f64 = row.get(4)?;
-            let expires_at_str: Option<String> = row.get(5)?;
+    pub async fn get_promos(&self, owner_email: &str) -> sqlx::Result<Vec<PromoVoucherConfig>> {
+        let rows = sqlx::query(
+            "SELECT code, label, discount_type, discount_value, min_spend, expires_at, is_active FROM cloud_promos WHERE owner_email = $1",
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut list = Vec::new();
+        for row in rows {
+            let code: String = row.try_get(0)?;
+            let label: Option<String> = row.try_get(1).ok().flatten();
+            let discount_type: String = row.try_get(2)?;
+            let discount_value: f64 = row.try_get(3)?;
+            let min_spend: f64 = row.try_get(4)?;
+            let expires_at_str: Option<String> = row.try_get(5).ok().flatten();
             let expires_at = expires_at_str.and_then(|s| {
                 DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))
             });
-            let is_active_int: i32 = row.get(6)?;
-            Ok(PromoVoucherConfig {
+            let is_active_int: i32 = row.try_get(6)?;
+            list.push(PromoVoucherConfig {
                 code,
-                label,
+                label: label.unwrap_or_default(),
                 discount_type,
                 discount_value,
                 min_spend,
                 expires_at,
                 is_active: is_active_int == 1,
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
     // --- POS Sales Ingestion ---
 
-    pub fn insert_sales(&self, owner_email: &str, gym_id: &Uuid, sales: &[SaleTransaction]) -> Result<usize> {
-        let conn = self.conn.lock();
+    pub async fn insert_sales(&self, owner_email: &str, gym_id: &Uuid, sales: &[SaleTransaction]) -> sqlx::Result<usize> {
         let mut count = 0;
         for s in sales {
             let items_json = serde_json::to_string(&s.items).unwrap_or_else(|_| "[]".to_string());
-            let inserted = conn.execute(
+            let inserted = sqlx::query(
                 "INSERT INTO cloud_sales (id, gym_id, owner_email, member_id, total_amount, payment_method, items_json, timestamp, discount_type, discount_amount)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                  ON CONFLICT(id) DO NOTHING",
-                params![
-                    s.id,
-                    gym_id.to_string(),
-                    owner_email,
-                    s.member_id,
-                    s.total_amount,
-                    s.payment_method,
-                    items_json,
-                    s.timestamp.to_rfc3339(),
-                    s.discount_type,
-                    s.discount_amount
-                ],
-            )?;
+            )
+            .bind(&s.id)
+            .bind(gym_id.to_string())
+            .bind(owner_email)
+            .bind(&s.member_id)
+            .bind(s.total_amount)
+            .bind(&s.payment_method)
+            .bind(&items_json)
+            .bind(s.timestamp.to_rfc3339())
+            .bind(&s.discount_type)
+            .bind(s.discount_amount)
+            .execute(&self.pool)
+            .await?;
             // Decrement base catalog stock so the next down-sync carries the
             // true remaining quantity (prevents sold stock resurrecting on the
             // terminal). Branch overrides are manual adjustments — untouched.
             // Only on first insert: retried pushes must not double-decrement.
-            if inserted > 0 {
+            if inserted.rows_affected() > 0 {
                 for item in &s.items {
                     if item.quantity > 0 {
-                        let _ = conn.execute(
-                            "UPDATE cloud_products SET stock = MAX(0, stock - ?1) WHERE id = ?2 AND owner_email = ?3",
-                            params![item.quantity as i64, item.product_id, owner_email],
-                        );
+                        let _ = sqlx::query(
+                            "UPDATE cloud_products SET stock = GREATEST(0, stock - $1) WHERE id = $2 AND owner_email = $3",
+                        )
+                        .bind(item.quantity as i32)
+                        .bind(&item.product_id)
+                        .bind(owner_email)
+                        .execute(&self.pool)
+                        .await;
                     }
                 }
             }
@@ -965,31 +981,34 @@ impl CloudDatabase {
 
     // --- Owner Branch Summaries & Financial Analytics ---
 
-    pub fn get_owner_branches(&self, owner_email: &str) -> Result<Vec<OwnerBranchSummary>> {
-        let conn = self.conn.lock();
-        Self::get_owner_branches_internal(&conn, owner_email)
+    pub async fn get_owner_branches(&self, owner_email: &str) -> sqlx::Result<Vec<OwnerBranchSummary>> {
+        self.get_owner_branches_internal(owner_email).await
     }
 
-    fn get_owner_branches_internal(conn: &Connection, owner_email: &str) -> Result<Vec<OwnerBranchSummary>> {
-        let mut stmt = conn.prepare(
+    async fn get_owner_branches_internal(&self, owner_email: &str) -> sqlx::Result<Vec<OwnerBranchSummary>> {
+        let rows = sqlx::query(
             "SELECT g.id, g.name, g.tier, g.is_active,
                     l.raw_token, l.expires_at, l.issued_at
              FROM cloud_gyms g
              LEFT JOIN cloud_licenses l ON g.id = l.gym_id AND l.is_revoked = 0
-             WHERE g.owner_email = ?1
+             WHERE g.owner_email = $1
              ORDER BY g.created_at",
-        )?;
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
 
         let today_prefix = Utc::now().format("%Y-%m-%d").to_string();
 
-        let rows = stmt.query_map(params![owner_email], |row| {
-            let gym_id_str: String = row.get(0)?;
+        let mut branches = Vec::new();
+        for row in rows {
+            let gym_id_str: String = row.try_get(0)?;
             let gym_id = Uuid::parse_str(&gym_id_str).unwrap_or_else(|_| Uuid::new_v4());
-            let name: String = row.get(1)?;
-            let tier_str: String = row.get(2)?;
-            let is_active_int: i32 = row.get(3)?;
-            let license_key: String = row.get::<_, Option<String>>(4)?.unwrap_or_default();
-            let expires_at_str: Option<String> = row.get(5)?;
+            let name: String = row.try_get(1)?;
+            let tier_str: String = row.try_get(2)?;
+            let is_active_int: i32 = row.try_get(3)?;
+            let license_key: Option<String> = row.try_get(4).ok().flatten();
+            let expires_at_str: Option<String> = row.try_get(5).ok().flatten();
             let expires_at = expires_at_str
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)))
                 .unwrap_or_else(|| Utc::now());
@@ -999,34 +1018,36 @@ impl CloudDatabase {
                 "ultra" => LicenseTier::Ultra,
                 _ => LicenseTier::Basic,
             };
-
-            Ok((gym_id, name, tier, is_active_int == 1, license_key, expires_at))
-        })?;
-
-        let mut branches = Vec::new();
-        for r in rows {
-            let (gym_id, name, tier, is_active, license_key, expires_at) = r?;
+            let is_active = is_active_int == 1;
 
             // Query active members count
-            let active_members: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM cloud_members WHERE home_gym_id = ?1 AND status = 'active'",
-                params![gym_id.to_string()],
-                |r| r.get(0),
-            ).unwrap_or(0);
+            let active_members: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM cloud_members WHERE home_gym_id = $1 AND status = 'active'",
+            )
+            .bind(gym_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
 
             // Query today's check-ins
-            let today_checkins: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM cloud_attendance WHERE gym_id = ?1 AND timestamp LIKE ?2",
-                params![gym_id.to_string(), format!("{}%", today_prefix)],
-                |r| r.get(0),
-            ).unwrap_or(0);
+            let today_checkins: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM cloud_attendance WHERE gym_id = $1 AND timestamp LIKE $2",
+            )
+            .bind(gym_id.to_string())
+            .bind(format!("{}%", today_prefix))
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0);
 
             // Query today's sales
-            let today_sales: f64 = conn.query_row(
-                "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = ?1 AND timestamp LIKE ?2",
-                params![gym_id.to_string(), format!("{}%", today_prefix)],
-                |r| r.get(0),
-            ).unwrap_or(0.0);
+            let today_sales: f64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = $1 AND timestamp LIKE $2",
+            )
+            .bind(gym_id.to_string())
+            .bind(format!("{}%", today_prefix))
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0.0);
 
             branches.push(OwnerBranchSummary {
                 gym_id,
@@ -1036,96 +1057,111 @@ impl CloudDatabase {
                 today_checkins: today_checkins as u32,
                 today_sales,
                 hwid: "HWID-BOUND".to_string(),
-                license_key,
+                license_key: license_key.unwrap_or_default(),
                 expires_at,
                 is_heartbeat_healthy: true,
                 is_active,
-                is_disabled: conn.query_row(
-                    "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = ?1",
-                    params![gym_id.to_string()],
-                    |r| r.get::<_, i64>(0),
-                ).unwrap_or(0) > 0,
+                is_disabled: sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = $1",
+                )
+                .bind(gym_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map(|n: i64| n > 0)
+                .unwrap_or(false),
             });
         }
 
         Ok(branches)
     }
 
-    pub fn get_owner_analytics(&self, owner_email: &str) -> Result<OwnerDashboardAnalytics> {
-        let conn = self.conn.lock();
+    pub async fn get_owner_analytics(&self, owner_email: &str) -> sqlx::Result<OwnerDashboardAnalytics> {
+        let company_name: Option<String> = sqlx::query_scalar(
+            "SELECT company_name FROM cloud_owner_accounts WHERE owner_email = $1",
+        )
+        .bind(owner_email)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+        let company_name = company_name.unwrap_or_else(|| "Gym Group".to_string());
 
-        let company_name: String = conn.query_row(
-            "SELECT company_name FROM cloud_owner_accounts WHERE owner_email = ?1",
-            params![owner_email],
-            |r| r.get(0),
-        ).unwrap_or_else(|_| "Gym Group".to_string());
-
-        let branches = Self::get_owner_branches_internal(&conn, owner_email)?;
+        let branches = self.get_owner_branches_internal(owner_email).await?;
         let total_branches = branches.len();
         let total_active_members: u32 = branches.iter().map(|b| b.active_members).sum();
 
         let today_prefix = Utc::now().format("%Y-%m-%d").to_string();
         let month_prefix = Utc::now().format("%Y-%m").to_string();
 
-        let today_total_revenue: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE owner_email = ?1 AND timestamp LIKE ?2",
-            params![owner_email, format!("{}%", today_prefix)],
-            |r| r.get(0),
-        ).unwrap_or(0.0);
+        let today_total_revenue: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE owner_email = $1 AND timestamp LIKE $2",
+        )
+        .bind(owner_email)
+        .bind(format!("{}%", today_prefix))
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0.0);
 
-        let month_total_revenue: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE owner_email = ?1 AND timestamp LIKE ?2",
-            params![owner_email, format!("{}%", month_prefix)],
-            |r| r.get(0),
-        ).unwrap_or(0.0);
+        let month_total_revenue: f64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE owner_email = $1 AND timestamp LIKE $2",
+        )
+        .bind(owner_email)
+        .bind(format!("{}%", month_prefix))
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0.0);
 
-        let today_checkins: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM cloud_attendance WHERE owner_email = ?1 AND timestamp LIKE ?2",
-            params![owner_email, format!("{}%", today_prefix)],
-            |r| r.get(0),
-        ).unwrap_or(0);
+        let today_checkins: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cloud_attendance WHERE owner_email = $1 AND timestamp LIKE $2",
+        )
+        .bind(owner_email)
+        .bind(format!("{}%", today_prefix))
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
 
         // Recent sales transactions
-        let mut stmt = conn.prepare(
+        let sale_rows = sqlx::query(
             "SELECT id, member_id, total_amount, payment_method, items_json, timestamp, discount_type, discount_amount
-             FROM cloud_sales WHERE owner_email = ?1 ORDER BY timestamp DESC LIMIT 20",
-        )?;
-        let sale_rows = stmt.query_map(params![owner_email], |row| {
-            let id: String = row.get(0)?;
-            let member_id: Option<String> = row.get(1)?;
-            let total_amount: f64 = row.get(2)?;
-            let payment_method: String = row.get(3)?;
-            let items_json: String = row.get(4)?;
+             FROM cloud_sales WHERE owner_email = $1 ORDER BY timestamp DESC LIMIT 20",
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut recent_transactions = Vec::new();
+        for row in sale_rows {
+            let id: String = row.try_get(0)?;
+            let member_id: Option<String> = row.try_get(1).ok().flatten();
+            let total_amount: f64 = row.try_get(2)?;
+            let payment_method: String = row.try_get(3)?;
+            let items_json: String = row.try_get(4)?;
             let items: Vec<CartItem> = serde_json::from_str(&items_json).unwrap_or_default();
-            let timestamp_str: String = row.get(5)?;
-            let timestamp = DateTime::parse_from_rfc3339(&timestamp_str)
+            let created_at_str: String = row.try_get(5)?;
+            let timestamp = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            Ok(SaleTransaction {
+            recent_transactions.push(SaleTransaction {
                 id,
                 member_id,
                 total_amount,
                 payment_method,
                 items,
                 timestamp,
-                discount_type: row.get::<_, Option<String>>(6).unwrap_or(None).unwrap_or_default(),
-                discount_amount: row.get::<_, Option<f64>>(7).unwrap_or(None).unwrap_or(0.0),
-            })
-        })?;
-
-        let mut recent_transactions = Vec::new();
-        for s in sale_rows {
-            recent_transactions.push(s?);
+                discount_type: row.try_get::<Option<String>, _>(6).ok().flatten().unwrap_or_default(),
+                discount_amount: row.try_get::<Option<f64>, _>(7).ok().flatten().unwrap_or(0.0),
+            });
         }
 
         // Revenue by Branch
         let mut revenue_by_branch = HashMap::new();
         for b in &branches {
-            let branch_rev: f64 = conn.query_row(
-                "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = ?1 AND timestamp LIKE ?2",
-                params![b.gym_id.to_string(), format!("{}%", month_prefix)],
-                |r| r.get(0),
-            ).unwrap_or(0.0);
+            let branch_rev: f64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = $1 AND timestamp LIKE $2",
+            )
+            .bind(b.gym_id.to_string())
+            .bind(format!("{}%", month_prefix))
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(0.0);
             revenue_by_branch.insert(b.name.clone(), branch_rev);
         }
 
@@ -1146,20 +1182,22 @@ impl CloudDatabase {
 
         // Hourly traffic histogram (0..23)
         let mut hourly_traffic = vec![0u32; 24];
-        let mut att_stmt = conn.prepare(
-            "SELECT timestamp FROM cloud_attendance WHERE owner_email = ?1 AND timestamp LIKE ?2",
-        )?;
-        let att_rows = att_stmt.query_map(params![owner_email, format!("{}%", today_prefix)], |row| {
-            let ts: String = row.get(0)?;
-            Ok(ts)
-        })?;
-        for r in att_rows {
-            if let Ok(ts_str) = r {
-                if let Ok(dt) = DateTime::parse_from_rfc3339(&ts_str) {
-                    let hour = dt.format("%H").to_string().parse::<usize>().unwrap_or(0);
-                    if hour < 24 {
-                        hourly_traffic[hour] += 1;
-                    }
+        let att_rows = sqlx::query(
+            "SELECT timestamp FROM cloud_attendance WHERE owner_email = $1 AND timestamp LIKE $2",
+        )
+        .bind(owner_email)
+        .bind(format!("{}%", today_prefix))
+        .fetch_all(&self.pool)
+        .await?;
+        for row in att_rows {
+            let ts_str: String = match row.try_get(0) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&ts_str) {
+                let hour = dt.format("%H").to_string().parse::<usize>().unwrap_or(0);
+                if hour < 24 {
+                    hourly_traffic[hour] += 1;
                 }
             }
         }
@@ -1182,274 +1220,218 @@ impl CloudDatabase {
 
     // --- Release Management & Auto-Updater ---
 
-    pub fn publish_release(&self, rel: &ReleaseInfo) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
+    pub async fn publish_release(&self, rel: &ReleaseInfo) -> sqlx::Result<()> {
+        sqlx::query(
             "INSERT INTO cloud_releases (
                 version, channel, min_supported_version, download_url, sha256,
                 release_notes, rollout_percentage, is_mandatory, created_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT(version, channel) DO UPDATE SET
-                min_supported_version = ?3, download_url = ?4, sha256 = ?5,
-                release_notes = ?6, rollout_percentage = ?7, is_mandatory = ?8, created_at = ?9",
-            params![
-                rel.version,
-                rel.channel,
-                rel.min_supported_version,
-                rel.download_url,
-                rel.sha256,
-                rel.release_notes,
-                rel.rollout_percentage as i64,
-                if rel.is_mandatory { 1 } else { 0 },
-                rel.created_at.to_rfc3339()
-            ],
-        )?;
+                min_supported_version = $3, download_url = $4, sha256 = $5,
+                release_notes = $6, rollout_percentage = $7, is_mandatory = $8, created_at = $9",
+        )
+        .bind(&rel.version)
+        .bind(&rel.channel)
+        .bind(&rel.min_supported_version)
+        .bind(&rel.download_url)
+        .bind(&rel.sha256)
+        .bind(&rel.release_notes)
+        .bind(rel.rollout_percentage as i64)
+        .bind(if rel.is_mandatory { 1 } else { 0 })
+        .bind(rel.created_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn get_latest_release(&self, channel: &str) -> Result<Option<ReleaseInfo>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+    fn release_from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<ReleaseInfo> {
+        let version: String = row.try_get(0)?;
+        let channel: String = row.try_get(1)?;
+        let min_supported_version: String = row.try_get(2)?;
+        let download_url: String = row.try_get(3)?;
+        let sha256: String = row.try_get(4)?;
+        let release_notes: String = row.try_get(5)?;
+        let rollout_percentage: i64 = row.try_get(6)?;
+        let is_mandatory: i32 = row.try_get(7)?;
+        let created_at_str: String = row.try_get(8)?;
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        Ok(ReleaseInfo {
+            version,
+            channel,
+            min_supported_version,
+            download_url,
+            sha256,
+            release_notes,
+            rollout_percentage: rollout_percentage as u32,
+            is_mandatory: is_mandatory == 1,
+            created_at,
+        })
+    }
+
+    pub async fn get_latest_release(&self, channel: &str) -> sqlx::Result<Option<ReleaseInfo>> {
+        let row = sqlx::query(
             "SELECT version, channel, min_supported_version, download_url, sha256,
                     release_notes, rollout_percentage, is_mandatory, created_at
              FROM cloud_releases
-             WHERE channel = ?1
+             WHERE channel = $1
              ORDER BY created_at DESC LIMIT 1",
-        )?;
-
-        let mut rows = stmt.query_map(params![channel], |row| {
-            let version: String = row.get(0)?;
-            let channel: String = row.get(1)?;
-            let min_supported_version: String = row.get(2)?;
-            let download_url: String = row.get(3)?;
-            let sha256: String = row.get(4)?;
-            let release_notes: String = row.get(5)?;
-            let rollout_percentage: i64 = row.get(6)?;
-            let is_mandatory: i32 = row.get(7)?;
-            let created_at_str: String = row.get(8)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            Ok(ReleaseInfo {
-                version,
-                channel,
-                min_supported_version,
-                download_url,
-                sha256,
-                release_notes,
-                rollout_percentage: rollout_percentage as u32,
-                is_mandatory: is_mandatory == 1,
-                created_at,
-            })
-        })?;
-
-        if let Some(r) = rows.next() {
-            Ok(Some(r?))
-        } else {
-            Ok(None)
+        )
+        .bind(channel)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(r) => Ok(Some(Self::release_from_row(&r)?)),
+            None => Ok(None),
         }
     }
 
-    pub fn list_releases(&self) -> Result<Vec<ReleaseInfo>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+    pub async fn list_releases(&self) -> sqlx::Result<Vec<ReleaseInfo>> {
+        let rows = sqlx::query(
             "SELECT version, channel, min_supported_version, download_url, sha256,
                     release_notes, rollout_percentage, is_mandatory, created_at
              FROM cloud_releases
              ORDER BY created_at DESC",
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            let version: String = row.get(0)?;
-            let channel: String = row.get(1)?;
-            let min_supported_version: String = row.get(2)?;
-            let download_url: String = row.get(3)?;
-            let sha256: String = row.get(4)?;
-            let release_notes: String = row.get(5)?;
-            let rollout_percentage: i64 = row.get(6)?;
-            let is_mandatory: i32 = row.get(7)?;
-            let created_at_str: String = row.get(8)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            Ok(ReleaseInfo {
-                version,
-                channel,
-                min_supported_version,
-                download_url,
-                sha256,
-                release_notes,
-                rollout_percentage: rollout_percentage as u32,
-                is_mandatory: is_mandatory == 1,
-                created_at,
-            })
-        })?;
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut list = Vec::new();
         for r in rows {
-            list.push(r?);
+            list.push(Self::release_from_row(&r)?);
         }
         Ok(list)
     }
 
     // --- Staff & Cashier RBAC Management ---
 
-    pub fn create_staff_account(&self, staff: &StaffAccount) -> Result<()> {
-        let conn = self.conn.lock();
+    pub async fn create_staff_account(&self, staff: &StaffAccount) -> sqlx::Result<()> {
         let gym_id_str = staff.gym_id.map(|u| u.to_string());
-        conn.execute(
+        sqlx::query(
             "INSERT INTO cloud_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                staff.id,
-                staff.owner_email,
-                gym_id_str,
-                staff.gym_name,
-                staff.full_name,
-                staff.username,
-                staff.pin_hash,
-                match staff.role {
-                    StaffRole::Manager => "manager",
-                    StaffRole::Owner => "owner",
-                    StaffRole::Staff => "staff",
-                },
-                if staff.is_active { 1 } else { 0 },
-                staff.created_at.to_rfc3339(),
-                staff.updated_at.to_rfc3339(),
-            ],
-        )?;
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&staff.id)
+        .bind(&staff.owner_email)
+        .bind(gym_id_str)
+        .bind(&staff.gym_name)
+        .bind(&staff.full_name)
+        .bind(&staff.username)
+        .bind(&staff.pin_hash)
+        .bind(match staff.role {
+            StaffRole::Manager => "manager",
+            StaffRole::Owner => "owner",
+            StaffRole::Staff => "staff",
+        })
+        .bind(if staff.is_active { 1 } else { 0 })
+        .bind(staff.created_at.to_rfc3339())
+        .bind(staff.updated_at.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn list_staff_by_owner(&self, owner_email: &str) -> Result<Vec<StaffAccount>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
+    fn staff_from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<StaffAccount> {
+        let id: String = row.try_get(0)?;
+        let owner_email: String = row.try_get(1)?;
+        let gym_id_str: Option<String> = row.try_get(2).ok().flatten();
+        let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+        let gym_name: Option<String> = row.try_get(3).ok().flatten();
+        let full_name: String = row.try_get(4)?;
+        let username: String = row.try_get(5)?;
+        let pin_hash: String = row.try_get(6)?;
+        let role_str: String = row.try_get(7)?;
+        let role: StaffRole = match role_str.to_lowercase().as_str() {
+            "manager" => StaffRole::Manager,
+            "owner" => StaffRole::Owner,
+            _ => StaffRole::Staff,
+        };
+        let is_active_int: i32 = row.try_get(8)?;
+        let created_at_str: String = row.try_get(9)?;
+        let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        let updated_at_str: String = row.try_get(10)?;
+        let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        Ok(StaffAccount {
+            id,
+            owner_email,
+            gym_id,
+            gym_name,
+            full_name,
+            username,
+            pin_hash,
+            role,
+            is_active: is_active_int > 0,
+            created_at,
+            updated_at,
+        })
+    }
+
+    pub async fn list_staff_by_owner(&self, owner_email: &str) -> sqlx::Result<Vec<StaffAccount>> {
+        let rows = sqlx::query(
             "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at
-             FROM cloud_staff_accounts WHERE owner_email = ?1 ORDER BY full_name",
-        )?;
-        let rows = stmt.query_map(params![owner_email], |row| {
-            let id: String = row.get(0)?;
-            let owner_email: String = row.get(1)?;
-            let gym_id_str: Option<String> = row.get(2)?;
-            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
-            let gym_name: Option<String> = row.get(3)?;
-            let full_name: String = row.get(4)?;
-            let username: String = row.get(5)?;
-            let pin_hash: String = row.get(6)?;
-            let role_str: String = row.get(7)?;
-            let role: StaffRole = match role_str.to_lowercase().as_str() {
-                "manager" => StaffRole::Manager,
-                "owner" => StaffRole::Owner,
-                _ => StaffRole::Staff,
-            };
-            let is_active_int: i32 = row.get(8)?;
-            let created_at_str: String = row.get(9)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            let updated_at_str: String = row.get(10)?;
-            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(StaffAccount {
-                id,
-                owner_email,
-                gym_id,
-                gym_name,
-                full_name,
-                username,
-                pin_hash,
-                role,
-                is_active: is_active_int > 0,
-                created_at,
-                updated_at,
-            })
-        })?;
+             FROM cloud_staff_accounts WHERE owner_email = $1 ORDER BY full_name",
+        )
+        .bind(owner_email)
+        .fetch_all(&self.pool)
+        .await?;
         let mut list = Vec::new();
         for r in rows {
-            list.push(r?);
+            list.push(Self::staff_from_row(&r)?);
         }
         Ok(list)
     }
 
-    pub fn list_staff_for_branch(&self, owner_email: &str, gym_id: &Uuid) -> Result<Vec<StaffAccount>> {
-        let conn = self.conn.lock();
+    pub async fn list_staff_for_branch(&self, owner_email: &str, gym_id: &Uuid) -> sqlx::Result<Vec<StaffAccount>> {
         let gym_id_str = gym_id.to_string();
-        let mut stmt = conn.prepare(
+        let rows = sqlx::query(
             "SELECT id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, created_at, updated_at
              FROM cloud_staff_accounts
-             WHERE owner_email = ?1 AND (gym_id = ?2 OR gym_id IS NULL OR gym_id = '') AND is_active = 1
+             WHERE owner_email = $1 AND (gym_id = $2 OR gym_id IS NULL OR gym_id = '') AND is_active = 1
              ORDER BY full_name",
-        )?;
-        let rows = stmt.query_map(params![owner_email, gym_id_str], |row| {
-            let id: String = row.get(0)?;
-            let owner_email: String = row.get(1)?;
-            let gym_id_str: Option<String> = row.get(2)?;
-            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
-            let gym_name: Option<String> = row.get(3)?;
-            let full_name: String = row.get(4)?;
-            let username: String = row.get(5)?;
-            let pin_hash: String = row.get(6)?;
-            let role_str: String = row.get(7)?;
-            let role: StaffRole = match role_str.to_lowercase().as_str() {
-                "manager" => StaffRole::Manager,
-                "owner" => StaffRole::Owner,
-                _ => StaffRole::Staff,
-            };
-            let is_active_int: i32 = row.get(8)?;
-            let created_at_str: String = row.get(9)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            let updated_at_str: String = row.get(10)?;
-            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(StaffAccount {
-                id,
-                owner_email,
-                gym_id,
-                gym_name,
-                full_name,
-                username,
-                pin_hash,
-                role,
-                is_active: is_active_int > 0,
-                created_at,
-                updated_at,
-            })
-        })?;
+        )
+        .bind(owner_email)
+        .bind(&gym_id_str)
+        .fetch_all(&self.pool)
+        .await?;
         let mut list = Vec::new();
         for r in rows {
-            list.push(r?);
+            list.push(Self::staff_from_row(&r)?);
         }
         Ok(list)
     }
 
-    pub fn delete_staff_account(&self, owner_email: &str, staff_id: &str) -> Result<bool> {
-        let conn = self.conn.lock();
-        let rows = conn.execute(
-            "DELETE FROM cloud_staff_accounts WHERE id = ?1 AND owner_email = ?2",
-            params![staff_id, owner_email],
-        )?;
-        Ok(rows > 0)
+    pub async fn delete_staff_account(&self, owner_email: &str, staff_id: &str) -> sqlx::Result<bool> {
+        let res = sqlx::query("DELETE FROM cloud_staff_accounts WHERE id = $1 AND owner_email = $2")
+            .bind(staff_id)
+            .bind(owner_email)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
-    pub fn update_staff_account(&self, owner_email: &str, staff_id: &str, req: &UpdateStaffRequest) -> Result<bool> {
-        let conn = self.conn.lock();
-        let mut updates = Vec::new();
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    pub async fn update_staff_account(&self, owner_email: &str, staff_id: &str, req: &UpdateStaffRequest) -> sqlx::Result<bool> {
+        // Positional $n placeholders are numbered as values are pushed.
+        let mut sets: Vec<String> = Vec::new();
+        let mut query = sqlx::QueryBuilder::new("UPDATE cloud_staff_accounts SET ");
 
         if let Some(ref name) = req.full_name {
-            updates.push("full_name = ?");
-            params_vec.push(Box::new(name.clone()));
+            sets.push("full_name".to_string());
+            query.push("full_name = ");
+            query.push_bind(name.clone());
         }
         if let Some(ref pin) = req.pin_code {
             let pin_hash = gympos_shared::hash_password(pin);
-            updates.push("pin_hash = ?");
-            params_vec.push(Box::new(pin_hash));
+            if !sets.is_empty() {
+                query.push(", ");
+            }
+            sets.push("pin_hash".to_string());
+            query.push("pin_hash = ");
+            query.push_bind(pin_hash);
         }
         if let Some(ref role) = req.role {
             let role_str = match role {
@@ -1457,93 +1439,108 @@ impl CloudDatabase {
                 StaffRole::Owner => "owner",
                 StaffRole::Staff => "staff",
             };
-            updates.push("role = ?");
-            params_vec.push(Box::new(role_str.to_string()));
+            if !sets.is_empty() {
+                query.push(", ");
+            }
+            sets.push("role".to_string());
+            query.push("role = ");
+            query.push_bind(role_str.to_string());
         }
         if let Some(ref gym_id) = req.gym_id {
-            updates.push("gym_id = ?");
-            params_vec.push(Box::new(gym_id.to_string()));
+            if !sets.is_empty() {
+                query.push(", ");
+            }
+            sets.push("gym_id".to_string());
+            query.push("gym_id = ");
+            query.push_bind(gym_id.to_string());
         }
         if let Some(ref gym_name) = req.gym_name {
-            updates.push("gym_name = ?");
-            params_vec.push(Box::new(gym_name.clone()));
+            if !sets.is_empty() {
+                query.push(", ");
+            }
+            sets.push("gym_name".to_string());
+            query.push("gym_name = ");
+            query.push_bind(gym_name.clone());
         }
         if let Some(is_active) = req.is_active {
-            updates.push("is_active = ?");
-            params_vec.push(Box::new(if is_active { 1 } else { 0 }));
+            if !sets.is_empty() {
+                query.push(", ");
+            }
+            sets.push("is_active".to_string());
+            query.push("is_active = ");
+            query.push_bind(if is_active { 1 } else { 0 });
         }
 
-        if updates.is_empty() {
+        if sets.is_empty() {
             return Ok(false);
         }
 
-        updates.push("updated_at = ?");
-        params_vec.push(Box::new(Utc::now().to_rfc3339()));
+        query.push(", updated_at = ");
+        query.push_bind(Utc::now().to_rfc3339());
+        query.push(" WHERE id = ");
+        query.push_bind(staff_id.to_string());
+        query.push(" AND owner_email = ");
+        query.push_bind(owner_email.to_string());
 
-        let query = format!(
-            "UPDATE cloud_staff_accounts SET {} WHERE id = ? AND owner_email = ?",
-            updates.join(", ")
-        );
-        params_vec.push(Box::new(staff_id.to_string()));
-        params_vec.push(Box::new(owner_email.to_string()));
-
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
-        let rows = conn.execute(&query, rusqlite::params_from_iter(params_refs))?;
-        Ok(rows > 0)
+        let res = query.build().execute(&self.pool).await?;
+        Ok(res.rows_affected() > 0)
     }
 
     // --- Branch Catalog Overrides ---
 
-    pub fn save_branch_product_override(
+    pub async fn save_branch_product_override(
         &self,
         owner_email: &str,
         gym_id: &Uuid,
         product_id: &str,
         price: f64,
         stock: i32,
-    ) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
+    ) -> sqlx::Result<()> {
+        sqlx::query(
             "INSERT INTO cloud_branch_product_overrides (product_id, gym_id, owner_email, price, stock, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(product_id, gym_id) DO UPDATE SET price = ?4, stock = ?5, updated_at = ?6",
-            params![
-                product_id,
-                gym_id.to_string(),
-                owner_email,
-                price,
-                stock,
-                Utc::now().to_rfc3339()
-            ],
-        )?;
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT(product_id, gym_id) DO UPDATE SET price = $4, stock = $5, updated_at = $6",
+        )
+        .bind(product_id)
+        .bind(gym_id.to_string())
+        .bind(owner_email)
+        .bind(price)
+        .bind(stock)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn get_branch_products(&self, owner_email: &str, gym_id: &Uuid) -> Result<Vec<RemoteCatalogProduct>> {
-        let conn = self.conn.lock();
+    pub async fn get_branch_products(&self, owner_email: &str, gym_id: &Uuid) -> sqlx::Result<Vec<RemoteCatalogProduct>> {
         let gym_id_str = gym_id.to_string();
-        let mut stmt = conn.prepare(
+        let rows = sqlx::query(
             "SELECT p.id, p.name,
                     COALESCE(o.price, p.price) as effective_price,
                     COALESCE(o.stock, p.stock) as effective_stock,
                     p.category, p.updated_at
              FROM cloud_products p
              LEFT JOIN cloud_branch_product_overrides o
-                    ON p.id = o.product_id AND o.gym_id = ?2
-             WHERE p.owner_email = ?1
+                    ON p.id = o.product_id AND o.gym_id = $2
+             WHERE p.owner_email = $1
              ORDER BY p.category, p.name",
-        )?;
-        let rows = stmt.query_map(params![owner_email, gym_id_str], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let price: f64 = row.get(2)?;
-            let stock: i32 = row.get(3)?;
-            let category: String = row.get(4)?;
-            let updated_at_str: String = row.get(5)?;
+        )
+        .bind(owner_email)
+        .bind(&gym_id_str)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut list = Vec::new();
+        for row in rows {
+            let id: String = row.try_get(0)?;
+            let name: String = row.try_get(1)?;
+            let price: f64 = row.try_get(2)?;
+            let stock: i32 = row.try_get(3)?;
+            let category: String = row.try_get(4)?;
+            let updated_at_str: String = row.try_get(5)?;
             let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            Ok(RemoteCatalogProduct {
+            list.push(RemoteCatalogProduct {
                 id,
                 name,
                 price,
@@ -1551,109 +1548,93 @@ impl CloudDatabase {
                 category,
                 target_gym_id: Some(*gym_id),
                 updated_at,
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+            });
         }
         Ok(list)
     }
 
     // --- CEO Collapsible Owner Hierarchy & Centralized License Management ---
 
-    pub fn list_all_owners_with_branches(&self) -> Result<Vec<OwnerHierarchyAccount>> {
-        let conn = self.conn.lock();
+    pub async fn list_all_owners_with_branches(&self) -> sqlx::Result<Vec<OwnerHierarchyAccount>> {
         let now = Utc::now();
         let today_prefix = now.format("%Y-%m-%d").to_string();
 
         // 1. Fetch all registered owner accounts
-        let mut owner_stmt = conn.prepare(
-            "SELECT owner_email, company_name, created_at FROM cloud_owner_accounts ORDER BY created_at DESC"
-        )?;
+        let owner_rows = sqlx::query(
+            "SELECT owner_email, company_name, created_at FROM cloud_owner_accounts ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        let owner_rows = owner_stmt.query_map([], |row| {
-            let owner_email: String = row.get(0)?;
-            let company_name: String = row.get(1)?;
-            let created_at_str: String = row.get(2)?;
+        let mut owners = Vec::new();
+        for row in owner_rows {
+            let owner_email: String = row.try_get(0)?;
+            let company_name: String = row.try_get(1)?;
+            let created_at_str: String = row.try_get(2)?;
             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
-            Ok((owner_email, company_name, created_at))
-        })?;
-
-        let mut owners = Vec::new();
-        for r in owner_rows {
-            owners.push(r?);
+            owners.push((owner_email, company_name, created_at));
         }
 
         // Also discover any orphan gyms created before owner accounts existed
-        let mut orphan_stmt = conn.prepare(
-            "SELECT DISTINCT owner_email FROM cloud_gyms WHERE owner_email NOT IN (SELECT owner_email FROM cloud_owner_accounts)"
-        )?;
-        let orphan_rows = orphan_stmt.query_map([], |row| {
-            let email: String = row.get(0)?;
-            Ok((email.clone(), format!("Gym Group ({})", email), now))
-        })?;
-        for o in orphan_rows {
-            if let Ok(item) = o {
-                owners.push(item);
-            }
+        let orphan_rows = sqlx::query(
+            "SELECT DISTINCT owner_email FROM cloud_gyms WHERE owner_email NOT IN (SELECT owner_email FROM cloud_owner_accounts)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for row in orphan_rows {
+            let email: String = row.try_get(0)?;
+            owners.push((email.clone(), format!("Gym Group ({})", email), now));
         }
 
         let mut hierarchy = Vec::new();
 
         for (owner_email, company_name, created_at) in owners {
             // Query all branches for this owner
-            let mut branch_stmt = conn.prepare(
-                "SELECT id, name, tier, is_active, created_at FROM cloud_gyms WHERE owner_email = ?1 ORDER BY created_at ASC"
-            )?;
-
-            let branch_rows = branch_stmt.query_map(params![owner_email], |row| {
-                let id_str: String = row.get(0)?;
-                let gym_id = Uuid::parse_str(&id_str).unwrap_or_default();
-                let name: String = row.get(1)?;
-                let tier_str: String = row.get(2)?;
-                let tier = match tier_str.to_lowercase().as_str() {
-                    "basic" => LicenseTier::Basic,
-                    "ultra" => LicenseTier::Ultra,
-                    _ => LicenseTier::Pro,
-                };
-                let is_active_int: i32 = row.get(3)?;
-                let b_created_str: String = row.get(4)?;
-                let b_created = DateTime::parse_from_rfc3339(&b_created_str)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now());
-
-                Ok((gym_id, name, tier, is_active_int > 0, b_created))
-            })?;
+            let branch_rows = sqlx::query(
+                "SELECT id, name, tier, is_active, created_at FROM cloud_gyms WHERE owner_email = $1 ORDER BY created_at ASC",
+            )
+            .bind(&owner_email)
+            .fetch_all(&self.pool)
+            .await?;
 
             let mut branches = Vec::new();
             let mut active_count = 0;
             let mut pending_count = 0;
 
-            for b in branch_rows {
-                let (gym_id, name, tier, is_active, b_created) = b?;
+            for brow in branch_rows {
+                let id_str: String = brow.try_get(0)?;
+                let gym_id = Uuid::parse_str(&id_str).unwrap_or_default();
+                let name: String = brow.try_get(1)?;
+                let tier_str: String = brow.try_get(2)?;
+                let tier = match tier_str.to_lowercase().as_str() {
+                    "basic" => LicenseTier::Basic,
+                    "ultra" => LicenseTier::Ultra,
+                    _ => LicenseTier::Pro,
+                };
+                let is_active_int: i32 = brow.try_get(3)?;
+                let b_created_str: String = brow.try_get(4)?;
+                let b_created = DateTime::parse_from_rfc3339(&b_created_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                let is_active = is_active_int > 0;
 
                 // Check active license for this branch
-                let lic_res = conn.query_row(
-                    "SELECT raw_token, expires_at, is_revoked FROM cloud_licenses WHERE gym_id = ?1 AND is_revoked = 0 ORDER BY expires_at DESC LIMIT 1",
-                    params![gym_id.to_string()],
-                    |r| {
-                        let token: String = r.get(0)?;
-                        let exp_str: String = r.get(1)?;
-                        let is_revoked_int: i32 = r.get(2)?;
-                        Ok((token, exp_str, is_revoked_int > 0))
-                    }
-                );
+                let lic_row: Option<(String, String, i32)> = sqlx::query_as(
+                    "SELECT raw_token, expires_at, is_revoked FROM cloud_licenses WHERE gym_id = $1 AND is_revoked = 0 ORDER BY expires_at DESC LIMIT 1",
+                )
+                .bind(gym_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?;
 
                 let mut license_key = None;
                 let mut expires_at = None;
                 let mut days_remaining = None;
                 let mut is_license_active = false;
 
-                if let Ok((token, exp_str, is_revoked)) = lic_res {
-                    if !is_revoked {
+                if let Some((token, exp_str, is_revoked_int)) = lic_row {
+                    if is_revoked_int == 0 {
                         let exp_dt = DateTime::parse_from_rfc3339(&exp_str)
                             .map(|dt| dt.with_timezone(&Utc))
                             .unwrap_or_else(|_| Utc::now());
@@ -1676,18 +1657,23 @@ impl CloudDatabase {
                 }
 
                 // Active members count
-                let active_members: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM cloud_members WHERE home_gym_id = ?1 AND status = 'active'",
-                    params![gym_id.to_string()],
-                    |r| r.get(0),
-                ).unwrap_or(0);
+                let active_members: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM cloud_members WHERE home_gym_id = $1 AND status = 'active'",
+                )
+                .bind(gym_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0);
 
                 // Today sales
-                let today_sales: f64 = conn.query_row(
-                    "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = ?1 AND timestamp LIKE ?2",
-                    params![gym_id.to_string(), format!("{}%", today_prefix)],
-                    |r| r.get(0),
-                ).unwrap_or(0.0);
+                let today_sales: f64 = sqlx::query_scalar(
+                    "SELECT COALESCE(SUM(total_amount), 0.0) FROM cloud_sales WHERE gym_id = $1 AND timestamp LIKE $2",
+                )
+                .bind(gym_id.to_string())
+                .bind(format!("{}%", today_prefix))
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or(0.0);
 
                 branches.push(OwnerHierarchyBranch {
                     gym_id,
@@ -1702,11 +1688,14 @@ impl CloudDatabase {
                     active_members: active_members as u32,
                     today_sales,
                     created_at: b_created,
-                    is_disabled: conn.query_row(
-                        "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = ?1",
-                        params![gym_id.to_string()],
-                        |r| r.get::<_, i64>(0),
-                    ).unwrap_or(0) > 0,
+                    is_disabled: sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM cloud_disabled_gyms WHERE gym_id = $1",
+                    )
+                    .bind(gym_id.to_string())
+                    .fetch_one(&self.pool)
+                    .await
+                    .map(|n: i64| n > 0)
+                    .unwrap_or(false),
                 });
             }
 
@@ -1726,39 +1715,38 @@ impl CloudDatabase {
         Ok(hierarchy)
     }
 
-    pub fn get_gym_by_id(&self, gym_id: &Uuid) -> Result<Option<GymRecord>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT id, name, owner_email, tier, is_active, created_at FROM cloud_gyms WHERE id = ?1")?;
-        let res = stmt.query_row(params![gym_id.to_string()], |row| {
-            let id_str: String = row.get(0)?;
-            let id = Uuid::parse_str(&id_str).unwrap_or_default();
-            let name: String = row.get(1)?;
-            let owner_email: String = row.get(2)?;
-            let tier_str: String = row.get(3)?;
-            let tier = match tier_str.to_lowercase().as_str() {
-                "basic" => LicenseTier::Basic,
-                "ultra" => LicenseTier::Ultra,
-                _ => LicenseTier::Pro,
-            };
-            let is_active: i32 = row.get(4)?;
-            let created_at_str: String = row.get(5)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(GymRecord {
-                id,
-                name,
-                owner_email,
-                tier,
-                is_active: is_active > 0,
-                created_at,
-            })
-        });
-
-        match res {
-            Ok(g) => Ok(Some(g)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
+    pub async fn get_gym_by_id(&self, gym_id: &Uuid) -> sqlx::Result<Option<GymRecord>> {
+        let row = sqlx::query("SELECT id, name, owner_email, tier, is_active, created_at FROM cloud_gyms WHERE id = $1")
+            .bind(gym_id.to_string())
+            .fetch_optional(&self.pool)
+            .await?;
+        match row {
+            Some(r) => {
+                let id_str: String = r.try_get(0)?;
+                let id = Uuid::parse_str(&id_str).unwrap_or_default();
+                let name: String = r.try_get(1)?;
+                let owner_email: String = r.try_get(2)?;
+                let tier_str: String = r.try_get(3)?;
+                let tier = match tier_str.to_lowercase().as_str() {
+                    "basic" => LicenseTier::Basic,
+                    "ultra" => LicenseTier::Ultra,
+                    _ => LicenseTier::Pro,
+                };
+                let is_active: i32 = r.try_get(4)?;
+                let created_at_str: String = r.try_get(5)?;
+                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now());
+                Ok(Some(GymRecord {
+                    id,
+                    name,
+                    owner_email,
+                    tier,
+                    is_active: is_active > 0,
+                    created_at,
+                }))
+            }
+            None => Ok(None),
         }
     }
 }

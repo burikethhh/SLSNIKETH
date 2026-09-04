@@ -51,25 +51,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Do NOT reintroduce a hardcoded fallback key/secret here.
     tracing::info!("CEO account authentication active");
 
-    // Render's filesystem is ephemeral — SQLite on ./gympos_cloud.sqlite is wiped
-    // on every deploy/restart unless it's on a persistent disk. Use /var/data
-    // when it exists (Render Disk mount), otherwise fall back to local file.
-    let db_path = if std::path::Path::new("/var/data").exists() {
-        "/var/data/gympos_cloud.sqlite"
-    } else {
-        "gympos_cloud.sqlite"
-    };
-    if db_path.starts_with("/var/data") {
-        let _ = std::fs::create_dir_all("/var/data");
-    }
-    tracing::info!("Using SQLite database at {}", db_path);
-    let cloud_db = Arc::new(CloudDatabase::new(db_path)?);
-    if cloud_db.count_ceos().unwrap_or(0) == 0 {
+    // Single permanent backend: Postgres via DATABASE_URL (Render gympos-db
+    // in production; the same URL for local runs so there is exactly one
+    // source of truth). SQLite files are NOT used anymore — they were wiped
+    // on every Render restart and split-brained local runs by CWD.
+    let database_url = std::env::var("DATABASE_URL").map_err(|_| {
+        "FATAL: DATABASE_URL is not set. Point it at Postgres, e.g. the Render gympos-db external URL with ?sslmode=require for local runs."
+    })?;
+    // Never log the URL: it embeds the DB password.
+    let cloud_db = Arc::new(CloudDatabase::connect(&database_url).await?);
+    if cloud_db.count_ceos().await.unwrap_or(0) == 0 {
         tracing::warn!("No CEO account exists yet — register the first one via POST /api/v1/auth/ceo-register (or the Command Center login screen).");
     }
-    let loaded_gyms = cloud_db.load_all_gyms().unwrap_or_default();
-    let loaded_disabled = cloud_db.load_disabled_gyms().unwrap_or_default();
-    let loaded_revoked_licenses = cloud_db.load_revoked_license_ids().unwrap_or_default();
+    let loaded_gyms = cloud_db.load_all_gyms().await.unwrap_or_default();
+    let loaded_disabled = cloud_db.load_disabled_gyms().await.unwrap_or_default();
+    let loaded_revoked_licenses = cloud_db.load_revoked_license_ids().await.unwrap_or_default();
     tracing::info!(
         "Loaded {} gyms, {} disabled gyms, and {} revoked licenses from SQLite",
         loaded_gyms.len(),

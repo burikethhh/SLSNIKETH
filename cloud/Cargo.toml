@@ -10,7 +10,6 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 parking_lot = "0.12"
-rusqlite = { version = "0.32", features = ["bundled", "chrono", "uuid"] }
 rand = "0.8"
 rsa = { version = "0.9", features = ["pem"] }
 sha2 = "0.10"
@@ -23,6 +22,7 @@ subtle = "2"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.9.0", features = ["postgres", "runtime-tokio", "chrono", "uuid", "tls-rustls"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

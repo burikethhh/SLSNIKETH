@@ -393,7 +393,8 @@ graph TD
 
 ## 6. Data Schemas & Synchronization Protocol
 
-### 6.1 Cloud SQLite Schema (`gympos_cloud.db`)
+### 6.1 Cloud Postgres Schema (`gympos-db` via `DATABASE_URL`)
+> 2026-09-05: migrated from SQLite file to Postgres (sqlx `PgPool`). SQLite was wiped on every Render restart and split-brained local runs by CWD — every environment now points at the same Postgres so CEOs/owners persist permanently. Table shapes unchanged (TEXT/INTEGER/DOUBLE PRECISION); hot-path indexes added (members/attendance/sales by gym+time, licenses by gym, staff/catalog by owner, releases by channel).
 
 ```sql
 -- 1. Owner Accounts (Franchise Credentials)

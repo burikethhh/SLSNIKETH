@@ -7,10 +7,10 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /api/v1/health
-    disk:
-      name: gympos-data
-      mountPath: /var/data
-      sizeGB: 1
+    # NOTE: no `disk` block on purpose — Render rejects disks on free
+    # instances (deploy fails), and SQLite on the ephemeral filesystem wipes
+    # on every restart. All durable state lives in gympos-db (Postgres) via
+    # DATABASE_URL. Paid plans can add a disk later for file caches if needed.
     envVars:
       - key: PORT
         value: 8080

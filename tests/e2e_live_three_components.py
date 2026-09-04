@@ -81,6 +81,13 @@ def main():
         env["PORT"] = str(CLOUD_PORT)
         # CEO accounts replaced the shared master key: no ADMIN_SECRET_KEY is
         # needed. The test bootstraps its own CEO below via ceo-register.
+        # Cloud state is Postgres-only (DATABASE_URL): the one permanent backend
+        # for local and Render runs alike. Refuse to boot without it rather
+        # than silently testing the wrong database.
+        if not env.get("DATABASE_URL"):
+            print("  FATAL: DATABASE_URL is not set. Point it at Postgres, e.g.")
+            print("  the Render gympos-db external URL (append ?sslmode=require).")
+            sys.exit(2)
         server_proc = subprocess.Popen([exe_path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
         

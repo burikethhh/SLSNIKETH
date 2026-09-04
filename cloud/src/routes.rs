@@ -43,7 +43,7 @@ pub struct AppState {
 /// `ceo_login`, verified against `cloud_ceo_accounts`. This replaced the old
 /// shared master admin key (which failed whenever the two sides disagreed on
 /// the secret) with a real account: validated email + Argon2id password.
-fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+async fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let unauthorized = || {
         Err((
             StatusCode::UNAUTHORIZED,
@@ -68,7 +68,7 @@ fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<String, 
     if !email.contains('@') {
         return unauthorized();
     }
-    match db.ceo_exists(&email) {
+    match db.ceo_exists(&email).await {
         Ok(true) => Ok(email),
         _ => unauthorized(),
     }
@@ -118,9 +118,9 @@ pub async fn ceo_register(
 ) -> Result<impl IntoResponse, axum::response::Response> {
     // First CEO is open bootstrap (fresh server has no accounts yet);
     // additional CEOs can only be created by an already-logged-in CEO.
-    let existing = state.db.count_ceos().unwrap_or(0);
+    let existing = state.db.count_ceos().await.unwrap_or(0);
     if existing > 0 {
-        verify_admin_auth(&headers, &state.db).map_err(|e| e.into_response())?;
+        verify_admin_auth(&headers, &state.db).await.map_err(|e| e.into_response())?;
     }
 
     let ip = client_ip(&headers, Some(addr));
@@ -155,7 +155,7 @@ pub async fn ceo_register(
         )
             .into_response());
     }
-    if state.db.ceo_exists(&email_norm).unwrap_or(false) {
+    if state.db.ceo_exists(&email_norm).await.unwrap_or(false) {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({ "error": "CEO email already registered — please login", "code": "EMAIL_EXISTS" })),
@@ -163,7 +163,7 @@ pub async fn ceo_register(
             .into_response());
     }
     let password_hash = gympos_shared::hash_password(&payload.password);
-    let created = state.db.create_ceo_account(&email_norm, &password_hash, name).unwrap_or(false);
+    let created = state.db.create_ceo_account(&email_norm, &password_hash, name).await.unwrap_or(false);
     if !created {
         return Err((
             StatusCode::CONFLICT,
@@ -171,7 +171,7 @@ pub async fn ceo_register(
         )
             .into_response());
     }
-    let _ = state.db.log_audit(&email_norm, None, "ceo_register", Some(name));
+    let _ = state.db.log_audit(&email_norm, None, "ceo_register", Some(name)).await;
 
     Ok((
         StatusCode::CREATED,
@@ -207,10 +207,10 @@ pub async fn ceo_login(
         return Err(too_many_requests(retry_after).into_response());
     }
 
-    match state.db.verify_ceo_login(&email_norm, &payload.password).unwrap_or(None) {
+    match state.db.verify_ceo_login(&email_norm, &payload.password).await.unwrap_or(None) {
         Some(display_name) => {
             state.login_limiter.reset(&per_account_key);
-            let _ = state.db.log_audit(&email_norm, None, "ceo_login", None);
+            let _ = state.db.log_audit(&email_norm, None, "ceo_login", None).await;
             Ok((
                 StatusCode::OK,
                 Json(gympos_shared::CeoLoginResponse {
@@ -245,17 +245,17 @@ pub async fn register_gym(
     headers: HeaderMap,
     Json(payload): Json<RegisterGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
     // --- Stand-out guard: qualified email + must have owner portal account + tier branch cap ---
     let email_norm = payload.owner_email.trim().to_lowercase();
     if !is_qualified_email(&email_norm) {
         return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required (name@domain.tld)", "code": "QUALIFIED_EMAIL_REQUIRED", "hint": "Franchise owner must use a valid email format"}))));
     }
-    if !state.db.owner_exists(&email_norm).unwrap_or(false) {
+    if !state.db.owner_exists(&email_norm).await.unwrap_or(false) {
         return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "Franchise owner has not created an account on their portal", "code": "UNREGISTERED_OWNER", "hint": "Invite owner to register at /portal.html — account required before CEO can mint keys", "invite_url": format!("/portal.html?invite={}", email_norm)}))));
     }
-    let existing = state.db.count_owner_gyms(&email_norm).unwrap_or(0);
+    let existing = state.db.count_owner_gyms(&email_norm).await.unwrap_or(0);
     if existing >= tier_branch_limit(payload.tier) {
         return Err((StatusCode::CONFLICT, Json(json!({"error": format!("Tier {:?} limited to {} branches — upgrade required for additional keys", payload.tier, tier_branch_limit(payload.tier)), "code": "TIER_BRANCH_LIMIT", "existing_branches": existing, "limit": tier_branch_limit(payload.tier)}))));
     }
@@ -275,9 +275,9 @@ pub async fn register_gym(
         created_at: now,
     };
 
-    let _ = state.db.upsert_gym(&gym_record);
+    let _ = state.db.upsert_gym(&gym_record).await;
     state.gyms.write().insert(gym_id, gym_record);
-    let _ = state.db.log_audit(&email_norm, Some(&gym_id), "gym_register", Some(&payload.name));
+    let _ = state.db.log_audit(&email_norm, Some(&gym_id), "gym_register", Some(&payload.name)).await;
 
     let claims = LicenseClaims {
         license_id,
@@ -304,7 +304,7 @@ pub async fn register_gym(
     })?;
 
     // Store in cloud database for persistent auditing and revocation tracking
-    let _ = state.db.insert_license(&claims, &license_key);
+    let _ = state.db.insert_license(&claims, &license_key).await;
 
     Ok((
         StatusCode::CREATED,
@@ -325,7 +325,7 @@ pub async fn list_gyms(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
     let gyms = state.gyms.read();
     let list: Vec<GymRecord> = gyms.values().cloned().collect();
     Ok((StatusCode::OK, Json(json!(list))))
@@ -336,14 +336,21 @@ pub async fn update_gym(
     headers: HeaderMap,
     Json(payload): Json<gympos_shared::UpdateGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
+    let exists = state.gyms.read().contains_key(&payload.id);
+    if !exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Gym not found" })),
+        ));
+    }
+    let _ = state.db.update_gym(&payload).await;
     let mut gyms = state.gyms.write();
     if let Some(gym) = gyms.get_mut(&payload.id) {
         gym.name = payload.name.clone();
         gym.owner_email = payload.contact_email.clone();
         gym.tier = payload.tier;
-        let _ = state.db.update_gym(&payload);
-        Ok((StatusCode::OK, Json(json!(gym))))
+        Ok((StatusCode::OK, Json(json!(gym.clone()))))
     } else {
         Err((
             StatusCode::NOT_FOUND,
@@ -357,19 +364,17 @@ pub async fn delete_gym(
     headers: HeaderMap,
     Path(gym_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
-    let mut gyms = state.gyms.write();
-    let mut disabled = state.disabled_gyms.write();
-    if gyms.remove(&gym_id).is_some() {
-        disabled.remove(&gym_id);
-        let _ = state.db.delete_gym(&gym_id);
-        Ok((StatusCode::OK, Json(json!({ "status": "deleted", "gym_id": gym_id }))))
-    } else {
-        Err((
+    verify_admin_auth(&headers, &state.db).await?;
+    if !state.gyms.read().contains_key(&gym_id) {
+        return Err((
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "Gym not found" })),
-        ))
+        ));
     }
+    let _ = state.db.delete_gym(&gym_id).await;
+    state.gyms.write().remove(&gym_id);
+    state.disabled_gyms.write().remove(&gym_id);
+    Ok((StatusCode::OK, Json(json!({ "status": "deleted", "gym_id": gym_id }))))
 }
 
 // --- License Issuance & Management (Admin Protected) ---
@@ -379,18 +384,18 @@ pub async fn generate_license(
     headers: HeaderMap,
     Json(payload): Json<GenerateLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
     // --- Same guard for standalone license mint (may be orphan gym_id, so tier check optional but owner must exist) ---
     let email_norm = payload.owner_email.trim().to_lowercase();
     if !is_qualified_email(&email_norm) {
         return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
     }
-    if !state.db.owner_exists(&email_norm).unwrap_or(false) {
+    if !state.db.owner_exists(&email_norm).await.unwrap_or(false) {
         return Err((StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": "Owner has not created portal account — cannot mint key", "code": "UNREGISTERED_OWNER", "hint": "Invite to /portal.html first", "invite_url": format!("/portal.html?invite={}", email_norm)}))));
     }
     // For generate_license we allow same tier branch limit check using gym count (soft guard)
-    let existing = state.db.count_owner_gyms(&email_norm).unwrap_or(0);
+    let existing = state.db.count_owner_gyms(&email_norm).await.unwrap_or(0);
     if existing >= tier_branch_limit(payload.tier) && existing > 0 {
         // Note: generate_license mints orphan gym_id (not in cloud_gyms), but we still warn if owner already at cap
         // Allow if caller is rotating key for existing gym (existing==limit inclusive). For strict multi-key, use register_gym.
@@ -426,7 +431,7 @@ pub async fn generate_license(
     })?;
 
     // Store generated license in SQLite
-    let _ = state.db.insert_license(&claims, &license_key);
+    let _ = state.db.insert_license(&claims, &license_key).await;
 
     Ok((
         StatusCode::CREATED,
@@ -446,8 +451,8 @@ pub async fn list_licenses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
-    let list = state.db.list_licenses().unwrap_or_default();
+    verify_admin_auth(&headers, &state.db).await?;
+    let list = state.db.list_licenses().await.unwrap_or_default();
     Ok((StatusCode::OK, Json(json!(list))))
 }
 
@@ -456,10 +461,10 @@ pub async fn revoke_license_endpoint(
     headers: HeaderMap,
     Json(payload): Json<RevokeLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
     let reason = payload.reason.as_deref().unwrap_or("Revoked by CEO / Platform Administrator");
 
-    let _ = state.db.revoke_license(&payload.license_id, reason);
+    let _ = state.db.revoke_license(&payload.license_id, reason).await;
     state.revoked_licenses.write().insert(payload.license_id);
 
     Ok((
@@ -496,7 +501,7 @@ pub async fn verify_license(
 
     let is_gym_disabled = state.disabled_gyms.read().contains(&claims.gym_id);
     let is_lic_revoked = state.revoked_licenses.read().contains(&claims.license_id)
-        || state.db.is_license_revoked(&claims.license_id).unwrap_or(false);
+        || state.db.is_license_revoked(&claims.license_id).await.unwrap_or(false);
 
     let is_disabled = is_gym_disabled || is_lic_revoked;
 
@@ -561,7 +566,7 @@ pub async fn sync_push(
     let mut is_disabled = state.disabled_gyms.read().contains(&payload.gym_id);
     // Check revocation/expiry via verified claims (trusted, not payload)
     let is_revoked = state.revoked_licenses.read().contains(&claims.license_id)
-        || state.db.is_license_revoked(&claims.license_id).unwrap_or(false);
+        || state.db.is_license_revoked(&claims.license_id).await.unwrap_or(false);
     let is_expired = Utc::now() > (claims.expires_at + Duration::days(3));
     if is_revoked || is_expired {
         is_disabled = true;
@@ -569,23 +574,23 @@ pub async fn sync_push(
 
     let trusted_owner = claims.owner_email.clone();
     // 2. Ingest newly added/updated members and face vectors from this branch (using trusted owner)
-    let processed_members = state.db.upsert_cloud_members(&trusted_owner, &payload.members).unwrap_or(0);
+    let processed_members = state.db.upsert_cloud_members(&trusted_owner, &payload.members).await.unwrap_or(0);
 
     // 3. Ingest attendance records from this branch (using trusted owner)
-    let processed_att = state.db.insert_attendance_logs(&trusted_owner, &payload.attendance_logs, &payload.gym_id).unwrap_or(0);
+    let processed_att = state.db.insert_attendance_logs(&trusted_owner, &payload.attendance_logs, &payload.gym_id).await.unwrap_or(0);
     let processed_vec = payload.face_vectors.len();
 
     // 4. Ingest POS sales transactions from this branch (using trusted owner)
-    let processed_sales = state.db.insert_sales(&trusted_owner, &payload.gym_id, &payload.sales).unwrap_or(0);
+    let processed_sales = state.db.insert_sales(&trusted_owner, &payload.gym_id, &payload.sales).await.unwrap_or(0);
 
     // 5. Query all inter-branch members from sister gyms under the same owner (trusted)
-    let sister_branch_members = state.db.get_sister_branch_members(&trusted_owner, &payload.gym_id).unwrap_or_default();
+    let sister_branch_members = state.db.get_sister_branch_members(&trusted_owner, &payload.gym_id).await.unwrap_or_default();
 
     // 6. Query updated remote catalog, plans, promos, and staff for this branch (with branch overrides)
-    let remote_catalog = state.db.get_branch_products(&trusted_owner, &payload.gym_id).ok();
-    let remote_plans = state.db.get_plans(&trusted_owner).ok();
-    let remote_promos = state.db.get_promos(&trusted_owner).ok();
-    let staff_accounts = state.db.list_staff_for_branch(&trusted_owner, &payload.gym_id).ok();
+    let remote_catalog = state.db.get_branch_products(&trusted_owner, &payload.gym_id).await.ok();
+    let remote_plans = state.db.get_plans(&trusted_owner).await.ok();
+    let remote_promos = state.db.get_promos(&trusted_owner).await.ok();
+    let staff_accounts = state.db.list_staff_for_branch(&trusted_owner, &payload.gym_id).await.ok();
 
     Ok((
         StatusCode::OK,
@@ -625,15 +630,15 @@ pub async fn remote_disable(
     headers: HeaderMap,
     Json(payload): Json<RemoteDisableRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
+    let _ = state.db.set_disabled(&payload.gym_id, payload.disable).await;
     let mut disabled = state.disabled_gyms.write();
     if payload.disable {
         disabled.insert(payload.gym_id);
     } else {
         disabled.remove(&payload.gym_id);
     }
-    let _ = state.db.set_disabled(&payload.gym_id, payload.disable);
 
     Ok((
         StatusCode::OK,
@@ -652,7 +657,7 @@ pub async fn analytics_fleet(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
     let gyms = state.gyms.read().clone();
     let revoked = state.revoked_licenses.read().len() + state.disabled_gyms.read().len();
@@ -667,9 +672,9 @@ pub async fn analytics_fleet(
     }
 
     // Active member count across sister gyms + attendance tailgate flags
-    let total_cloud_members: usize = state.db.count_cloud_members().unwrap_or(0);
-    let total_attendance: usize = state.db.count_attendance().unwrap_or(0);
-    let breach_flags: usize = state.db.count_tailgate_breaches().unwrap_or(0);
+    let total_cloud_members: usize = state.db.count_cloud_members().await.unwrap_or(0);
+    let total_attendance: usize = state.db.count_attendance().await.unwrap_or(0);
+    let breach_flags: usize = state.db.count_tailgate_breaches().await.unwrap_or(0);
 
     Ok((
         StatusCode::OK,
@@ -741,7 +746,7 @@ pub async fn owner_register(
         )
             .into_response());
     }
-    if state.db.owner_exists(&email_norm).unwrap_or(false) {
+    if state.db.owner_exists(&email_norm).await.unwrap_or(false) {
         return Err((
             StatusCode::CONFLICT,
             Json(json!({ "error": "Email already registered — please login", "code": "EMAIL_EXISTS" })),
@@ -749,8 +754,8 @@ pub async fn owner_register(
             .into_response());
     }
     let password_hash = gympos_shared::hash_password(&payload.password);
-    let _ = state.db.create_owner_account(&email_norm, &password_hash, &payload.company_name);
-    let _ = state.db.log_audit(&email_norm, None, "owner_register", Some(&payload.company_name));
+    let _ = state.db.create_owner_account(&email_norm, &password_hash, &payload.company_name).await;
+    let _ = state.db.log_audit(&email_norm, None, "owner_register", Some(&payload.company_name)).await;
 
     Ok((
         StatusCode::CREATED,
@@ -787,14 +792,14 @@ pub async fn owner_login(
         return Err(too_many_requests(retry_after).into_response());
     }
 
-    let company_name = state.db.verify_owner_login(&email_norm, &payload.password).unwrap_or(None);
+    let company_name = state.db.verify_owner_login(&email_norm, &payload.password).await.unwrap_or(None);
     if company_name.is_none() {
         // Strict: no auto-create on bad password — return 401, do not overwrite hash
         return Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Invalid email or password", "code": "INVALID_CREDENTIALS"}))).into_response());
     }
     state.login_limiter.reset(&per_account_key);
     let company = company_name.unwrap();
-    let _ = state.db.log_audit(&email_norm, None, "owner_login", None);
+    let _ = state.db.log_audit(&email_norm, None, "owner_login", None).await;
     Ok((
         StatusCode::OK,
         Json(OwnerLoginResponse {
@@ -812,7 +817,7 @@ pub async fn owner_check_exists(
 ) -> impl IntoResponse {
     let email = params.get("email").map(|s| s.trim().to_lowercase()).unwrap_or_default();
     let qualified = is_qualified_email(&email);
-    let exists = if qualified { state.db.owner_exists(&email).unwrap_or(false) } else { false };
+    let exists = if qualified { state.db.owner_exists(&email).await.unwrap_or(false) } else { false };
     Json(json!({"email": email, "qualified": qualified, "exists": exists, "can_mint": qualified && exists}))
 }
 
@@ -831,7 +836,7 @@ pub async fn owner_create_gym(
     if !is_qualified_email(&owner_norm) {
         return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Qualified email required", "code": "QUALIFIED_EMAIL_REQUIRED"}))));
     }
-    let existing = state.db.count_owner_gyms(&owner_norm).unwrap_or(0);
+    let existing = state.db.count_owner_gyms(&owner_norm).await.unwrap_or(0);
     if existing >= tier_branch_limit(payload.tier) {
         return Err((StatusCode::CONFLICT, Json(json!({"error": format!("Tier {:?} limited to {} branches", payload.tier, tier_branch_limit(payload.tier)), "code": "TIER_BRANCH_LIMIT", "existing_branches": existing, "limit": tier_branch_limit(payload.tier)}))));
     }
@@ -845,9 +850,9 @@ pub async fn owner_create_gym(
         is_active: true,
         created_at: now,
     };
-    let _ = state.db.upsert_gym(&gym_record);
+    let _ = state.db.upsert_gym(&gym_record).await;
     state.gyms.write().insert(gym_id, gym_record);
-    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "owner_create_gym", Some(&payload.name));
+    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "owner_create_gym", Some(&payload.name)).await;
 
     // Gym owners CANNOT self-sign RSA license keys.
     // The branch is registered in pending status awaiting CEO license issuance.
@@ -871,8 +876,8 @@ pub async fn admin_list_owners_hierarchy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
-    let hierarchy = state.db.list_all_owners_with_branches().map_err(|e| {
+    verify_admin_auth(&headers, &state.db).await?;
+    let hierarchy = state.db.list_all_owners_with_branches().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to list owner hierarchy: {}", e) })),
@@ -887,7 +892,7 @@ pub async fn admin_create_branch_for_owner(
     Path(owner_email): Path<String>,
     Json(payload): Json<AdminCreateBranchForOwnerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
     let owner_norm = owner_email.trim().to_lowercase();
     let branch_name = payload.branch_name.trim().to_string();
 
@@ -912,9 +917,9 @@ pub async fn admin_create_branch_for_owner(
         created_at: now,
     };
 
-    let _ = state.db.upsert_gym(&gym_record);
+    let _ = state.db.upsert_gym(&gym_record).await;
     state.gyms.write().insert(gym_id, gym_record);
-    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "admin_create_branch", Some(&branch_name));
+    let _ = state.db.log_audit(&owner_norm, Some(&gym_id), "admin_create_branch", Some(&branch_name)).await;
 
     let mut license_id_opt = None;
     let mut license_key_opt = None;
@@ -945,7 +950,7 @@ pub async fn admin_create_branch_for_owner(
             )
         })?;
 
-    let _ = state.db.insert_license(&claims, &license_key);
+    let _ = state.db.insert_license(&claims, &license_key).await;
         license_id_opt = Some(license_id);
         license_key_opt = Some(license_key);
     }
@@ -970,9 +975,9 @@ pub async fn admin_issue_branch_key(
     Path(gym_id): Path<Uuid>,
     Json(payload): Json<IssueBranchKeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
-    let gym = state.db.get_gym_by_id(&gym_id).map_err(|e| {
+    let gym = state.db.get_gym_by_id(&gym_id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Database error: {}", e) })),
@@ -1019,18 +1024,18 @@ pub async fn admin_issue_branch_key(
         )
     })?;
 
-    let _ = state.db.insert_license(&claims, &license_key);
+    let _ = state.db.insert_license(&claims, &license_key).await;
     // Re-licensing restores service: a fresh CEO-issued key lifts any prior
     // kill-switch on this gym (otherwise the new key would die on next sync
     // and the Renew button would look broken).
     if state.disabled_gyms.write().remove(&gym_id) {
-        let _ = state.db.set_disabled(&gym_id, false);
+        let _ = state.db.set_disabled(&gym_id, false).await;
     }
     if let Some(record) = state.gyms.write().get_mut(&gym_id) {
         record.is_active = true;
         record.tier = tier;
     }
-    let _ = state.db.log_audit(&gym.owner_email, Some(&gym_id), "admin_issue_branch_key", Some(&gym.name));
+    let _ = state.db.log_audit(&gym.owner_email, Some(&gym_id), "admin_issue_branch_key", Some(&gym.name)).await;
 
     Ok((
         StatusCode::OK,
@@ -1052,7 +1057,7 @@ pub async fn owner_get_branches(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let branches = state.db.get_owner_branches(&owner_email).unwrap_or_default();
+    let branches = state.db.get_owner_branches(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
         Json(json!({
@@ -1068,7 +1073,7 @@ pub async fn owner_get_analytics(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let analytics = state.db.get_owner_analytics(&owner_email).map_err(|e| {
+    let analytics = state.db.get_owner_analytics(&owner_email).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Analytics error: {}", e) })),
@@ -1082,9 +1087,9 @@ pub async fn owner_get_catalog(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let products = state.db.get_products(&owner_email).unwrap_or_default();
-    let plans = state.db.get_plans(&owner_email).unwrap_or_default();
-    let promos = state.db.get_promos(&owner_email).unwrap_or_default();
+    let products = state.db.get_products(&owner_email).await.unwrap_or_default();
+    let plans = state.db.get_plans(&owner_email).await.unwrap_or_default();
+    let promos = state.db.get_promos(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
         Json(json!({
@@ -1101,7 +1106,7 @@ pub async fn owner_save_products(
     Json(payload): Json<SaveProductsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let count = state.db.upsert_products(&owner_email, &payload.products).map_err(|e| {
+    let count = state.db.upsert_products(&owner_email, &payload.products).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Save products error: {}", e) })),
@@ -1123,7 +1128,7 @@ pub async fn owner_save_plans(
     Json(payload): Json<SavePlansRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let count = state.db.upsert_plans(&owner_email, &payload.plans).map_err(|e| {
+    let count = state.db.upsert_plans(&owner_email, &payload.plans).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Save plans error: {}", e) })),
@@ -1145,7 +1150,7 @@ pub async fn owner_save_promos(
     Json(payload): Json<SavePromosRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let count = state.db.upsert_promos(&owner_email, &payload.promos).map_err(|e| {
+    let count = state.db.upsert_promos(&owner_email, &payload.promos).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Save promos error: {}", e) })),
@@ -1168,7 +1173,7 @@ pub async fn owner_list_staff(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let staff = state.db.list_staff_by_owner(&owner_email).unwrap_or_default();
+    let staff = state.db.list_staff_by_owner(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
         Json(json!({
@@ -1221,14 +1226,14 @@ pub async fn owner_create_staff(
         updated_at: now,
     };
 
-    state.db.create_staff_account(&staff).map_err(|e| {
+    state.db.create_staff_account(&staff).await.map_err(|e| {
         (
             StatusCode::CONFLICT,
             Json(json!({ "error": format!("Could not create staff: {}", e), "code": "STAFF_CREATE_ERROR" })),
         )
     })?;
 
-    let _ = state.db.log_audit(&owner_email, staff.gym_id.as_ref(), "create_staff", Some(&staff.full_name));
+    let _ = state.db.log_audit(&owner_email, staff.gym_id.as_ref(), "create_staff", Some(&staff.full_name)).await;
 
     Ok((
         StatusCode::CREATED,
@@ -1257,7 +1262,7 @@ pub async fn owner_update_staff(
         }
     }
 
-    let updated = state.db.update_staff_account(&owner_email, &staff_id, &payload).map_err(|e| {
+    let updated = state.db.update_staff_account(&owner_email, &staff_id, &payload).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Update staff error: {}", e) })),
@@ -1265,7 +1270,7 @@ pub async fn owner_update_staff(
     })?;
 
     if updated {
-        let _ = state.db.log_audit(&owner_email, None, "update_staff", Some(&staff_id));
+        let _ = state.db.log_audit(&owner_email, None, "update_staff", Some(&staff_id)).await;
         Ok((
             StatusCode::OK,
             Json(json!({ "status": "updated", "staff_id": staff_id })),
@@ -1284,7 +1289,7 @@ pub async fn owner_delete_staff(
     Path(staff_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let owner_email = extract_owner_email(&headers)?;
-    let deleted = state.db.delete_staff_account(&owner_email, &staff_id).map_err(|e| {
+    let deleted = state.db.delete_staff_account(&owner_email, &staff_id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Delete staff error: {}", e) })),
@@ -1292,7 +1297,7 @@ pub async fn owner_delete_staff(
     })?;
 
     if deleted {
-        let _ = state.db.log_audit(&owner_email, None, "delete_staff", Some(&staff_id));
+        let _ = state.db.log_audit(&owner_email, None, "delete_staff", Some(&staff_id)).await;
         Ok((
             StatusCode::OK,
             Json(json!({ "status": "deleted", "staff_id": staff_id })),
@@ -1325,7 +1330,7 @@ pub async fn owner_save_branch_override(
         &payload.product_id,
         payload.price,
         payload.stock,
-    ).map_err(|e| {
+    ).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to save branch override: {}", e) })),
@@ -1352,7 +1357,7 @@ pub async fn check_for_updates(
     let channel = params.channel.unwrap_or_else(|| "stable".to_string());
     let current_ver = params.current_version.trim().to_string();
 
-    let release_opt = state.db.get_latest_release(&channel).unwrap_or(None);
+    let release_opt = state.db.get_latest_release(&channel).await.unwrap_or(None);
 
     match release_opt {
         Some(rel) => {
@@ -1416,7 +1421,7 @@ pub async fn publish_release_endpoint(
     headers: HeaderMap,
     Json(payload): Json<PublishReleaseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
+    verify_admin_auth(&headers, &state.db).await?;
 
     let release_info = ReleaseInfo {
         version: payload.version.trim().to_string(),
@@ -1430,7 +1435,7 @@ pub async fn publish_release_endpoint(
         created_at: Utc::now(),
     };
 
-    state.db.publish_release(&release_info).map_err(|e| {
+    state.db.publish_release(&release_info).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("Failed to publish release: {}", e) })),
@@ -1444,7 +1449,7 @@ pub async fn list_releases_endpoint(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db)?;
-    let list = state.db.list_releases().unwrap_or_default();
+    verify_admin_auth(&headers, &state.db).await?;
+    let list = state.db.list_releases().await.unwrap_or_default();
     Ok((StatusCode::OK, Json(list)))
 }

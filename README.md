@@ -102,10 +102,13 @@ There is no shared master admin key. The platform super-admin is a **CEO account
 
 | Variable | Required in Production | Purpose |
 | :--- | :--- | :--- |
+| `DATABASE_URL` | ✅ Yes | Postgres connection string — the **one permanent backend** for CEOs, owners, gyms, licenses, members, sales and catalog. Local runs must point at the same database (e.g. the Render `gympos-db` external URL with `?sslmode=require`) so there is exactly one source of truth. The server refuses to boot without it. SQLite files are not used anymore (Render wipes them on every restart; relative paths split-brained local runs by CWD). |
 | `RSA_PRIVATE_KEY_PEM` | ✅ Yes | PKCS#8 private key used to sign all license tokens. If unset, an ephemeral key is generated per-process — any license issued will stop verifying after a restart. Generate a real pair with `cargo run --bin gen_keys -p gympos-cloud`, keep the private half secret, and update `EMBEDDED_PUBLIC_KEY_PEM` in `desktop/src-tauri/src/license.rs` with the matching public half before shipping desktop builds. |
 
 For local development/testing, the automated suites bootstrap their own CEO
-(`ceo@test.local` / `TestCEO123`) via `ceo-register` — no env secrets needed.
+(`ceo@test.local` / `TestCEO123`) via `ceo-register` — no env secrets needed
+beyond `DATABASE_URL`. Note: the Render free Postgres expires after 30 days
+(14-day grace); upgrade to a paid tier for truly permanent storage.
 
 ### Login rate limiting
 
