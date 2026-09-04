@@ -1,9 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use gympos_shared::{
-    AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest,
-    CreateProductRequest, CreateWalkInRequest, Member, MembershipPlanConfig, ProductItem, PromoVoucherConfig,
-    RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole, UpdateCoachRequest, UpdateMemberRequest,
-    UpdateProductRequest, WalkInRecord,
+    AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateExpenseRequest,
+    CreateMemberRequest, CreateProductRequest, CreateWalkInRequest, ExpenseRecord, Member, MembershipPlanConfig,
+    ProductItem, PromoVoucherConfig, RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole,
+    UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
 };
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
@@ -158,6 +158,26 @@ impl Database {
         let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN synced_to_cloud INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE license_cache ADD COLUMN last_verify_unix INTEGER NOT NULL DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE license_cache ADD COLUMN last_seen_unix INTEGER NOT NULL DEFAULT 0", []);
+        // Member reference photo (downscaled JPEG data URL, local-first, synced to cloud)
+        let _ = conn.execute("ALTER TABLE members ADD COLUMN photo_data_url TEXT", []);
+        // POS discount tracking (Senior / Student / PWD ID discounts)
+        let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''", []);
+        let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0", []);
+        // Expenses ledger (local bookkeeping for End-of-Day)
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS expenses (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                amount REAL NOT NULL,
+                payment_method TEXT NOT NULL DEFAULT 'cash',
+                notes TEXT NOT NULL DEFAULT '',
+                spent_at TEXT NOT NULL,
+                created_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )",
+            [],
+        );
 
         Ok(())
     }
@@ -485,8 +505,8 @@ impl Database {
         let vectors_json = serde_json::to_string(&req.face_vectors).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
-            "INSERT INTO members (id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9)",
+            "INSERT INTO members (id, first_name, last_name, email, phone, face_vector, status, membership_type, photo_data_url, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10)",
             params![
                 id,
                 req.first_name,
@@ -495,6 +515,7 @@ impl Database {
                 req.phone,
                 vectors_json,
                 req.membership_type,
+                req.photo_data_url,
                 now_str,
                 now_str
             ],
@@ -509,6 +530,7 @@ impl Database {
             membership_type: req.membership_type.clone(),
             status: "active".to_string(),
             face_vectors: req.face_vectors.clone(),
+            photo_data_url: req.photo_data_url.clone(),
             created_at: now,
             expires_at: None,
         })
@@ -517,7 +539,7 @@ impl Database {
     pub fn list_members(&self) -> Result<Vec<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url
              FROM members ORDER BY created_at DESC",
         )?;
 
@@ -538,6 +560,7 @@ impl Database {
                 face_vectors: vectors,
                 status: row.get(6)?,
                 membership_type: row.get(7)?,
+                photo_data_url: row.get::<_, Option<String>>(9).unwrap_or(None),
                 created_at,
                 expires_at: None,
             })
@@ -553,7 +576,7 @@ impl Database {
     pub fn get_member_by_id(&self, id: &str) -> Result<Option<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url
              FROM members WHERE id = ?1",
         )?;
 
@@ -574,6 +597,7 @@ impl Database {
                 face_vectors: vectors,
                 status: row.get(6)?,
                 membership_type: row.get(7)?,
+                photo_data_url: row.get::<_, Option<String>>(9).unwrap_or(None),
                 created_at,
                 expires_at: None,
             })
@@ -597,8 +621,9 @@ impl Database {
                 phone = ?4,
                 membership_type = ?5,
                 status = ?6,
-                updated_at = ?7
-             WHERE id = ?8",
+                photo_data_url = COALESCE(?7, photo_data_url),
+                updated_at = ?8
+             WHERE id = ?9",
             params![
                 req.first_name,
                 req.last_name,
@@ -606,6 +631,7 @@ impl Database {
                 req.phone,
                 req.membership_type,
                 req.status,
+                req.photo_data_url,
                 now.to_rfc3339(),
                 req.id
             ],
@@ -623,10 +649,103 @@ impl Database {
         Ok(())
     }
 
+    /// Renew: status back to active + expiry pushed 30 days out (standard membership renewal).
+    pub fn renew_member(&self, id: &str) -> Result<Member> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let new_exp = (now + chrono::Duration::days(30)).to_rfc3339();
+        conn.execute(
+            "UPDATE members SET status = 'active', expires_at = ?1, updated_at = ?2 WHERE id = ?3",
+            params![new_exp, now.to_rfc3339(), id],
+        )?;
+        drop(conn);
+        self.get_member_by_id(id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Freeze/unfreeze: `suspended` members are denied at the gate but keep all data/vectors.
+    pub fn set_member_status(&self, id: &str, status: &str) -> Result<Member> {
+        let allowed = ["active", "suspended", "expired"];
+        if !allowed.contains(&status) {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "Invalid member status '{}' (allowed: active/suspended/expired)",
+                status
+            )));
+        }
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE members SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![status, Utc::now().to_rfc3339(), id],
+        )?;
+        drop(conn);
+        self.get_member_by_id(id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Re-scan: replace stored face vectors (and optionally the reference photo)
+    /// after a fresh Studio capture, refreshing the in-memory centroid caller-side.
+    pub fn update_member_vectors(&self, id: &str, vectors: &[Vec<f32>], photo: Option<&str>) -> Result<Member> {
+        if vectors.is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Re-scan requires at least one face vector".to_string(),
+            ));
+        }
+        for v in vectors {
+            if v.is_empty() || !v.iter().all(|x| x.is_finite()) {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Re-scan vectors must be finite and non-empty".to_string(),
+                ));
+            }
+        }
+        let conn = self.conn.lock().unwrap();
+        let vectors_json = serde_json::to_string(vectors).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "UPDATE members SET face_vector = ?1, photo_data_url = COALESCE(?2, photo_data_url), is_synced = 0, updated_at = ?3 WHERE id = ?4",
+            params![vectors_json, photo, Utc::now().to_rfc3339(), id],
+        )?;
+        drop(conn);
+        self.get_member_by_id(id)?
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Fast status lookup for the gate (denies non-active members before unlocking).
+    pub fn get_member_status(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT status FROM members WHERE id = ?1")?;
+        let mut rows = stmt.query_map(params![id], |r| r.get::<_, String>(0))?;
+        if let Some(r) = rows.next() {
+            Ok(Some(r?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Active / expired / suspended / total counts for the dashboard stat boxes.
+    pub fn get_member_stats(&self) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().unwrap();
+        let count = |status: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM members WHERE status = ?1",
+                params![status],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+        };
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM members", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(serde_json::json!({
+            "active": count("active"),
+            "expired": count("expired"),
+            "suspended": count("suspended"),
+            "total": total,
+        }))
+    }
+
     pub fn list_interbranch_members(&self) -> Result<Vec<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at, photo_data_url FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
         )?;
         let rows = stmt.query_map([], |row| {
             let face_json: String = row.get::<_, Option<String>>(5).unwrap_or(None).unwrap_or_else(|| "[]".to_string());
@@ -643,6 +762,7 @@ impl Database {
                 membership_type: row.get(7)?,
                 status: row.get(6)?,
                 face_vectors,
+                photo_data_url: row.get::<_, Option<String>>(10).unwrap_or(None),
                 created_at,
                 expires_at: expires_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc))),
             })
@@ -655,7 +775,7 @@ impl Database {
     pub fn list_interbranch_members_detailed(&self) -> Result<Vec<serde_json::Value>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at, home_gym_id, home_gym_name FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, expires_at, home_gym_id, home_gym_name, photo_data_url FROM members WHERE home_gym_id IS NOT NULL AND home_gym_id != '' ORDER BY home_gym_name, last_name",
         )?;
         let rows = stmt.query_map([], |row| {
             let face_json: String = row.get::<_, Option<String>>(5).unwrap_or(None).unwrap_or_else(|| "[]".to_string());
@@ -672,6 +792,7 @@ impl Database {
                 "expires_at": row.get::<_, Option<String>>(9).unwrap_or(None),
                 "home_gym_id": row.get::<_, Option<String>>(10).unwrap_or(None).unwrap_or_default(),
                 "home_gym_name": row.get::<_, Option<String>>(11).unwrap_or(None).unwrap_or_default(),
+                "photo_data_url": row.get::<_, Option<String>>(12).unwrap_or(None),
                 "vector_count": vectors.len(),
             }))
         })?;
@@ -774,7 +895,7 @@ impl Database {
     pub fn get_unsynced_members(&self, owner_email: &str, home_gym_id: &Uuid, home_gym_name: &str) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at, expires_at
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at, expires_at, photo_data_url
              FROM members WHERE is_synced = 0"
         )?;
         let rows = stmt.query_map([], |row| {
@@ -789,6 +910,7 @@ impl Database {
             let created_str: String = row.get(8)?;
             let updated_str: String = row.get(9)?;
             let expires_str: Option<String> = row.get(10).unwrap_or(None);
+            let photo_data_url: Option<String> = row.get(11).unwrap_or(None);
 
             let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
@@ -811,6 +933,7 @@ impl Database {
                 membership_type,
                 status,
                 face_vectors,
+                photo_data_url,
                 created_at,
                 updated_at,
                 expires_at,
@@ -840,8 +963,8 @@ impl Database {
             let expires_str = m.expires_at.map(|e| e.to_rfc3339());
 
             conn.execute(
-                "INSERT INTO members (id, home_gym_id, home_gym_name, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, updated_at, expires_at, is_synced)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1)
+                "INSERT INTO members (id, home_gym_id, home_gym_name, first_name, last_name, email, phone, face_vector, status, membership_type, photo_data_url, created_at, updated_at, expires_at, is_synced)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1)
                  ON CONFLICT(id) DO UPDATE SET
                     home_gym_name = excluded.home_gym_name,
                     first_name = excluded.first_name,
@@ -851,6 +974,7 @@ impl Database {
                     face_vector = excluded.face_vector,
                     status = excluded.status,
                     membership_type = excluded.membership_type,
+                    photo_data_url = excluded.photo_data_url,
                     updated_at = excluded.updated_at,
                     expires_at = excluded.expires_at,
                     is_synced = 1",
@@ -865,6 +989,7 @@ impl Database {
                     vectors_json,
                     m.status,
                     m.membership_type,
+                    m.photo_data_url,
                     m.created_at.to_rfc3339(),
                     m.updated_at.to_rfc3339(),
                     expires_str,
@@ -1032,7 +1157,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn process_sale(&self, member_id: Option<&str>, items: &[CartItem], payment_method: &str) -> Result<SaleTransaction> {
+    pub fn process_sale(
+        &self,
+        member_id: Option<&str>,
+        items: &[CartItem],
+        payment_method: &str,
+        discount_type: &str,
+        discount_pct: f64,
+    ) -> Result<SaleTransaction> {
         let mut conn = self.conn.lock().unwrap();
         if items.is_empty() {
             return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -1040,7 +1172,16 @@ impl Database {
 
         let tx_id = format!("TX-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         let now = Utc::now();
-        let total_amount: f64 = items.iter().map(|item| item.unit_price * (item.quantity as f64)).sum();
+        let gross: f64 = items.iter().map(|item| item.unit_price * (item.quantity as f64)).sum();
+        // Clamp discount to 0-100%; Senior/PWD statutory 20% is applied client-side via discount_pct
+        let pct = discount_pct.clamp(0.0, 100.0);
+        let discount_amount = (gross * pct / 100.0 * 100.0).round() / 100.0;
+        let total_amount = ((gross - discount_amount) * 100.0).round() / 100.0;
+        let dtype = if pct > 0.0 && !discount_type.is_empty() {
+            discount_type.to_string()
+        } else {
+            String::new()
+        };
         let items_json = serde_json::to_string(items).unwrap_or_else(|_| "[]".to_string());
 
         let tx = conn.transaction()?;
@@ -1073,9 +1214,9 @@ impl Database {
 
         // Record transaction
         tx.execute(
-            "INSERT INTO transactions (id, member_id, total_amount, payment_method, items_json, created_at, synced_to_cloud)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![tx_id, member_id, total_amount, payment_method, items_json, now.to_rfc3339()],
+            "INSERT INTO transactions (id, member_id, total_amount, payment_method, items_json, created_at, synced_to_cloud, discount_type, discount_amount)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
+            params![tx_id, member_id, total_amount, payment_method, items_json, now.to_rfc3339(), dtype, discount_amount],
         )?;
 
         tx.commit()?;
@@ -1087,13 +1228,15 @@ impl Database {
             payment_method: payment_method.to_string(),
             items: items.to_vec(),
             timestamp: now,
+            discount_type: dtype,
+            discount_amount,
         })
     }
 
     pub fn get_unsynced_sales(&self) -> Result<Vec<SaleTransaction>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, member_id, total_amount, payment_method, items_json, created_at
+            "SELECT id, member_id, total_amount, payment_method, items_json, created_at, discount_type, discount_amount
              FROM transactions WHERE synced_to_cloud = 0 ORDER BY created_at ASC LIMIT 50",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1114,6 +1257,8 @@ impl Database {
                 payment_method,
                 items,
                 timestamp,
+                discount_type: row.get::<_, Option<String>>(6).unwrap_or(None).unwrap_or_default(),
+                discount_amount: row.get::<_, Option<f64>>(7).unwrap_or(None).unwrap_or(0.0),
             })
         })?;
 
@@ -1130,6 +1275,151 @@ impl Database {
             conn.execute("UPDATE transactions SET synced_to_cloud = 1 WHERE id = ?1", params![id])?;
         }
         Ok(())
+    }
+
+    // --- Expenses Ledger ---
+
+    pub fn create_expense(&self, req: &CreateExpenseRequest, created_by: &str) -> Result<ExpenseRecord> {
+        let conn = self.conn.lock().unwrap();
+        let id = format!("EXP-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
+        let now = Utc::now();
+        let spent = req.spent_at.unwrap_or(now);
+        if req.title.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidParameterName("Expense title is required".to_string()));
+        }
+        if req.amount < 0.0 {
+            return Err(rusqlite::Error::InvalidParameterName("Expense amount cannot be negative".to_string()));
+        }
+        conn.execute(
+            "INSERT INTO expenses (id, title, category, amount, payment_method, notes, spent_at, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, req.title.trim(), req.category, req.amount, req.payment_method, req.notes, spent.to_rfc3339(), created_by, now.to_rfc3339()],
+        )?;
+        Ok(ExpenseRecord {
+            id,
+            title: req.title.trim().to_string(),
+            category: req.category.clone(),
+            amount: req.amount,
+            payment_method: req.payment_method.clone(),
+            notes: req.notes.clone(),
+            spent_at: spent,
+            created_by: created_by.to_string(),
+        })
+    }
+
+    pub fn list_expenses(&self, limit: i64) -> Result<Vec<ExpenseRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, category, amount, payment_method, notes, spent_at, created_by
+             FROM expenses ORDER BY spent_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit.max(1).min(500)], |row| {
+            let spent_str: String = row.get(6)?;
+            let spent_at = DateTime::parse_from_rfc3339(&spent_str)
+                .map(|d| d.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(ExpenseRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                category: row.get(2)?,
+                amount: row.get(3)?,
+                payment_method: row.get(4)?,
+                notes: row.get::<_, Option<String>>(5).unwrap_or(None).unwrap_or_default(),
+                spent_at,
+                created_by: row.get::<_, Option<String>>(7).unwrap_or(None).unwrap_or_default(),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_expense(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM expenses WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// End-of-Day Z-report: sales (gross/discount/net, by payment method),
+    /// walk-in revenue, attendance counts, and expenses for a calendar day (UTC).
+    pub fn get_end_of_day(&self, day: &str) -> Result<serde_json::Value> {
+        let conn = self.conn.lock().unwrap();
+        let like = format!("{}%", day);
+        // Sales by payment method
+        let mut stmt = conn.prepare(
+            "SELECT payment_method, COUNT(*), COALESCE(SUM(total_amount), 0), COALESCE(SUM(discount_amount), 0)
+             FROM transactions WHERE created_at LIKE ?1 GROUP BY payment_method",
+        )?;
+        let mut by_method = Vec::new();
+        let mut tx_count = 0i64;
+        let mut net = 0.0f64;
+        let mut discounts = 0.0f64;
+        for row in stmt.query_map(params![like], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?))
+        })? {
+            let (method, n, sum, disc) = row?;
+            tx_count += n;
+            net += sum;
+            discounts += disc;
+            by_method.push(serde_json::json!({"payment_method": method, "count": n, "net": sum, "discounts": disc}));
+        }
+        // Discounted transaction count
+        let disc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM transactions WHERE created_at LIKE ?1 AND discount_amount > 0",
+                params![like],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        // Walk-ins
+        let (walk_count, walk_rev): (i64, f64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(amount_paid), 0) FROM walk_ins WHERE created_at LIKE ?1",
+                params![like],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0, 0.0));
+        // Attendance
+        let checkins: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attendance_logs WHERE timestamp LIKE ?1 AND direction = 'in'",
+                params![like],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let tailgates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attendance_logs WHERE timestamp LIKE ?1 AND tailgate_flag = 1",
+                params![like],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        // Expenses
+        let (exp_count, exp_total): (i64, f64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(amount), 0) FROM expenses WHERE spent_at LIKE ?1",
+                params![like],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or((0, 0.0));
+        Ok(serde_json::json!({
+            "day": day,
+            "transactions": tx_count,
+            "gross": net + discounts,
+            "discounts": discounts,
+            "discounted_transactions": disc_count,
+            "net_sales": net,
+            "by_payment_method": by_method,
+            "walk_ins": walk_count,
+            "walk_in_revenue": walk_rev,
+            "check_ins": checkins,
+            "tailgate_flags": tailgates,
+            "expense_count": exp_count,
+            "expense_total": exp_total,
+            "net_cash_flow": net + walk_rev - exp_total,
+        }))
     }
 
     pub fn ingest_remote_catalog(

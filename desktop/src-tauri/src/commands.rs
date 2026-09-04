@@ -1,7 +1,9 @@
+use chrono::Utc;
 use gympos_shared::{
-    AppSettings, CartItem, Coach, CoachSession, CreateCoachRequest, CreateMemberRequest, CreateProductRequest,
-    CreateWalkInRequest, LicenseStatus, Member, ProductItem, SaleTransaction, StaffAccount, StaffLoginResponse,
-    StaffRole, TerminalSession, UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
+    AppSettings, CartItem, Coach, CoachSession, CreateCoachRequest, CreateExpenseRequest, CreateMemberRequest,
+    CreateProductRequest, CreateWalkInRequest, ExpenseRecord, LicenseStatus, Member, ProductItem, SaleTransaction,
+    StaffAccount, StaffLoginResponse, StaffRole, TerminalSession, UpdateCoachRequest, UpdateMemberRequest,
+    UpdateProductRequest, WalkInRecord,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -375,6 +377,30 @@ pub fn process_face_scan(
     let match_result = state.face_store.match_vector(&probe_vector, match_threshold);
 
     if let Some(m) = match_result {
+        // Frozen / expired member accounts are denied at the gate (data retained for records)
+        if let Ok(Some(status)) = state.db.get_member_status(&m.member_id) {
+            if status != "active" {
+                let log = state
+                    .db
+                    .log_attendance(
+                        Some(&m.member_id),
+                        Some(&format!("{} ({})", m.member_name, status.to_uppercase())),
+                        &direction,
+                        Some(m.confidence),
+                        false,
+                    )
+                    .map_err(|e| e.to_string())?;
+                return Ok(json!({
+                    "matched": true,
+                    "account_hold": true,
+                    "member_name": m.member_name,
+                    "message": format!("Access Denied: {} account is {} (frozen/expired). Renew at front desk.", m.member_name, status),
+                    "door_unlocked": false,
+                    "log": log
+                }));
+            }
+        }
+
         // If it's an expired walk-in pass (> 8 hours), deny access immediately
         if m.is_expired {
             let log = state
@@ -529,6 +555,8 @@ pub fn checkout_pos_sale(
     member_id: Option<String>,
     items: Vec<CartItem>,
     payment_method: String,
+    discount_type: Option<String>,
+    discount_pct: Option<f64>,
     state: State<'_, AppContext>,
 ) -> Result<SaleTransaction, String> {
     check_license_active(&state)?;
@@ -536,7 +564,94 @@ pub fn checkout_pos_sale(
     if items.is_empty() {
         return Err("Cart is empty".to_string());
     }
-    state.db.process_sale(member_id.as_deref(), &items, &payment_method).map_err(|e| e.to_string())
+    state
+        .db
+        .process_sale(
+            member_id.as_deref(),
+            &items,
+            &payment_method,
+            discount_type.as_deref().unwrap_or(""),
+            discount_pct.unwrap_or(0.0),
+        )
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn renew_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
+    check_license_active(&state)?;
+    state.db.renew_member(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn freeze_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
+    check_license_active(&state)?;
+    state.db.set_member_status(&id, "suspended").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn unfreeze_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
+    check_license_active(&state)?;
+    state.db.set_member_status(&id, "active").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rescan_member_face(
+    id: String,
+    face_vectors: Vec<Vec<f32>>,
+    photo_data_url: Option<String>,
+    state: State<'_, AppContext>,
+) -> Result<Member, String> {
+    check_license_active(&state)?;
+    let member = state
+        .db
+        .update_member_vectors(&id, &face_vectors, photo_data_url.as_deref())
+        .map_err(|e| e.to_string())?;
+    // Refresh the in-memory centroid so the next probe matches the new capture
+    let full_name = format!("{} {}", member.first_name, member.last_name);
+    if !member.face_vectors.is_empty() {
+        state.face_store.upsert(member.id.clone(), full_name, member.face_vectors.clone());
+    }
+    Ok(member)
+}
+
+#[tauri::command]
+pub fn get_member_stats(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    state.db.get_member_stats().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_expense(
+    req: CreateExpenseRequest,
+    state: State<'_, AppContext>,
+) -> Result<ExpenseRecord, String> {
+    check_license_active(&state)?;
+    let by = state
+        .session
+        .read()
+        .clone()
+        .map(|s| s.display_name.clone())
+        .unwrap_or_else(|| "front-desk".to_string());
+    state.db.create_expense(&req, &by).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_expenses(limit: Option<i64>, state: State<'_, AppContext>) -> Result<Vec<ExpenseRecord>, String> {
+    state.db.list_expenses(limit.unwrap_or(100)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_expense(id: String, state: State<'_, AppContext>) -> Result<(), String> {
+    check_license_active(&state)?;
+    state.db.delete_expense(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_end_of_day(day: Option<String>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    let day_str = day.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
+    if day_str.len() != 10 || !day_str.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
+        return Err("Day must be YYYY-MM-DD".to_string());
+    }
+    state.db.get_end_of_day(&day_str).map_err(|e| e.to_string())
 }
 
 // --- Coaches Commands ---

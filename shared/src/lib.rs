@@ -194,6 +194,8 @@ pub struct Member {
     pub membership_type: String,
     pub status: String,
     pub face_vectors: Vec<Vec<f32>>,
+    #[serde(default)]
+    pub photo_data_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -206,6 +208,8 @@ pub struct CreateMemberRequest {
     pub phone: String,
     pub membership_type: String,
     pub face_vectors: Vec<Vec<f32>>,
+    #[serde(default)]
+    pub photo_data_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +221,8 @@ pub struct UpdateMemberRequest {
     pub phone: String,
     pub membership_type: String,
     pub status: String,
+    #[serde(default)]
+    pub photo_data_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -375,6 +381,34 @@ pub struct SaleTransaction {
     pub payment_method: String,
     pub items: Vec<CartItem>,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub discount_type: String,
+    #[serde(default)]
+    pub discount_amount: f64,
+}
+
+// --- Expenses (local bookkeeping, surfaced in End-of-Day) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExpenseRecord {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    pub amount: f64,
+    pub payment_method: String,
+    pub notes: String,
+    pub spent_at: DateTime<Utc>,
+    pub created_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateExpenseRequest {
+    pub title: String,
+    pub category: String,
+    pub amount: f64,
+    pub payment_method: String,
+    pub notes: String,
+    pub spent_at: Option<DateTime<Utc>>,
 }
 
 // --- Coaches / Personal Trainers ---
@@ -418,6 +452,10 @@ pub struct RemoteCatalogProduct {
 pub struct MembershipPlanConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub tag: String,
+    #[serde(default = "default_monthly_period")]
+    pub billing_period: String,
     pub price_monthly: f64,
     pub student_discount_pct: f64,
     #[serde(default)]
@@ -428,9 +466,15 @@ pub struct MembershipPlanConfig {
     pub updated_at: DateTime<Utc>,
 }
 
+fn default_monthly_period() -> String {
+    "monthly".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromoVoucherConfig {
     pub code: String,
+    #[serde(default)]
+    pub label: String,
     pub discount_type: String, // "percent" or "fixed"
     pub discount_value: f64,
     pub min_spend: f64,
@@ -522,6 +566,8 @@ pub struct CloudMemberSyncItem {
     pub membership_type: String,
     pub status: String,
     pub face_vectors: Vec<Vec<f32>>,
+    #[serde(default)]
+    pub photo_data_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,

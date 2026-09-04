@@ -175,6 +175,38 @@ async function invokeTauri(command, args = {}) {
             // Browser-preview-only mock for the YOLOv8n person counter
             // (Task 5.4). Single occupant by default so previews don't alarm.
             return { person_count: 1 };
+        } else if (command === 'get_member_stats') {
+            const act = cachedMembers.filter(m => m.status === 'active').length;
+            const exp = cachedMembers.filter(m => m.status === 'expired').length;
+            const sus = cachedMembers.filter(m => m.status === 'suspended').length;
+            return { active: act, expired: exp, suspended: sus, total: cachedMembers.length };
+        } else if (command === 'renew_member') {
+            const m = cachedMembers.find(x => x.id === args.id);
+            if (m) { m.status = 'active'; m.expires_at = new Date(Date.now() + 30 * 86400000).toISOString(); }
+            return m || null;
+        } else if (command === 'freeze_member') {
+            const m = cachedMembers.find(x => x.id === args.id);
+            if (m) m.status = 'suspended';
+            return m || null;
+        } else if (command === 'unfreeze_member') {
+            const m = cachedMembers.find(x => x.id === args.id);
+            if (m) m.status = 'active';
+            return m || null;
+        } else if (command === 'rescan_member_face') {
+            const m = cachedMembers.find(x => x.id === args.id);
+            return m || null;
+        } else if (command === 'get_end_of_day') {
+            return { day: args.day || new Date().toISOString().slice(0, 10), transactions: 0, gross: 0, discounts: 0, discounted_transactions: 0, net_sales: 0, by_payment_method: [], walk_ins: cachedWalkIns.length, walk_in_revenue: 0, check_ins: (window.cachedAttendanceLogs || []).length, tailgate_flags: 0, expense_count: (window.cachedExpenses || []).length, expense_total: 0, net_cash_flow: 0 };
+        } else if (command === 'list_expenses') {
+            return window.cachedExpenses || [];
+        } else if (command === 'create_expense') {
+            const exp = { id: `EXP-${Math.random().toString(36).substring(2, 8).toUpperCase()}`, title: args.req.title, category: args.req.category, amount: args.req.amount, payment_method: args.req.payment_method, notes: args.req.notes || '', spent_at: new Date().toISOString(), created_by: 'preview' };
+            if (!window.cachedExpenses) window.cachedExpenses = [];
+            window.cachedExpenses.unshift(exp);
+            return exp;
+        } else if (command === 'delete_expense') {
+            if (window.cachedExpenses) window.cachedExpenses = window.cachedExpenses.filter(x => x.id !== args.id);
+            return { success: true };
         }
         return { success: true };
     }
@@ -510,6 +542,11 @@ async function saveRoiCalibration() {
 }
 
 // --- Floating HUD Toast Notifications ---
+
+// Escapes user-originated strings before innerHTML injection (XSS guard).
+function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 function showHudToast(title, message, type = 'success') {
     const container = document.getElementById('toast-container');
@@ -931,7 +968,7 @@ function switchView(viewName) {
     document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
 
     const navItems = document.querySelectorAll('.nav-item');
-    const views = ['dashboard', 'attendance', 'members', 'interbranch', 'register', 'walkins', 'pos', 'coaches', 'branding', 'hardware'];
+    const views = ['dashboard', 'attendance', 'members', 'interbranch', 'register', 'walkins', 'pos', 'eod', 'expenses', 'coaches', 'branding', 'hardware'];
     const idx = views.indexOf(viewName);
     if (idx !== -1 && navItems[idx]) navItems[idx].classList.add('active');
 
@@ -947,6 +984,8 @@ function switchView(viewName) {
     if (viewName === 'walkins') loadWalkIns();
     if (viewName === 'attendance') loadAttendanceLogs();
     if (viewName === 'pos') loadProducts();
+    if (viewName === 'eod') loadEndOfDay();
+    if (viewName === 'expenses') loadExpenses();
     if (viewName === 'coaches') loadCoaches();
     if (viewName === 'hardware') {
         populateCameraDevices();
@@ -958,6 +997,47 @@ function switchView(viewName) {
         if (sel2 && !sel2._bound) { sel2.addEventListener('change', () => previewSelectedCamera(2, sel2.value)); sel2._bound = true; }
         if (sel3 && !sel3._bound) { sel3.addEventListener('change', () => previewSelectedCamera(3, sel3.value)); sel3._bound = true; }
     }
+}
+
+// --- Member Reference Photos (local-first, cloud-synced) ---
+// Downscales a full-frame JPEG data URL to a small reference thumbnail so the
+// local DB + sync payload stay light (~320px wide ≈ 15-25KB). The thumbnail is
+// shown in the directory/edit modal and reused as a visual scan reference.
+function downscaleToPhoto(dataUrl, maxW = 320) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const scale = Math.min(1, maxW / img.width);
+                const c = document.createElement('canvas');
+                c.width = Math.round(img.width * scale);
+                c.height = Math.round(img.height * scale);
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                resolve(c.toDataURL('image/jpeg', 0.7));
+            } catch (e) { resolve(null); }
+        };
+        img.onerror = () => resolve(null);
+        img.src = dataUrl;
+    });
+}
+
+// Re-scan mode: when set, the Studio submits replacement vectors for an
+// existing member instead of creating a new one.
+let rescanMemberId = null;
+
+function startMemberRescan(id) {
+    const m = cachedMembers.find(x => x.id === id);
+    if (!m) return;
+    rescanMemberId = id;
+    resetRegistrationStudio();
+    const fn = document.getElementById('reg-mem-first-name');
+    const ln = document.getElementById('reg-mem-last-name');
+    if (fn) { fn.value = m.first_name; fn.disabled = true; }
+    if (ln) { ln.value = m.last_name; ln.disabled = true; }
+    const btn = document.getElementById('btn-complete-enroll');
+    if (btn) btn.querySelector('span').innerText = `Save New Face Scan (${m.id})`;
+    switchView('register');
+    showHudToast('Re-scan Mode', `Capture fresh angles for ${m.first_name} ${m.last_name}. Submit replaces their stored face vectors.`, 'info');
 }
 
 // --- Member Registration & Biometric Capture Studio ---
@@ -1086,6 +1166,13 @@ function updateRegistrationProgress() {
 }
 
 function resetRegistrationStudio() {
+    rescanMemberId = null;
+    const fn0 = document.getElementById('reg-mem-first-name');
+    const ln0 = document.getElementById('reg-mem-last-name');
+    if (fn0) fn0.disabled = false;
+    if (ln0) ln0.disabled = false;
+    const btn0 = document.getElementById('btn-complete-enroll');
+    if (btn0 && btn0.querySelector('span')) btn0.querySelector('span').innerText = "Complete Registration & Sync Face Vectors";
     capturedRegFrames = [null, null, null, null, null];
     capturedRegVectors = [null, null, null, null, null];
     for (let i = 0; i < 5; i++) {
@@ -1162,6 +1249,32 @@ async function submitStudioRegistration() {
         errorEl.innerText = "Saving member and syncing biometrics to cloud...";
         errorEl.className = "text-xs text-blue-300";
 
+        // Reference photo: downscaled frontal capture, stored locally and
+        // synced to cloud as a visual scan reference (never used for matching).
+        const refPhoto = capturedRegFrames[0] ? await downscaleToPhoto(capturedRegFrames[0]) : null;
+
+        if (rescanMemberId) {
+            await invokeTauri('rescan_member_face', {
+                id: rescanMemberId,
+                faceVectors: finalVectors,
+                photoDataUrl: refPhoto
+            });
+            errorEl.innerText = "";
+            const doneId = rescanMemberId;
+            rescanMemberId = null;
+            const fn = document.getElementById('reg-mem-first-name');
+            const ln = document.getElementById('reg-mem-last-name');
+            if (fn) fn.disabled = false;
+            if (ln) ln.disabled = false;
+            const btn = document.getElementById('btn-complete-enroll');
+            if (btn) btn.querySelector('span').innerText = "Complete Registration & Sync Face Vectors";
+            resetRegistrationStudio();
+            await loadMembers();
+            switchView('members');
+            alert(`Face re-scan saved for ${doneId}. Stored vectors replaced.`);
+            return;
+        }
+
         await invokeTauri('register_member', {
             req: {
                 first_name: firstName,
@@ -1169,7 +1282,8 @@ async function submitStudioRegistration() {
                 email: email || `${firstName.toLowerCase()}@gym.local`,
                 phone: phone,
                 membership_type: plan,
-                face_vectors: finalVectors
+                face_vectors: finalVectors,
+                photo_data_url: refPhoto
             }
         });
 
@@ -1209,6 +1323,17 @@ async function refreshDashboard() {
 
         const tailgatesEl = document.getElementById('stat-tailgates');
         if (tailgatesEl) tailgatesEl.innerText = summary.tailgate_count;
+
+        // Member census boxes: Active / Expired / Total (checklist requirement)
+        try {
+            const stats = await invokeTauri('get_member_stats');
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
+            set('stat-active-members', `${summary.active_members} / ${summary.max_members > 0 ? summary.max_members : '--'}`);
+            set('stat-active-members-box', stats.active ?? summary.active_members ?? 0);
+            set('stat-expired-members', stats.expired ?? 0);
+            set('stat-total-members', stats.total ?? 0);
+            set('stat-frozen-members', stats.suspended ?? 0);
+        } catch (e) { console.debug('member stats unavailable:', e); }
 
         const licenseBadge = document.getElementById('license-tier-text');
         const licenseStateEl = document.getElementById('stat-license-state');
@@ -1425,55 +1550,97 @@ async function loadMembers() {
 function filterMembersList() {
     const search = (document.getElementById('member-search-input')?.value || '').toLowerCase().trim();
     const tier = document.getElementById('member-tier-filter')?.value || 'all';
+    const statusF = document.getElementById('member-status-filter')?.value || 'all';
     const tbody = document.getElementById('members-list-tbody');
     if (!tbody) return;
 
     const filtered = cachedMembers.filter(m => {
         const fullName = `${m.first_name} ${m.last_name}`.toLowerCase();
         const matchesSearch = !search || fullName.includes(search) || (m.phone && m.phone.toLowerCase().includes(search)) || m.id.toLowerCase().includes(search);
-        const matchesTier = tier === 'all' || m.membership_type.toLowerCase() === tier;
-        return matchesSearch && matchesTier;
+        const matchesTier = tier === 'all' || (m.membership_type || '').toLowerCase() === tier;
+        const matchesStatus = statusF === 'all' || (m.status || 'active').toLowerCase() === statusF;
+        return matchesSearch && matchesTier && matchesStatus;
     });
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
         return;
     }
 
     tbody.innerHTML = filtered.map(m => {
-        const isSuspended = m.status === 'suspended';
-        const isExpired = m.status === 'expired';
+        const st = (m.status || 'active').toLowerCase();
+        const isSuspended = st === 'suspended';
+        const isExpired = st === 'expired';
         let statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 font-semibold">ACTIVE</span>`;
         if (isSuspended) {
-            statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800 font-semibold">SUSPENDED</span>`;
+            statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-300 border border-amber-800 font-semibold">FROZEN</span>`;
         } else if (isExpired) {
             statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-semibold">EXPIRED</span>`;
         }
+        const photo = m.photo_data_url
+            ? `<img src="${m.photo_data_url}" alt="ref" class="w-8 h-8 rounded-full object-cover border border-slate-600" title="Enrollment reference photo"/>`
+            : `<span class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 inline-flex items-center justify-center text-slate-400 font-bold text-xs">${(m.first_name || '?').charAt(0)}</span>`;
+        const escId = m.id.replace(/'/g, "\\'");
+        const escName = `${m.first_name.replace(/'/g, "\\'")} ${m.last_name.replace(/'/g, "\\'")}`;
+        const freezeBtn = isSuspended
+            ? `<button onclick="unfreezeMember('${escId}')" title="Unfreeze (reactivate)" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Unfreeze</button>`
+            : `<button onclick="freezeMember('${escId}')" title="Freeze (deny gate, keep data)" class="px-2.5 py-1 rounded bg-amber-950/60 hover:bg-amber-900 text-xs text-amber-300 border border-amber-800/50 font-medium transition">Freeze</button>`;
 
         return `
             <tr class="hover:bg-slate-800/30 transition ${isSuspended || isExpired ? 'opacity-70' : ''}">
                 <td class="p-3 font-mono text-blue-300">${m.id}</td>
                 <td class="p-3">
                     <div class="flex items-center gap-2">
-                        <span class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</span>
+                        ${photo}
+                        <div>
+                            <span class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</span>
+                            <div class="text-[10px] text-slate-500">${m.email || '--'}</div>
+                        </div>
                         ${m.home_gym_name && m.home_gym_name !== appSettings.gym_name ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60" title="Inter-Branch Member">📍 ${m.home_gym_name}</span>` : ''}
                     </div>
-                    <div class="text-[10px] text-slate-500">${m.email || '--'}</div>
                 </td>
                 <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${m.membership_type}</td>
                 <td class="p-3 text-slate-400 font-mono">${m.phone || '--'}</td>
                 <td class="p-3">${statusBadge}</td>
-                <td class="p-3 text-right space-x-1.5">
-                    <button onclick="openEditMemberModal('${m.id}')" title="Edit Profile" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700 font-medium transition">
-                        Edit
-                    </button>
-                    <button onclick="deleteMember('${m.id}', '${m.first_name.replace(/'/g, "\\'")} ${m.last_name.replace(/'/g, "\\'")}')" title="Delete Member" class="px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 text-xs text-red-300 border border-red-800/50 font-medium transition">
-                        Delete
-                    </button>
+                <td class="p-3 text-right">
+                    <div class="flex flex-wrap justify-end gap-1.5">
+                        <button onclick="openEditMemberModal('${escId}')" title="Edit Profile" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700 font-medium transition">Edit</button>
+                        <button onclick="renewMember('${escId}')" title="Renew: +30 days, back to ACTIVE" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Renew</button>
+                        <button onclick="startMemberRescan('${escId}')" title="Re-scan face in Studio" class="px-2.5 py-1 rounded bg-purple-950/60 hover:bg-purple-900 text-xs text-purple-300 border border-purple-800/50 font-medium transition">Re-scan</button>
+                        ${freezeBtn}
+                        <button onclick="deleteMember('${escId}', '${escName}')" title="Delete Member" class="px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 text-xs text-red-300 border border-red-800/50 font-medium transition">Delete</button>
+                    </div>
                 </td>
             </tr>
         `;
     }).join('');
+}
+
+async function renewMember(id) {
+    if (!confirm(`Renew membership for ${id}? Status returns to ACTIVE with expiry +30 days.`)) return;
+    try {
+        await invokeTauri('renew_member', { id: id });
+        await loadMembers();
+        await refreshDashboard();
+        showHudToast('Membership Renewed', `${id} is ACTIVE for 30 more days.`, 'success');
+    } catch (e) { alert('Renew failed: ' + e); }
+}
+
+async function freezeMember(id) {
+    if (!confirm(`Freeze ${id}? The gate will deny entry but all data and vectors are kept.`)) return;
+    try {
+        await invokeTauri('freeze_member', { id: id });
+        await loadMembers();
+        showHudToast('Member Frozen', `${id} is now SUSPENDED and blocked at the gate.`, 'info');
+    } catch (e) { alert('Freeze failed: ' + e); }
+}
+
+async function unfreezeMember(id) {
+    try {
+        await invokeTauri('unfreeze_member', { id: id });
+        await loadMembers();
+        showHudToast('Member Unfrozen', `${id} is ACTIVE again.`, 'success');
+    } catch (e) { alert('Unfreeze failed: ' + e); }
 }
 
 let cachedInterbranch = [];
@@ -1590,6 +1757,13 @@ function openEditMemberModal(id) {
     document.getElementById('edit-mem-plan').value = m.membership_type.toLowerCase();
     document.getElementById('edit-mem-status').value = m.status.toLowerCase();
     document.getElementById('edit-mem-error-msg').innerText = '';
+    const photoEl = document.getElementById('edit-mem-photo');
+    if (photoEl) {
+        if (m.photo_data_url) { photoEl.src = m.photo_data_url; photoEl.classList.remove('hidden'); }
+        else { photoEl.src = ''; photoEl.classList.add('hidden'); }
+    }
+    const photoInput = document.getElementById('edit-mem-photo-input');
+    if (photoInput) photoInput.value = '';
 
     document.getElementById('edit-member-modal').classList.remove('hidden');
 }
@@ -1613,6 +1787,19 @@ async function submitUpdateMember() {
         return;
     }
 
+    // Optional replacement reference photo (downscaled before saving)
+    let photoUrl = null;
+    const photoInput = document.getElementById('edit-mem-photo-input');
+    if (photoInput && photoInput.files && photoInput.files[0]) {
+        const raw = await new Promise((res) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result);
+            r.onerror = () => res(null);
+            r.readAsDataURL(photoInput.files[0]);
+        });
+        if (raw) photoUrl = await downscaleToPhoto(raw);
+    }
+
     try {
         await invokeTauri('update_member', {
             req: {
@@ -1622,7 +1809,8 @@ async function submitUpdateMember() {
                 phone: phone,
                 email: email,
                 membership_type: plan,
-                status: status
+                status: status,
+                photo_data_url: photoUrl
             }
         });
 
@@ -1856,8 +2044,7 @@ function renderCart() {
     }
 
     let total = 0;
-    container.innerHTML = cart.map((item, idx) => {
-        const itemTotal = item.unit_price * item.quantity;
+    container.innerHTML = cart.map((item, idx) => {        const itemTotal = item.unit_price * item.quantity;
         total += itemTotal;
         return `
             <div class="flex justify-between items-center bg-slate-800/40 p-2 rounded border border-slate-700">
@@ -1875,7 +2062,24 @@ function renderCart() {
         `;
     }).join('');
 
-    if (totalEl) totalEl.innerText = `$${total.toFixed(2)}`;
+    const disc = currentPosDiscount();
+    if (disc.pct > 0) {
+        const gross = total;
+        const off = Math.round(gross * disc.pct) / 100;
+        if (totalEl) totalEl.innerHTML = `<span class="line-through text-slate-500 text-sm mr-2">$${gross.toFixed(2)}</span>$${(gross - off).toFixed(2)}`;
+        container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">ID Discount (${disc.label}, ${disc.pct}%): −$${off.toFixed(2)}</div>`);
+    } else if (totalEl) {
+        totalEl.innerText = `$${total.toFixed(2)}`;
+    }
+}
+
+function currentPosDiscount() {
+    const sel = document.getElementById('pos-discount-select');
+    const v = sel ? sel.value : 'none';
+    if (v === 'senior') return { type: 'senior', label: 'Senior ID', pct: 20 };
+    if (v === 'student') return { type: 'student', label: 'Student ID', pct: 20 };
+    if (v === 'pwd') return { type: 'pwd', label: 'PWD ID', pct: 20 };
+    return { type: '', label: '', pct: 0 };
 }
 
 function removeFromCart(idx) {
@@ -1889,20 +2093,128 @@ async function checkoutCart(paymentMethod) {
         return;
     }
 
+    const disc = currentPosDiscount();
+    // Require an ID number when an ID discount is applied
+    let idNote = '';
+    if (disc.pct > 0) {
+        const idInput = document.getElementById('pos-discount-id-input');
+        idNote = (idInput && idInput.value.trim()) || '';
+        if (!idNote) {
+            alert(`${disc.label} selected — please enter the ID number for the audit log.`);
+            return;
+        }
+    }
+
     try {
         const tx = await invokeTauri('checkout_pos_sale', {
             memberId: null,
             items: cart,
-            paymentMethod: paymentMethod
+            paymentMethod: paymentMethod,
+            discountType: disc.type,
+            discountPct: disc.pct
         });
 
-        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
+        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nGross: $${(tx.total_amount + (tx.discount_amount || 0)).toFixed(2)}\nDiscount: ${disc.label || 'None'} -$${(tx.discount_amount || 0).toFixed(2)}${idNote ? ` (ID: ${idNote})` : ''}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
         cart = [];
         renderCart();
         await loadProducts();
     } catch (e) {
         alert("Checkout Failed: " + e);
     }
+}
+
+// --- End-of-Day Closing Tab (Z-report) ---
+
+async function loadEndOfDay() {
+    const dateInput = document.getElementById('eod-date-input');
+    const day = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+    const body = document.getElementById('eod-summary-body');
+    if (body) body.innerHTML = '<div class="text-center text-slate-500 py-6">Loading closing report...</div>';
+    try {
+        const r = await invokeTauri('get_end_of_day', { day: day });
+        const peso = (n) => `₱${(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.innerText = v; };
+        set('eod-stat-net', peso(r.net_sales));
+        set('eod-stat-tx', r.transactions);
+        set('eod-stat-discounts', `−${peso(r.discounts)} (${r.discounted_transactions} tx)`);
+        set('eod-stat-walkins', `${r.walk_ins} (${peso(r.walk_in_revenue)})`);
+        set('eod-stat-checkins', r.check_ins);
+        set('eod-stat-tailgates', r.tailgate_flags);
+        set('eod-stat-expenses', `−${peso(r.expense_total)} (${r.expense_count})`);
+        set('eod-stat-cashflow', peso(r.net_cash_flow));
+        if (body) {
+            const rows = (r.by_payment_method || []).map(m =>
+                `<tr class="hover:bg-slate-800/30"><td class="p-3 uppercase font-bold text-slate-200">${m.payment_method}</td><td class="p-3 font-mono">${m.count}</td><td class="p-3 font-mono text-amber-300">−${peso(m.discounts)}</td><td class="p-3 font-mono text-emerald-300 text-right">${peso(m.net)}</td></tr>`
+            ).join('') || '<tr><td colspan="4" class="p-4 text-center text-slate-500">No sales recorded for this day</td></tr>';
+            body.innerHTML = rows + `<tr class="border-t border-slate-700 font-bold"><td class="p-3 text-slate-200">TOTAL</td><td class="p-3 font-mono">${r.transactions}</td><td class="p-3 font-mono text-amber-300">−${peso(r.discounts)}</td><td class="p-3 font-mono text-emerald-300 text-right">${peso(r.net_sales)}</td></tr>`;
+        }
+    } catch (e) {
+        if (body) body.innerHTML = `<div class="text-center text-red-400 py-6">Failed to load report: ${e}</div>`;
+    }
+}
+
+// --- Expenses Ledger ---
+
+async function loadExpenses() {
+    const tbody = document.getElementById('expenses-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">Loading expenses...</td></tr>';
+    try {
+        const list = await invokeTauri('list_expenses', { limit: 200 });
+        window.cachedExpenses = list;
+        renderExpensesTable();
+    } catch (e) {
+        if (tbody) tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-400">Failed: ${e}</td></tr>`;
+    }
+}
+
+function renderExpensesTable() {
+    const tbody = document.getElementById('expenses-tbody');
+    if (!tbody) return;
+    const list = window.cachedExpenses || [];
+    const total = list.reduce((s, x) => s + (x.amount || 0), 0);
+    const totalEl = document.getElementById('expenses-total');
+    if (totalEl) totalEl.innerText = `₱${total.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+    if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No expenses recorded yet</td></tr>';
+        return;
+    }
+    tbody.innerHTML = list.map(x => `
+        <tr class="hover:bg-slate-800/30">
+            <td class="p-3 font-mono text-slate-400 text-[11px]">${new Date(x.spent_at).toLocaleDateString()}</td>
+            <td class="p-3 font-semibold text-slate-200">${escapeHtml(x.title)}</td>
+            <td class="p-3 uppercase text-[10px] font-bold text-purple-300">${escapeHtml(x.category)}</td>
+            <td class="p-3 font-mono text-red-300 text-right">₱${x.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+            <td class="p-3 uppercase text-[10px] text-slate-400">${escapeHtml(x.payment_method)}${x.created_by ? ` · ${escapeHtml(x.created_by)}` : ''}</td>
+            <td class="p-3 text-right"><button onclick="deleteExpense('${x.id}')" class="text-red-400 hover:text-red-300 text-xs">Delete</button></td>
+        </tr>`).join('');
+}
+
+async function submitExpense() {
+    const title = document.getElementById('exp-title-input')?.value.trim();
+    const category = document.getElementById('exp-category-input')?.value || 'general';
+    const amount = parseFloat(document.getElementById('exp-amount-input')?.value) || 0;
+    const method = document.getElementById('exp-method-input')?.value || 'cash';
+    const notes = document.getElementById('exp-notes-input')?.value.trim() || '';
+    const err = document.getElementById('exp-error-msg');
+    if (!title) { if (err) err.innerText = 'Title is required'; return; }
+    if (amount <= 0) { if (err) err.innerText = 'Amount must be greater than zero'; return; }
+    try {
+        await invokeTauri('create_expense', { req: { title, category, amount, payment_method: method, notes, spent_at: null } });
+        document.getElementById('exp-title-input').value = '';
+        document.getElementById('exp-amount-input').value = '';
+        document.getElementById('exp-notes-input').value = '';
+        if (err) err.innerText = '';
+        await loadExpenses();
+        showHudToast('Expense Recorded', `${title} — ₱${amount.toFixed(2)}`, 'success');
+    } catch (e) { if (err) err.innerText = 'Save failed: ' + e; }
+}
+
+async function deleteExpense(id) {
+    if (!confirm('Delete this expense record?')) return;
+    try {
+        await invokeTauri('delete_expense', { id: id });
+        await loadExpenses();
+    } catch (e) { alert('Delete failed: ' + e); }
 }
 
 // --- Coaches & Sessions Management (Full CRUD) ---

@@ -113,6 +113,8 @@ impl CloudDatabase {
                 id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
                 name TEXT NOT NULL,
+                tag TEXT NOT NULL DEFAULT '',
+                billing_period TEXT NOT NULL DEFAULT 'monthly',
                 price_monthly REAL NOT NULL,
                 student_discount_pct REAL NOT NULL DEFAULT 0,
                 benefits_json TEXT NOT NULL,
@@ -123,6 +125,7 @@ impl CloudDatabase {
             CREATE TABLE IF NOT EXISTS cloud_promos (
                 code TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
                 discount_type TEXT NOT NULL,
                 discount_value REAL NOT NULL,
                 min_spend REAL NOT NULL DEFAULT 0,
@@ -139,7 +142,9 @@ impl CloudDatabase {
                 total_amount REAL NOT NULL,
                 payment_method TEXT NOT NULL,
                 items_json TEXT NOT NULL,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                discount_type TEXT NOT NULL DEFAULT '',
+                discount_amount REAL NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS cloud_releases (
@@ -202,6 +207,14 @@ impl CloudDatabase {
             "ALTER TABLE cloud_owner_accounts ADD COLUMN is_verified INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cloud_owner_accounts ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cloud_owner_accounts ADD COLUMN locked_until TEXT",
+            // Member reference photos (local-first capture, cloud-synced for sister-branch reference)
+            "ALTER TABLE cloud_members ADD COLUMN photo_data_url TEXT",
+            // Customizable rate-card fields (owner-defined names/tags)
+            "ALTER TABLE cloud_plans ADD COLUMN tag TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cloud_plans ADD COLUMN billing_period TEXT NOT NULL DEFAULT 'monthly'",
+            "ALTER TABLE cloud_promos ADD COLUMN label TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cloud_sales ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cloud_sales ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0",
         ] {
             let _ = conn.execute(stmt, []);
         }
@@ -470,8 +483,8 @@ impl CloudDatabase {
             let expires_str = m.expires_at.map(|e| e.to_rfc3339());
 
             conn.execute(
-                "INSERT INTO cloud_members (id, owner_email, home_gym_id, home_gym_name, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                "INSERT INTO cloud_members (id, owner_email, home_gym_id, home_gym_name, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at, photo_data_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
                  ON CONFLICT(id) DO UPDATE SET
                     home_gym_name = ?4,
                     first_name = ?5,
@@ -482,7 +495,8 @@ impl CloudDatabase {
                     status = ?10,
                     face_vectors_json = ?11,
                     updated_at = ?13,
-                    expires_at = ?14",
+                    expires_at = ?14,
+                    photo_data_url = COALESCE(?15, photo_data_url)",
                 params![
                     m.id,
                     owner_email,
@@ -498,6 +512,7 @@ impl CloudDatabase {
                     m.created_at.to_rfc3339(),
                     m.updated_at.to_rfc3339(),
                     expires_str,
+                    m.photo_data_url,
                 ],
             )?;
             count += 1;
@@ -508,7 +523,7 @@ impl CloudDatabase {
     pub fn get_sister_branch_members(&self, owner_email: &str, exclude_gym_id: &Uuid) -> Result<Vec<gympos_shared::CloudMemberSyncItem>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, home_gym_id, home_gym_name, owner_email, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at
+            "SELECT id, home_gym_id, home_gym_name, owner_email, first_name, last_name, email, phone, membership_type, status, face_vectors_json, created_at, updated_at, expires_at, photo_data_url
              FROM cloud_members
              WHERE owner_email = ?1 AND home_gym_id != ?2"
         )?;
@@ -529,6 +544,7 @@ impl CloudDatabase {
             let created_str: String = row.get(11)?;
             let updated_str: String = row.get(12)?;
             let expires_str: Option<String> = row.get(13).unwrap_or(None);
+            let photo_data_url: Option<String> = row.get(14).unwrap_or(None);
 
             let face_vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
             let created_at = DateTime::parse_from_rfc3339(&created_str)
@@ -551,6 +567,7 @@ impl CloudDatabase {
                 membership_type,
                 status,
                 face_vectors,
+                photo_data_url,
                 created_at,
                 updated_at,
                 expires_at,
@@ -730,13 +747,15 @@ impl CloudDatabase {
         for p in plans {
             let benefits_json = serde_json::to_string(&p.benefits).unwrap_or_else(|_| "[]".to_string());
             conn.execute(
-                "INSERT INTO cloud_plans (id, owner_email, name, price_monthly, student_discount_pct, benefits_json, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(id, owner_email) DO UPDATE SET name = ?3, price_monthly = ?4, student_discount_pct = ?5, benefits_json = ?6, updated_at = ?7",
+                "INSERT INTO cloud_plans (id, owner_email, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(id, owner_email) DO UPDATE SET name = ?3, tag = ?4, billing_period = ?5, price_monthly = ?6, student_discount_pct = ?7, benefits_json = ?8, updated_at = ?9",
                 params![
                     p.id,
                     owner_email,
                     p.name,
+                    p.tag,
+                    p.billing_period,
                     p.price_monthly,
                     p.student_discount_pct,
                     benefits_json,
@@ -751,22 +770,26 @@ impl CloudDatabase {
     pub fn get_plans(&self, owner_email: &str) -> Result<Vec<MembershipPlanConfig>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, price_monthly, student_discount_pct, benefits_json, updated_at FROM cloud_plans WHERE owner_email = ?1 ORDER BY price_monthly",
+            "SELECT id, name, tag, billing_period, price_monthly, student_discount_pct, benefits_json, updated_at FROM cloud_plans WHERE owner_email = ?1 ORDER BY price_monthly",
         )?;
         let rows = stmt.query_map(params![owner_email], |row| {
             let id: String = row.get(0)?;
             let name: String = row.get(1)?;
-            let price_monthly: f64 = row.get(2)?;
-            let student_discount_pct: f64 = row.get(3)?;
-            let benefits_json: String = row.get(4)?;
+            let tag: String = row.get::<_, Option<String>>(2).unwrap_or(None).unwrap_or_default();
+            let billing_period: String = row.get::<_, Option<String>>(3).unwrap_or(None).unwrap_or_else(|| "monthly".to_string());
+            let price_monthly: f64 = row.get(4)?;
+            let student_discount_pct: f64 = row.get(5)?;
+            let benefits_json: String = row.get(6)?;
             let benefits = serde_json::from_str(&benefits_json).unwrap_or_default();
-            let updated_at_str: String = row.get(5)?;
+            let updated_at_str: String = row.get(7)?;
             let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
             Ok(MembershipPlanConfig {
                 id,
                 name,
+                tag,
+                billing_period,
                 price_monthly,
                 student_discount_pct,
                 target_gym_id: None,
@@ -787,12 +810,13 @@ impl CloudDatabase {
         for pr in promos {
             let expires_at_str = pr.expires_at.map(|dt| dt.to_rfc3339());
             conn.execute(
-                "INSERT INTO cloud_promos (code, owner_email, discount_type, discount_value, min_spend, expires_at, is_active)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(code, owner_email) DO UPDATE SET discount_type = ?3, discount_value = ?4, min_spend = ?5, expires_at = ?6, is_active = ?7",
+                "INSERT INTO cloud_promos (code, owner_email, label, discount_type, discount_value, min_spend, expires_at, is_active)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(code, owner_email) DO UPDATE SET label = ?3, discount_type = ?4, discount_value = ?5, min_spend = ?6, expires_at = ?7, is_active = ?8",
                 params![
                     pr.code,
                     owner_email,
+                    pr.label,
                     pr.discount_type,
                     pr.discount_value,
                     pr.min_spend,
@@ -808,20 +832,22 @@ impl CloudDatabase {
     pub fn get_promos(&self, owner_email: &str) -> Result<Vec<PromoVoucherConfig>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT code, discount_type, discount_value, min_spend, expires_at, is_active FROM cloud_promos WHERE owner_email = ?1",
+            "SELECT code, label, discount_type, discount_value, min_spend, expires_at, is_active FROM cloud_promos WHERE owner_email = ?1",
         )?;
         let rows = stmt.query_map(params![owner_email], |row| {
             let code: String = row.get(0)?;
-            let discount_type: String = row.get(1)?;
-            let discount_value: f64 = row.get(2)?;
-            let min_spend: f64 = row.get(3)?;
-            let expires_at_str: Option<String> = row.get(4)?;
+            let label: String = row.get::<_, Option<String>>(1).unwrap_or(None).unwrap_or_default();
+            let discount_type: String = row.get(2)?;
+            let discount_value: f64 = row.get(3)?;
+            let min_spend: f64 = row.get(4)?;
+            let expires_at_str: Option<String> = row.get(5)?;
             let expires_at = expires_at_str.and_then(|s| {
                 DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))
             });
-            let is_active_int: i32 = row.get(5)?;
+            let is_active_int: i32 = row.get(6)?;
             Ok(PromoVoucherConfig {
                 code,
+                label,
                 discount_type,
                 discount_value,
                 min_spend,
@@ -844,8 +870,8 @@ impl CloudDatabase {
         for s in sales {
             let items_json = serde_json::to_string(&s.items).unwrap_or_else(|_| "[]".to_string());
             conn.execute(
-                "INSERT INTO cloud_sales (id, gym_id, owner_email, member_id, total_amount, payment_method, items_json, timestamp)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO cloud_sales (id, gym_id, owner_email, member_id, total_amount, payment_method, items_json, timestamp, discount_type, discount_amount)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(id) DO NOTHING",
                 params![
                     s.id,
@@ -855,7 +881,9 @@ impl CloudDatabase {
                     s.total_amount,
                     s.payment_method,
                     items_json,
-                    s.timestamp.to_rfc3339()
+                    s.timestamp.to_rfc3339(),
+                    s.discount_type,
+                    s.discount_amount
                 ],
             )?;
             count += 1;
@@ -982,7 +1010,7 @@ impl CloudDatabase {
 
         // Recent sales transactions
         let mut stmt = conn.prepare(
-            "SELECT id, member_id, total_amount, payment_method, items_json, timestamp
+            "SELECT id, member_id, total_amount, payment_method, items_json, timestamp, discount_type, discount_amount
              FROM cloud_sales WHERE owner_email = ?1 ORDER BY timestamp DESC LIMIT 20",
         )?;
         let sale_rows = stmt.query_map(params![owner_email], |row| {
@@ -1003,6 +1031,8 @@ impl CloudDatabase {
                 payment_method,
                 items,
                 timestamp,
+                discount_type: row.get::<_, Option<String>>(6).unwrap_or(None).unwrap_or_default(),
+                discount_amount: row.get::<_, Option<f64>>(7).unwrap_or(None).unwrap_or(0.0),
             })
         })?;
 

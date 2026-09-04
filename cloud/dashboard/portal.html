@@ -438,6 +438,10 @@
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                         <span>Save & Sync Plan Rates</span>
                     </button>
+                    <button onclick="openAddPlanModal()" class="btn-purple px-4 py-2 rounded-lg text-xs flex items-center space-x-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                        <span>Add Custom Rate Card</span>
+                    </button>
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-6" id="plans-grid">
@@ -617,10 +621,19 @@
     <div id="modal-promo" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
         <div class="glass-panel p-6 w-full max-w-md border border-purple-500/40 shadow-2xl">
             <h3 class="text-lg font-bold text-slate-200 mb-4">Create Promo Voucher</h3>
+            <div class="flex gap-2 mb-3 text-[11px]">
+                <span class="text-slate-500 self-center">Fill from template:</span>
+                <button onclick="fillPromoTemplate('birthmonth')" class="px-2 py-1 rounded bg-pink-950/60 border border-pink-500/30 text-pink-300 hover:bg-pink-900/60">🎂 Birth-Month Treat</button>
+                <button onclick="fillPromoTemplate('buddy41')" class="px-2 py-1 rounded bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-900/60">👥 4+1 Buddy Deal</button>
+            </div>
             <div class="space-y-3 text-xs">
                 <div>
                     <label class="block text-slate-400 mb-1">Promo Code (Uppercase)</label>
                     <input id="promo-code-input" type="text" class="input-dark w-full uppercase" placeholder="e.g. SUMMER2026">
+                </div>
+                <div>
+                    <label class="block text-slate-400 mb-1">Custom Name / Tag (shown on receipts & kiosk)</label>
+                    <input id="promo-label-input" type="text" class="input-dark w-full" placeholder="e.g. Birth-Month Treat, Buddy 4+1">
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div>
@@ -649,6 +662,53 @@
             <div class="mt-6 flex justify-end space-x-2">
                 <button onclick="closePromoModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
                 <button onclick="submitAddPromo()" class="btn-purple px-4 py-1.5 rounded text-xs">Create Voucher</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Add / Edit Staff Member -->
+    <div id="modal-plan" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm hidden">
+        <div class="glass-panel p-6 w-full max-w-md border border-purple-500/40 shadow-2xl">
+            <h3 class="text-lg font-bold text-slate-200 mb-4">Add Custom Rate Card</h3>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block text-slate-400 mb-1">Plan Name (owner-defined)</label>
+                    <input id="plan-name-input" type="text" class="input-dark w-full" placeholder="e.g. Boxing w/ Gym Access">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Tag (badge on kiosk)</label>
+                        <input id="plan-tag-input" type="text" class="input-dark w-full uppercase" placeholder="e.g. COMBAT">
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Billing Period</label>
+                        <select id="plan-period-input" class="input-dark w-full">
+                            <option value="session">Per Session</option>
+                            <option value="monthly" selected>Monthly</option>
+                            <option value="3-months">3 Months</option>
+                            <option value="6-months">6 Months</option>
+                            <option value="1-year">1 Year</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-slate-400 mb-1">Price (₱)</label>
+                        <input id="plan-price-input" type="number" step="0.01" class="input-dark w-full" placeholder="300">
+                    </div>
+                    <div>
+                        <label class="block text-slate-400 mb-1">Student Disc. (%)</label>
+                        <input id="plan-disc-input" type="number" step="0.1" class="input-dark w-full" placeholder="20">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-slate-400 mb-1">Perks (one per line)</label>
+                    <textarea id="plan-benefits-input" rows="3" class="input-dark w-full" placeholder="Unlimited Gym Access&#10;Locker & Shower"></textarea>
+                </div>
+            </div>
+            <div class="mt-6 flex justify-end space-x-2">
+                <button onclick="closePlanModal()" class="px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">Cancel</button>
+                <button onclick="submitAddPlan()" class="btn-purple px-4 py-1.5 rounded text-xs">Add Rate Card</button>
             </div>
         </div>
     </div>
@@ -1292,36 +1352,45 @@
             }
         }
 
-        // --- Plans CRUD ---
+        // --- Plans CRUD (customizable rate cards: owner-defined name + tag + price + period) ---
         function renderPlansGrid() {
             const grid = document.getElementById('plans-grid');
             if (cachedPlans.length === 0) {
                 cachedPlans = [
-                    { id: 'plan-regular', name: 'Regular Monthly All-Access', price_monthly: 1500.00, student_discount_pct: 15.0, benefits: ['Gym Access 24/7', 'Locker & Shower', '1 Free Coach Session'] },
-                    { id: 'plan-student', name: 'Student 3-Month Pass', price_monthly: 1200.00, student_discount_pct: 20.0, benefits: ['Valid Student ID Required', 'Peak Access 6AM-5PM', 'Locker Access'] },
-                    { id: 'plan-vip', name: 'VIP Executive Annual', price_monthly: 2800.00, student_discount_pct: 10.0, benefits: ['Multi-Branch All-Access', 'Dedicated VIP Locker', 'Unlimited Coach Booking', 'Towel Service'] }
+                    { id: 'plan-regular', name: 'Regular Monthly All-Access', tag: 'GYM ACCESS', billing_period: 'monthly', price_monthly: 1500.00, student_discount_pct: 15.0, benefits: ['Gym Access 24/7', 'Locker & Shower', '1 Free Coach Session'] },
+                    { id: 'plan-student', name: 'Student 3-Month Pass', tag: 'STUDENT', billing_period: '3-months', price_monthly: 1200.00, student_discount_pct: 20.0, benefits: ['Valid Student ID Required', 'Peak Access 6AM-5PM', 'Locker Access'] },
+                    { id: 'plan-vip', name: 'VIP Executive Annual', tag: 'VIP', billing_period: '1-year', price_monthly: 2800.00, student_discount_pct: 10.0, benefits: ['Multi-Branch All-Access', 'Dedicated VIP Locker', 'Unlimited Coach Booking', 'Towel Service'] }
                 ];
             }
+
+            const periodLabel = (p) => ({ 'session': '/ session', 'monthly': '/ month', '3-months': '/ 3 months', '6-months': '/ 6 months', '1-year': '/ year' }[(p.billing_period || 'monthly')] || '/ month');
 
             grid.innerHTML = cachedPlans.map((p, idx) => `
                 <div class="glass-panel p-5 border border-purple-500/20 relative flex flex-col justify-between">
                     <div>
                         <div class="flex items-center justify-between mb-2">
-                            <span class="stat-badge badge-pro uppercase">${p.id}</span>
+                            <span class="stat-badge badge-pro uppercase">${escapeHtml(p.tag || p.id)}</span>
                             <span class="text-xs text-slate-400 font-mono">${p.student_discount_pct}% Student Disc.</span>
                         </div>
                         <h4 class="text-lg font-bold text-slate-200 mb-2">${escapeHtml(p.name)}</h4>
-                        <div class="flex items-baseline space-x-1 mb-4">
+                        <div class="flex items-baseline space-x-1 mb-1">
                             <span class="text-2xl font-bold font-mono text-emerald-400">₱</span>
                             <input type="number" step="0.01" value="${p.price_monthly}" onchange="updatePlanPrice(${idx}, parseFloat(this.value))" class="text-2xl font-bold font-mono text-emerald-400 bg-transparent border-b border-purple-500/40 w-28 focus:outline-none">
-                            <span class="text-xs text-slate-400">/ month</span>
+                            <span class="text-xs text-slate-400">${periodLabel(p)}</span>
+                        </div>
+                        <div class="flex gap-2 mb-4 text-[11px]">
+                            <input type="text" value="${escapeHtml(p.tag || '')}" onchange="updatePlanTag(${idx}, this.value)" placeholder="Tag e.g. COMBAT" class="bg-slate-950/60 border border-slate-800 rounded px-2 py-1 w-28 text-slate-200" title="Custom tag shown on kiosk">
+                            <select onchange="updatePlanPeriod(${idx}, this.value)" class="bg-slate-950/60 border border-slate-800 rounded px-2 py-1 text-slate-200" title="Billing period">
+                                ${['session', 'monthly', '3-months', '6-months', '1-year'].map(per => `<option value="${per}" ${((p.billing_period || 'monthly') === per) ? 'selected' : ''}>${per}</option>`).join('')}
+                            </select>
                         </div>
                         <ul class="space-y-1.5 text-xs text-slate-300 mb-4">
-                            ${p.benefits.map(b => `<li class="flex items-center space-x-1.5"><span class="text-purple-400 font-bold">•</span><span>${escapeHtml(b)}</span></li>`).join('')}
+                            ${(p.benefits || []).map(b => `<li class="flex items-center space-x-1.5"><span class="text-purple-400 font-bold">•</span><span>${escapeHtml(b)}</span></li>`).join('')}
                         </ul>
                     </div>
-                    <div class="pt-3 border-t border-slate-800 text-[11px] text-slate-500">
-                        Auto-syncs to Terminal Registration Kiosks
+                    <div class="pt-3 border-t border-slate-800 text-[11px] text-slate-500 flex items-center justify-between">
+                        <span>Auto-syncs to Terminal Kiosks</span>
+                        <button onclick="deletePlan(${idx})" class="text-red-400 hover:text-red-300">Delete</button>
                     </div>
                 </div>
             `).join('');
@@ -1330,6 +1399,57 @@
         function updatePlanPrice(idx, price) {
             cachedPlans[idx].price_monthly = price;
             cachedPlans[idx].updated_at = new Date().toISOString();
+        }
+
+        function updatePlanTag(idx, tag) {
+            cachedPlans[idx].tag = (tag || '').toUpperCase().slice(0, 24);
+            cachedPlans[idx].updated_at = new Date().toISOString();
+            renderPlansGrid();
+        }
+
+        function updatePlanPeriod(idx, period) {
+            cachedPlans[idx].billing_period = period;
+            cachedPlans[idx].updated_at = new Date().toISOString();
+            renderPlansGrid();
+        }
+
+        function deletePlan(idx) {
+            if (!confirm(`Delete plan "${cachedPlans[idx].name}"?`)) return;
+            cachedPlans.splice(idx, 1);
+            renderPlansGrid();
+        }
+
+        function openAddPlanModal() { document.getElementById('modal-plan').classList.remove('hidden'); }
+        function closePlanModal() { document.getElementById('modal-plan').classList.add('hidden'); }
+
+        function submitAddPlan() {
+            const name = document.getElementById('plan-name-input').value.trim();
+            const tag = document.getElementById('plan-tag-input').value.trim().toUpperCase();
+            const price = parseFloat(document.getElementById('plan-price-input').value) || 0;
+            const period = document.getElementById('plan-period-input').value;
+            const disc = parseFloat(document.getElementById('plan-disc-input').value) || 0;
+            const benefitsRaw = document.getElementById('plan-benefits-input').value.trim();
+            if (!name || price <= 0) {
+                alert('Please enter a plan name and a valid price');
+                return;
+            }
+            cachedPlans.push({
+                id: `plan-${Date.now().toString(36)}`,
+                name,
+                tag: tag || 'CUSTOM',
+                billing_period: period,
+                price_monthly: price,
+                student_discount_pct: disc,
+                benefits: benefitsRaw ? benefitsRaw.split('\n').map(s => s.trim()).filter(Boolean) : [],
+                updated_at: new Date().toISOString()
+            });
+            document.getElementById('plan-name-input').value = '';
+            document.getElementById('plan-tag-input').value = '';
+            document.getElementById('plan-price-input').value = '';
+            document.getElementById('plan-benefits-input').value = '';
+            closePlanModal();
+            renderPlansGrid();
+            alert('Custom rate card added! Click "Save & Sync Plan Rates" to push to kiosks.');
         }
 
         async function saveAndSyncPlans() {
@@ -1367,7 +1487,7 @@
 
             tbody.innerHTML = cachedPromos.map((pr, idx) => `
                 <tr class="hover:bg-slate-800/30 transition-colors">
-                    <td class="py-3 px-4 font-mono font-bold text-purple-300">${escapeHtml(pr.code)}</td>
+                    <td class="py-3 px-4"><div class="font-mono font-bold text-purple-300">${escapeHtml(pr.code)}</div><div class="text-[11px] text-slate-400">${escapeHtml(pr.label || '')}</div></td>
                     <td class="py-3 px-4"><span class="stat-badge badge-basic">${pr.discount_type.toUpperCase()}</span></td>
                     <td class="py-3 px-4 font-mono font-bold text-emerald-400">${pr.discount_type === 'percent' ? pr.discount_value + '%' : '₱' + pr.discount_value}</td>
                     <td class="py-3 px-4 font-mono text-slate-300">₱${pr.min_spend}</td>
@@ -1399,6 +1519,7 @@
 
         function submitAddPromo() {
             const code = document.getElementById('promo-code-input').value.trim().toUpperCase();
+            const label = document.getElementById('promo-label-input').value.trim();
             const discount_type = document.getElementById('promo-type-input').value;
             const discount_value = parseFloat(document.getElementById('promo-val-input').value) || 0;
             const min_spend = parseFloat(document.getElementById('promo-min-input').value) || 0;
@@ -1411,6 +1532,7 @@
 
             cachedPromos.push({
                 code,
+                label: label || code,
                 discount_type,
                 discount_value,
                 min_spend,
@@ -1418,9 +1540,33 @@
                 is_active: true
             });
 
+            document.getElementById('promo-code-input').value = '';
+            document.getElementById('promo-label-input').value = '';
+            document.getElementById('promo-val-input').value = '';
+            document.getElementById('promo-min-input').value = '';
+            document.getElementById('promo-exp-input').value = '';
             closePromoModal();
             renderPromosTable();
             alert('Promo code created! Click "Push Promos to POS" to activate on terminals.');
+        }
+
+        // One-click starting points taken from the gym's own flyers — owners
+        // edit every field before saving, nothing is hardcoded into pricing.
+        function fillPromoTemplate(kind) {
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+            if (kind === 'birthmonth') {
+                set('promo-code-input', 'BIRTHMONTH');
+                set('promo-label-input', 'Birth-Month Treat — birthday celebrant rate');
+                set('promo-type-input', 'fixed');
+                set('promo-val-input', '300');
+                set('promo-min-input', '1000');
+            } else if (kind === 'buddy41') {
+                set('promo-code-input', 'BUDDY41');
+                set('promo-label-input', 'Stronger Together 4+1 — pay for 4, 5th free');
+                set('promo-type-input', 'percent');
+                set('promo-val-input', '20');
+                set('promo-min-input', '4000');
+            }
         }
 
         async function saveAndSyncPromos() {

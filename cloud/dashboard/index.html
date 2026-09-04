@@ -213,6 +213,23 @@
                     <div id="owners-hierarchy-container" class="space-y-3">
                         <div class="py-8 text-center text-purple-400/50 text-xs">Loading registered client owners and branches from Cloud DB...</div>
                     </div>
+                    <!-- Fleet filters: license status + released-key presence + census -->
+                    <div class="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                        <span class="text-purple-400/70 font-semibold">Filter:</span>
+                        <select id="ceo-filter-status" onchange="setCeoFleetFilter()" class="bg-purple-950/60 border border-purple-800/40 text-purple-200 rounded px-2 py-1">
+                            <option value="all">All statuses</option>
+                            <option value="active">Active</option>
+                            <option value="atrisk">At-risk (≤7d left)</option>
+                            <option value="expired">Expired</option>
+                            <option value="nokey">No key issued</option>
+                        </select>
+                        <select id="ceo-filter-key" onchange="setCeoFleetFilter()" class="bg-purple-950/60 border border-purple-800/40 text-purple-200 rounded px-2 py-1">
+                            <option value="all">All keys</option>
+                            <option value="released">Released keys only</option>
+                            <option value="pending">Pending (no key)</option>
+                        </select>
+                        <span id="ceo-fleet-census" class="ml-auto font-mono text-purple-400/70"></span>
+                    </div>
                 </div>
 
                 <div class="pt-3 border-t border-purple-900/30 flex justify-between items-center text-xs text-purple-400/60">
@@ -577,6 +594,28 @@
 
         let ownerHierarchy = [];
         let expandedOwners = new Set();
+        let ceoFleetFilter = { status: 'all', key: 'all' };
+
+        function setCeoFleetFilter() {
+            const s = document.getElementById('ceo-filter-status');
+            const k = document.getElementById('ceo-filter-key');
+            ceoFleetFilter = { status: s ? s.value : 'all', key: k ? k.value : 'all' };
+            renderOwnersHierarchy();
+        }
+
+        function ceoBranchStatus(b) {
+            if (!b.license_key) return 'nokey';
+            if (b.is_license_active) return (b.days_remaining !== undefined && b.days_remaining <= 7) ? 'atrisk' : 'active';
+            return 'expired';
+        }
+
+        function ceoBranchPasses(b) {
+            const st = ceoBranchStatus(b);
+            if (ceoFleetFilter.status !== 'all' && st !== ceoFleetFilter.status) return false;
+            if (ceoFleetFilter.key === 'released' && !b.license_key) return false;
+            if (ceoFleetFilter.key === 'pending' && b.license_key) return false;
+            return true;
+        }
 
         async function fetchGyms() {
             try {
@@ -654,14 +693,17 @@
             container.innerHTML = ownerHierarchy.map(owner => {
                 const isExpanded = expandedOwners.has(owner.owner_email);
                 const regDate = new Date(owner.created_at).toLocaleDateString();
+                const visibleBranches = owner.branches.filter(ceoBranchPasses);
+                if (visibleBranches.length === 0 && (ceoFleetFilter.status !== 'all' || ceoFleetFilter.key !== 'all')) return '';
 
-                const branchRowsHtml = owner.branches.length === 0 
+                const branchRowsHtml = visibleBranches.length === 0 
                     ? `<tr><td colspan="6" class="py-4 text-center text-purple-400/50 text-xs">No branch locations registered yet. Click '+ Add Branch' to create one.</td></tr>`
-                    : owner.branches.map(b => {
+                    : visibleBranches.map(b => {
                         const isDisabled = disabledGymIds.has(b.gym_id);
                         const tierColor = b.tier.toLowerCase() === 'ultra' ? 'text-amber-400 border-amber-500/40 bg-amber-950/40' : (b.tier.toLowerCase() === 'pro' ? 'text-purple-300 border-purple-500/40 bg-purple-950/40' : 'text-blue-300 border-blue-500/40 bg-blue-950/40');
                         
                         let licBadge = '';
+                        const branchIsAtRisk = b.is_license_active && b.license_key && b.days_remaining !== undefined && b.days_remaining <= 7;
                         if (b.is_license_active && b.license_key) {
                             licBadge = `
                                 <div class="flex items-center gap-1.5">
@@ -669,10 +711,18 @@
                                         <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
                                         ACTIVE (${b.days_remaining}d)
                                     </span>
+                                    ${branchIsAtRisk ? `<span class="inline-flex items-center gap-1 text-[10px] font-bold text-red-300 bg-red-950/80 border border-red-600 px-2 py-0.5 rounded animate-pulse" title="License expires within 7 days — renew now">⚠ AT RISK</span>` : ''}
                                     <button onclick="prompt('Cryptographic RSA License Key for ${b.name.replace(/'/g, "\\'")}:', '${b.license_key}')" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950 border border-purple-800 text-purple-300 hover:text-white" title="View / Copy Key">
                                         GPOS-...
                                     </button>
                                 </div>
+                            `;
+                        } else if (b.license_key) {
+                            licBadge = `
+                                <span class="inline-flex items-center gap-1 text-[10px] font-bold text-red-300 bg-red-950/80 border border-red-800 px-2 py-0.5 rounded">
+                                    <span class="w-1.5 h-1.5 rounded-full bg-red-400"></span>
+                                    EXPIRED
+                                </span>
                             `;
                         } else {
                             licBadge = `
@@ -763,6 +813,16 @@
                     </div>
                 `;
             }).join('');
+
+            // Fleet census: Active / At-risk / Expired / No-key / Total
+            const census = { active: 0, atrisk: 0, expired: 0, nokey: 0, total: 0, keys: 0 };
+            ownerHierarchy.forEach(o => o.branches.forEach(b => {
+                census[ceoBranchStatus(b)]++;
+                census.total++;
+                if (b.license_key) census.keys++;
+            }));
+            const censusEl = document.getElementById('ceo-fleet-census');
+            if (censusEl) censusEl.innerText = `Active ${census.active} · At-risk ${census.atrisk} · Expired ${census.expired} · No key ${census.nokey} · Released keys ${census.keys}/${census.total}`;
         }
 
         // Modal Handlers

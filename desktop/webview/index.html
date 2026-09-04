@@ -267,6 +267,18 @@
                     </svg>
                     <span>Store POS</span>
                 </div>
+                <div class="nav-item" onclick="switchView('eod')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    <span>End of Day</span>
+                </div>
+                <div class="nav-item" onclick="switchView('expenses')">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <span>Expenses</span>
+                </div>
                 <div class="nav-item" onclick="switchView('coaches')">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
@@ -360,6 +372,26 @@
                             <div id="stat-license-state" class="text-lg font-bold mt-0.5 text-slate-200 brand">UNLICENSED</div>
                             <div id="stat-license-detail" class="text-[10px] text-slate-400">Enter a valid key</div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Member Census Boxes: Active / Expired / Frozen / Total -->
+                <div class="grid grid-cols-4 gap-4">
+                    <div class="glass-panel p-3 border border-emerald-500/20 card flex items-center gap-3">
+                        <div class="text-xs text-emerald-400 font-medium">Active Members</div>
+                        <div class="ml-auto text-xl font-bold text-emerald-300 brand" id="stat-active-members-box">0</div>
+                    </div>
+                    <div class="glass-panel p-3 border border-red-500/20 card flex items-center gap-3">
+                        <div class="text-xs text-red-400 font-medium">Expired Members</div>
+                        <div class="ml-auto text-xl font-bold text-red-300 brand" id="stat-expired-members">0</div>
+                    </div>
+                    <div class="glass-panel p-3 border border-amber-500/20 card flex items-center gap-3">
+                        <div class="text-xs text-amber-400 font-medium">Frozen (Suspended)</div>
+                        <div class="ml-auto text-xl font-bold text-amber-300 brand" id="stat-frozen-members">0</div>
+                    </div>
+                    <div class="glass-panel p-3 border border-blue-500/20 card flex items-center gap-3">
+                        <div class="text-xs text-blue-400 font-medium">Total Members</div>
+                        <div class="ml-auto text-xl font-bold text-blue-300 brand" id="stat-total-members">0</div>
                     </div>
                 </div>
 
@@ -603,6 +635,12 @@
                         <option value="regular">Regular Monthly</option>
                         <option value="vip">Premium VIP</option>
                         <option value="student">Student Pass</option>
+                    </select>
+                    <select id="member-status-filter" onchange="filterMembersList()" class="input-dark w-36 shrink-0 text-xs" style="flex-shrink:0;width:9rem">
+                        <option value="all">All Statuses</option>
+                        <option value="active">Active</option>
+                        <option value="expired">Expired</option>
+                        <option value="suspended">Frozen</option>
                     </select>
                 </div>
 
@@ -954,6 +992,21 @@
                         </div>
 
                         <div class="border-t border-slate-800 pt-3 space-y-3">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="block text-[10px] text-slate-400 mb-1">Discount ID (20% off)</label>
+                                    <select id="pos-discount-select" onchange="renderCart()" class="input-dark text-xs">
+                                        <option value="none">No Discount</option>
+                                        <option value="senior">Senior ID</option>
+                                        <option value="student">Student ID</option>
+                                        <option value="pwd">PWD ID</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] text-slate-400 mb-1">ID Number (audit)</label>
+                                    <input type="text" id="pos-discount-id-input" class="input-dark text-xs" placeholder="e.g. SC-12345">
+                                </div>
+                            </div>
                             <div class="flex justify-between items-center text-sm">
                                 <span class="text-slate-400 font-medium">Total Amount:</span>
                                 <span id="pos-cart-total" class="text-xl font-bold text-slate-100 brand">$0.00</span>
@@ -974,6 +1027,102 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- 5B. END OF DAY CLOSING VIEW -->
+            <div id="view-eod" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">End of Day Closing</h2>
+                        <p class="text-xs text-slate-400">Daily Z-report: sales by payment method, discounts, walk-ins, gate traffic, expenses</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input type="date" id="eod-date-input" class="input-dark text-xs" style="width:11rem">
+                        <button onclick="loadEndOfDay()" class="brand-btn px-4 py-2 rounded-lg text-xs font-bold">Load Report</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-4 gap-4">
+                    <div class="glass-panel p-4 border border-emerald-500/20">
+                        <div class="text-xs text-emerald-400 font-medium">Net Sales</div>
+                        <div id="eod-stat-net" class="text-2xl font-bold text-emerald-300 brand">₱0.00</div>
+                        <div class="text-[10px] text-slate-500"><span id="eod-stat-tx">0</span> transactions</div>
+                    </div>
+                    <div class="glass-panel p-4 border border-amber-500/20">
+                        <div class="text-xs text-amber-400 font-medium">ID Discounts Given</div>
+                        <div id="eod-stat-discounts" class="text-2xl font-bold text-amber-300 brand">₱0.00</div>
+                        <div class="text-[10px] text-slate-500">Senior / Student / PWD</div>
+                    </div>
+                    <div class="glass-panel p-4 border border-blue-500/20">
+                        <div class="text-xs text-blue-400 font-medium">Walk-In Revenue</div>
+                        <div id="eod-stat-walkins" class="text-2xl font-bold text-blue-300 brand">0</div>
+                        <div class="text-[10px] text-slate-500"><span id="eod-stat-checkins">0</span> check-ins · <span id="eod-stat-tailgates">0</span> tailgates</div>
+                    </div>
+                    <div class="glass-panel p-4 border border-red-500/20">
+                        <div class="text-xs text-red-400 font-medium">Expenses</div>
+                        <div id="eod-stat-expenses" class="text-2xl font-bold text-red-300 brand">₱0.00</div>
+                        <div class="text-[10px] text-slate-500">Net cash flow: <span id="eod-stat-cashflow" class="font-bold text-slate-200">₱0.00</span></div>
+                    </div>
+                </div>
+
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <div class="px-4 py-3 border-b border-slate-800 text-sm font-bold text-slate-200">Sales by Payment Method (Cash / Card / GCash)</div>
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr><th class="p-3">Method</th><th class="p-3">Count</th><th class="p-3">Discounts</th><th class="p-3 text-right">Net</th></tr>
+                        </thead>
+                        <tbody id="eod-summary-body" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr><td colspan="4" class="p-4 text-center text-slate-500">Select a day and load the report</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 5C. EXPENSES LEDGER VIEW -->
+            <div id="view-expenses" class="hidden space-y-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h2 class="text-2xl font-bold text-slate-100">Expenses Ledger</h2>
+                        <p class="text-xs text-slate-400">Track daily operating costs — rent, utilities, supplies, payroll. Total: <span id="expenses-total" class="font-bold text-red-300">₱0.00</span></p>
+                    </div>
+                </div>
+
+                <div class="glass-panel p-4 border border-slate-800">
+                    <div class="grid grid-cols-5 gap-2">
+                        <input type="text" id="exp-title-input" class="input-dark text-xs col-span-2" placeholder="Expense title, e.g. Monthly rent">
+                        <select id="exp-category-input" class="input-dark text-xs">
+                            <option value="general">General</option>
+                            <option value="rent">Rent</option>
+                            <option value="utilities">Utilities</option>
+                            <option value="supplies">Supplies</option>
+                            <option value="payroll">Payroll</option>
+                            <option value="maintenance">Maintenance</option>
+                            <option value="marketing">Marketing</option>
+                        </select>
+                        <input type="number" id="exp-amount-input" class="input-dark text-xs" placeholder="Amount ₱" min="0" step="0.01">
+                        <select id="exp-method-input" class="input-dark text-xs">
+                            <option value="cash">Cash</option>
+                            <option value="card">Card</option>
+                            <option value="gcash">GCash</option>
+                        </select>
+                    </div>
+                    <div class="flex gap-2 mt-2">
+                        <input type="text" id="exp-notes-input" class="input-dark text-xs flex-1" placeholder="Notes (optional)">
+                        <button onclick="submitExpense()" class="brand-btn px-4 py-2 rounded-lg text-xs font-bold">+ Record Expense</button>
+                    </div>
+                    <div id="exp-error-msg" class="text-xs text-red-400 mt-1"></div>
+                </div>
+
+                <div class="glass-panel overflow-hidden border border-slate-800">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-900/60 text-slate-300 uppercase tracking-wider font-semibold border-b border-slate-800">
+                            <tr><th class="p-3">Date</th><th class="p-3">Title</th><th class="p-3">Category</th><th class="p-3 text-right">Amount</th><th class="p-3">Method</th><th class="p-3 text-right">Action</th></tr>
+                        </thead>
+                        <tbody id="expenses-tbody" class="divide-y divide-slate-800/60 text-slate-300">
+                            <tr><td colspan="6" class="p-4 text-center text-slate-500">No expenses recorded yet</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
 
@@ -1446,6 +1595,13 @@
                 </button>
             </div>
             <input type="hidden" id="edit-mem-id">
+            <div class="flex items-center gap-3">
+                <img id="edit-mem-photo" src="" alt="reference" class="hidden w-16 h-16 rounded-xl object-cover border border-slate-600">
+                <div class="flex-1">
+                    <label class="block text-[11px] text-slate-300 mb-1">Reference Photo (local + cloud synced)</label>
+                    <input type="file" id="edit-mem-photo-input" accept="image/*" class="text-[11px] text-slate-400 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-slate-800 file:text-slate-200">
+                </div>
+            </div>
             <div class="grid grid-cols-2 gap-3">
                 <div>
                     <label class="block text-[11px] text-slate-300 mb-1">First Name</label>
