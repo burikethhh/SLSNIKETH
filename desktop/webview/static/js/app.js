@@ -207,6 +207,9 @@ async function invokeTauri(command, args = {}) {
         } else if (command === 'delete_expense') {
             if (window.cachedExpenses) window.cachedExpenses = window.cachedExpenses.filter(x => x.id !== args.id);
             return { success: true };
+        } else if (command === 'poll_hardware_buttons') {
+            // Preview: press Ctrl+Shift+1 for ENTRY, Ctrl+Shift+2 for EXIT to inject a fake EVT
+            return [];
         }
         return { success: true };
     }
@@ -806,6 +809,7 @@ async function initApp() {
     await populateCameraDevices();
     await initCameraStreams();
     startAutonomousBiometricEngine();
+    startHardwareButtonPoll();
 
     // Auto refresh real-time polling every 2.5 seconds (skip when tab/window is hidden to save CPU/IPC)
     setInterval(async () => {
@@ -813,6 +817,102 @@ async function initApp() {
         await refreshDashboard();
         if (currentView === 'attendance') await loadAttendanceLogs();
     }, 2500);
+}
+
+// ── Hardware Push-Buttons (pins.jfif): BTN1 pin 4 = ENTRY camera, BTN2 pin 8 = EXIT camera ──
+// Tailgate has no button — it arms automatically on every entry unlock.
+let hardwareButtonPollTimer = null;
+
+function startHardwareButtonPoll() {
+    if (hardwareButtonPollTimer) return;
+    hardwareButtonPollTimer = setInterval(async () => {
+        if (document.hidden) return;
+        try {
+            const evts = await invokeTauri('poll_hardware_buttons');
+            if (Array.isArray(evts) && evts.length > 0) {
+                for (const evt of evts) handleHardwareButtonEvent(evt);
+            }
+        } catch (e) {
+            // Not connected or not in Tauri — silent
+        }
+    }, 380);
+}
+
+async function handleHardwareButtonEvent(evt) {
+    const kind = evt.kind || evt.type || '';
+    const isEntry = kind === 'entry_btn';
+    const isExit = kind === 'exit_btn';
+    if (!isEntry && !isExit) return;
+    const direction = isEntry ? 'in' : 'out';
+    const label = isEntry ? 'ENTRY Camera Enabled (BTN 1)' : 'EXIT Camera Enabled (BTN 2)';
+    showHudToast(label, isEntry ? 'Face the ENTRY camera — scanning…' : 'Face the EXIT camera — scanning…', 'success');
+    // Highlight active camera card briefly
+    try { highlightCameraCard(isEntry ? 'kiosk-cam1-entry' : 'kiosk-cam2-exit'); } catch (e) {}
+    await doHardwareFaceScan(isEntry ? 'kiosk-cam1-entry' : 'kiosk-cam2-exit', direction);
+}
+
+function highlightCameraCard(videoId) {
+    const card = document.getElementById(videoId)?.closest('.glass-panel');
+    if (!card) return;
+    card.classList.add('ring-2', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-slate-950');
+    setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-slate-950'), 1600);
+}
+
+async function doHardwareFaceScan(videoId, direction) {
+    // Prefer the kiosk video, fall back to dashboard or test preview mirrors
+    const candidates = [videoId, 'dash-cam1-entry', 'dash-cam2-exit', 'test-preview-cam1', 'test-preview-cam2']
+        .map(id => document.getElementById(id)).filter(Boolean);
+    const video = candidates.find(v => v.videoWidth > 0 && v.videoHeight > 0) || document.getElementById(videoId);
+    if (!video || !video.videoWidth || video.videoWidth === 0) {
+        showHudToast('Camera Not Ready', 'No video feed for ' + direction.toUpperCase() + ' scan. Check Hardware Settings.', 'warn');
+        return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let frame;
+    try { frame = canvas.toDataURL('image/jpeg', 0.85); } catch (e) { return; }
+
+    let scanRes;
+    try {
+        scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
+    } catch (e) {
+        showHudToast('Face Scan Failed', String(e?.message || e), 'danger');
+        return;
+    }
+    if (!scanRes || !scanRes.face_detected || !scanRes.vector) {
+        showHudToast('No Face Detected', 'Center your face and try again, or press the button again.', 'warn');
+        return;
+    }
+    try {
+        const result = await invokeTauri('process_face_scan', { probeVector: scanRes.vector, direction: direction });
+        if (result.passback_violation) {
+            showHudToast('Anti-Passback Blocked', result.message, 'warn');
+            return;
+        }
+        if (result.account_hold) {
+            showHudToast('Account On Hold', result.message, 'danger');
+            return;
+        }
+        if (result.is_expired) {
+            showHudToast('Pass Expired', result.message, 'danger');
+            return;
+        }
+        if (result.matched) {
+            const isCross = result.member_name && cachedMembers.find(m => `${m.first_name} ${m.last_name}` === result.member_name)?.home_gym_name;
+            showHudToast(direction === 'in' ? 'Entry Verified' : 'Exit Verified',
+                `${result.member_name} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
+            if (direction === 'in') armDoorOpenTailgateSurveillance(3500);
+            await loadAttendanceLogs();
+            await refreshDashboard();
+        } else {
+            showHudToast('Not Recognized', result.message || 'Face not in member database.', 'warn');
+        }
+    } catch (e) {
+        showHudToast('Gate Error', String(e), 'danger');
+    }
 }
 
 // --- Theme & White-Label Branding Engine ---

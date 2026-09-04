@@ -157,6 +157,7 @@ pub fn run() {
             commands::get_app_version,
             commands::authenticate_staff_pin,
             commands::authenticate_owner,
+            commands::poll_hardware_buttons,
             commands::get_terminal_session,
             commands::logout_terminal_session,
             commands::list_terminal_staff,

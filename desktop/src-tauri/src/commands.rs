@@ -885,6 +885,11 @@ pub async fn authenticate_owner(
 }
 
 #[tauri::command]
+pub fn poll_hardware_buttons(state: State<'_, AppContext>) -> Result<Vec<crate::hardware::HardwareButtonEvent>, String> {
+    Ok(state.hardware.drain_button_events())
+}
+
+#[tauri::command]
 pub fn get_terminal_session(state: State<'_, AppContext>) -> Result<Option<TerminalSession>, String> {
     Ok(state.session.read().clone())
 }
