@@ -159,6 +159,7 @@ pub fn run() {
             commands::authenticate_owner,
             commands::poll_hardware_buttons,
             commands::get_terminal_session,
+            commands::get_license_key_diagnostics,
             commands::logout_terminal_session,
             commands::list_terminal_staff,
         ])

@@ -894,6 +894,49 @@ pub fn get_terminal_session(state: State<'_, AppContext>) -> Result<Option<Termi
     Ok(state.session.read().clone())
 }
 
+/// Diagnostic for "Cryptographic signature verification failed": fetches the
+/// cloud's active verification key and compares fingerprints with the exe's
+/// embedded key. A MISMATCH means the cloud is signing with a different (or
+/// ephemeral) keypair — set RSA_PRIVATE_KEY_PEM on the cloud and re-issue.
+#[tauri::command]
+pub async fn get_license_key_diagnostics(
+    cloud_url: Option<String>,
+    state: State<'_, AppContext>,
+) -> Result<serde_json::Value, String> {
+    let _ = &state;
+    let base = cloud_url
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string())
+        });
+    let url = format!("{}/api/v1/licenses/public-key", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Cannot reach cloud at {}: {}", base, e))?;
+    if !resp.status().is_success() {
+        return Err(format!("Cloud returned {} for public-key endpoint", resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let cloud_pem = body
+        .get("public_key_pem")
+        .and_then(|v| v.as_str())
+        .ok_or("Cloud response missing public_key_pem")?;
+    let embedded_fp = crate::license::embedded_key_fingerprint();
+    let cloud_fp = crate::license::public_key_fingerprint(cloud_pem);
+    Ok(json!({
+        "cloud_url": base,
+        "embedded_fingerprint": embedded_fp,
+        "cloud_fingerprint": cloud_fp,
+        "match": embedded_fp == cloud_fp,
+    }))
+}
+
 #[tauri::command]
 pub fn logout_terminal_session(state: State<'_, AppContext>) -> Result<(), String> {
     *state.session.write() = None;

@@ -210,6 +210,8 @@ async function invokeTauri(command, args = {}) {
         } else if (command === 'poll_hardware_buttons') {
             // Preview: press Ctrl+Shift+1 for ENTRY, Ctrl+Shift+2 for EXIT to inject a fake EVT
             return [];
+        } else if (command === 'get_license_key_diagnostics') {
+            return { cloud_url: 'preview', embedded_fingerprint: 'preview', cloud_fingerprint: 'preview', match: true };
         }
         return { success: true };
     }
@@ -2844,6 +2846,27 @@ async function submitLicenseKey() {
         }, 1200);
     } catch (e) {
         statusEl.innerText = "Activation Failed: " + e;
+        statusEl.className = "text-xs text-red-400";
+    }
+}
+
+async function checkLicenseKeyMatch() {
+    const urlInput = document.getElementById('license-cloud-url-input');
+    const statusEl = document.getElementById('license-keymatch-status');
+    const customUrl = urlInput ? urlInput.value.trim() : '';
+    statusEl.innerText = "Fetching cloud verification key...";
+    statusEl.className = "text-xs text-blue-300";
+    try {
+        const res = await invokeTauri('get_license_key_diagnostics', { cloudUrl: customUrl || null });
+        if (res.match) {
+            statusEl.innerText = `MATCH ✓ exe ${res.embedded_fingerprint} == cloud ${res.cloud_fingerprint}. Pasted keys from ${res.cloud_url} will verify.`;
+            statusEl.className = "text-xs text-emerald-400";
+        } else {
+            statusEl.innerText = `MISMATCH ✗ exe ${res.embedded_fingerprint} vs cloud ${res.cloud_fingerprint}. The cloud is signing with a different key (likely ephemeral — set RSA_PRIVATE_KEY_PEM on the cloud and re-issue the key).`;
+            statusEl.className = "text-xs text-red-400";
+        }
+    } catch (e) {
+        statusEl.innerText = "Key check failed: " + e;
         statusEl.className = "text-xs text-red-400";
     }
 }

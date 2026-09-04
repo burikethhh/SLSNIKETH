@@ -79,7 +79,8 @@ pub fn verify_license_token(
     token: &str,
     public_key_pem: &str,
 ) -> Result<LicenseClaims, Box<dyn std::error::Error + Send + Sync>> {
-    let stripped = token.trim().strip_prefix("GPOS-").ok_or("Invalid license prefix (expected GPOS-)")?;
+    let clean: String = token.chars().filter(|c| !c.is_whitespace()).collect();
+    let stripped = clean.strip_prefix("GPOS-").ok_or("Invalid license prefix (expected GPOS-)")?;
     let parts: Vec<&str> = stripped.split('.').collect();
     if parts.len() != 2 {
         return Err("Malformed license token format".into());
