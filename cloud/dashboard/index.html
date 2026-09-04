@@ -93,7 +93,7 @@
             <div class="flex items-center gap-3">
                 <button onclick="promptAdminKey()" class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-950/80 border border-purple-500/40 text-purple-300 hover:bg-purple-900 transition">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
-                    <span id="admin-auth-badge">Admin Key: Verified</span>
+                    <span id="admin-auth-badge">CEO: Sign In</span>
                 </button>
                 <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300">
                     <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -439,16 +439,30 @@
         <div class="glass-panel p-6 max-w-md w-full space-y-4 border border-purple-500/50">
             <div class="flex items-center gap-2 text-purple-200 font-bold brand text-lg">
                 <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                <span>Master Admin Authentication</span>
+                <span>CEO Account Login</span>
             </div>
             <p class="text-xs text-purple-300/80">
-                Enter your Master CEO Admin Key to authorize fleet licensing and remote kill-switch commands.
+                Sign in with your CEO email and password to authorize fleet licensing and remote kill-switch commands.
             </p>
-            <div>
-                <input type="password" id="input-admin-key" class="input-dark font-mono text-sm" placeholder="Enter ADMIN_SECRET_KEY">
+            <div class="flex gap-2 text-xs">
+                <button id="ceo-tab-login" onclick="switchCeoTab('login')" class="flex-1 py-1.5 rounded bg-purple-900/60 text-purple-200 border border-purple-500/40 font-bold">Sign In</button>
+                <button id="ceo-tab-register" onclick="switchCeoTab('register')" class="flex-1 py-1.5 rounded bg-slate-900/60 text-slate-400 border border-slate-800 font-bold">First-Time Setup</button>
             </div>
+            <div>
+                <label class="block text-xs text-purple-300 mb-1">CEO Email</label>
+                <input type="email" id="input-ceo-email" class="input-dark text-sm" placeholder="ceo@yourcompany.com" autocomplete="username">
+            </div>
+            <div>
+                <label class="block text-xs text-purple-300 mb-1">Password (min 8 characters)</label>
+                <input type="password" id="input-ceo-password" class="input-dark text-sm" placeholder="••••••••" autocomplete="current-password">
+            </div>
+            <div id="ceo-register-name-wrap" class="hidden">
+                <label class="block text-xs text-purple-300 mb-1">Display Name</label>
+                <input type="text" id="input-ceo-name" class="input-dark text-sm" placeholder="e.g. Gym Avenue CEO">
+            </div>
+            <div id="ceo-auth-error" class="text-xs text-red-400 min-h-[1rem]"></div>
             <div class="flex justify-end gap-2 pt-2">
-                <button onclick="saveAdminKey()" class="btn-purple px-4 py-2 rounded-lg text-xs font-bold">Authorize Session</button>
+                <button id="ceo-auth-submit" onclick="saveAdminKey()" class="btn-purple px-4 py-2 rounded-lg text-xs font-bold">Sign In as CEO</button>
             </div>
         </div>
     </div>
@@ -545,39 +559,81 @@
         let disabledGymIds = new Set();
 
         function getAdminKey() {
-            // No hardcoded default: the real admin key is only ever the value
-            // configured server-side via the ADMIN_SECRET_KEY secret. Operators
-            // must enter it once; it is then cached in localStorage.
-            return localStorage.getItem('gympos_admin_key') || "";
+            // CEO session token (`ceo:<email>`) from email+password login.
+            // Stored under a new key; any legacy master-key value is ignored.
+            return localStorage.getItem('gympos_ceo_token') || "";
+        }
+
+        function getAdminEmail() {
+            return localStorage.getItem('gympos_ceo_email') || "";
+        }
+
+        let ceoAuthMode = 'login';
+
+        function switchCeoTab(mode) {
+            ceoAuthMode = mode;
+            const loginBtn = document.getElementById('ceo-tab-login');
+            const regBtn = document.getElementById('ceo-tab-register');
+            const nameWrap = document.getElementById('ceo-register-name-wrap');
+            const submit = document.getElementById('ceo-auth-submit');
+            const err = document.getElementById('ceo-auth-error');
+            if (err) err.innerText = '';
+            const on = 'flex-1 py-1.5 rounded bg-purple-900/60 text-purple-200 border border-purple-500/40 font-bold';
+            const off = 'flex-1 py-1.5 rounded bg-slate-900/60 text-slate-400 border border-slate-800 font-bold';
+            if (loginBtn) loginBtn.className = mode === 'login' ? on : off;
+            if (regBtn) regBtn.className = mode === 'register' ? on : off;
+            if (nameWrap) nameWrap.classList.toggle('hidden', mode !== 'register');
+            if (submit) submit.innerText = mode === 'register' ? 'Create CEO Account' : 'Sign In as CEO';
         }
 
         function promptAdminKey() {
-            document.getElementById('input-admin-key').value = getAdminKey();
+            const em = document.getElementById('input-ceo-email');
+            if (em && getAdminEmail()) em.value = getAdminEmail();
+            const pw = document.getElementById('input-ceo-password');
+            if (pw) pw.value = '';
+            switchCeoTab('login');
             document.getElementById('admin-key-modal').classList.remove('hidden');
         }
 
+        function ceoAuthError(msg) {
+            const err = document.getElementById('ceo-auth-error');
+            if (err) err.innerText = msg;
+        }
+
         async function saveAdminKey() {
-            const key = document.getElementById('input-admin-key').value.trim();
-            if (!key) return alert("Please enter the Master Admin Key");
+            const email = document.getElementById('input-ceo-email').value.trim().toLowerCase();
+            const password = document.getElementById('input-ceo-password').value;
+            if (!email || !email.includes('@')) { ceoAuthError('Enter a valid CEO email address.'); return; }
+            if (password.length < 8) { ceoAuthError('Password must be at least 8 characters.'); return; }
+
+            const isRegister = ceoAuthMode === 'register';
+            const url = isRegister ? '/api/v1/auth/ceo-register' : '/api/v1/auth/ceo-login';
+            const body = isRegister
+                ? { email: email, password: password, display_name: document.getElementById('input-ceo-name').value.trim() || email }
+                : { email: email, password: password };
 
             try {
-                const res = await fetch('/api/v1/auth/admin-login', {
+                const res = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ admin_key: key })
+                    body: JSON.stringify(body)
                 });
+                const data = await res.json().catch(() => ({}));
 
-                if (res.ok) {
-                    localStorage.setItem('gympos_admin_key', key);
+                if (res.ok && data.token) {
+                    localStorage.setItem('gympos_ceo_token', data.token);
+                    localStorage.setItem('gympos_ceo_email', data.ceo_email || email);
+                    localStorage.removeItem('gympos_admin_key');
                     document.getElementById('admin-key-modal').classList.add('hidden');
-                    document.getElementById('admin-auth-badge').innerText = "Admin Key: Verified";
+                    document.getElementById('admin-auth-badge').innerText = `CEO: ${data.display_name || data.ceo_email || email}`;
+                    document.getElementById('input-ceo-password').value = '';
                     await refreshAllData();
-                    alert("CEO Admin session authorized!");
+                    alert(isRegister ? 'CEO account created — signed in!' : 'CEO session authorized!');
                 } else {
-                    alert("Invalid Master Admin Key!");
+                    ceoAuthError(data.error || `Sign in failed (${res.status}).`);
                 }
             } catch (e) {
-                alert("Auth error: " + e);
+                ceoAuthError('Network error: ' + e);
             }
         }
 
@@ -1295,7 +1351,13 @@
             }
         }
 
-        document.addEventListener('DOMContentLoaded', refreshAllData);
+        document.addEventListener('DOMContentLoaded', () => {
+            const em = getAdminEmail();
+            if (em && getAdminKey()) {
+                document.getElementById('admin-auth-badge').innerText = `CEO: ${em}`;
+            }
+            refreshAllData();
+        });
     </script>
 </body>
 </html>

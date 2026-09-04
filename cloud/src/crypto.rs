@@ -74,15 +74,6 @@ impl LicenseSigner {
     }
 }
 
-/// Generate a cryptographically random, URL-safe secret (32 bytes / 256 bits).
-/// Used as an ephemeral fallback for `ADMIN_SECRET_KEY` when it is not configured.
-pub fn generate_random_secret() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
 /// Standalone verifier (used by both Cloud and Desktop client)
 pub fn verify_license_token(
     token: &str,

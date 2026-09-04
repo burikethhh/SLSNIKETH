@@ -482,6 +482,29 @@ pub struct PromoVoucherConfig {
     pub is_active: bool,
 }
 
+// --- CEO Account Authentication (replaces the shared master admin key) ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CeoRegisterRequest {
+    pub email: String,
+    pub password: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CeoLoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CeoLoginResponse {
+    pub authenticated: bool,
+    pub token: String,
+    pub ceo_email: String,
+    pub display_name: String,
+}
+
 // --- Owner Portal DTOs & Analytics ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -68,11 +68,6 @@ pub struct CloudLicenseRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AdminLoginRequest {
-    pub admin_key: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevokeLicenseRequest {
     pub license_id: Uuid,
     pub reason: Option<String>,

@@ -6,7 +6,23 @@ import { test, expect } from '@playwright/test';
  * Tests use HTTP against real backend if running; otherwise assert static dashboard renders.
  */
 const CLOUD_URL = process.env.CLOUD_URL || 'http://127.0.0.1:8080';
-const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || 'gympos_master_ceo_secret_2026';
+const CEO_EMAIL = process.env.CEO_EMAIL || 'ceo@test.local';
+const CEO_PASSWORD = process.env.CEO_PASSWORD || 'TestCEO123';
+
+// Bootstrap the first CEO account (open only on a fresh database), login,
+// and return a `ceo:<email>` session token for admin-gated endpoints.
+async function ceoToken(request: any): Promise<string> {
+  await request.post(`${CLOUD_URL}/api/v1/auth/ceo-register`, {
+    data: { email: CEO_EMAIL, password: CEO_PASSWORD, display_name: 'Test CEO' },
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {});
+  const login = await request.post(`${CLOUD_URL}/api/v1/auth/ceo-login`, {
+    data: { email: CEO_EMAIL, password: CEO_PASSWORD },
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const body = await login.json();
+  return body.token as string;
+}
 
 async function cloudUp(request: any): Promise<boolean> {
   try {
@@ -62,19 +78,16 @@ test.describe('cloud dashboard', () => {
     expect(String(body.code || body.error || '')).toMatch(/LICENSE/i);
   });
 
-  test('admin auth + analytics fleet (Phase 5.1) returns mrr/breach', async ({ request }) => {
+  test('CEO account auth + analytics fleet returns mrr/breach', async ({ request }) => {
     const up = await cloudUp(request);
     if (!up) test.skip(true, 'cloud not running');
 
-    // Admin login
-    const login = await request.post(`${CLOUD_URL}/api/v1/auth/admin-login`, {
-      data: { admin_key: ADMIN_KEY },
-      headers: { 'Content-Type': 'application/json' },
-    });
-    expect(login.ok()).toBeTruthy();
+    // CEO email+password login (replaces the old master admin key)
+    const token = await ceoToken(request);
+    expect(token?.startsWith('ceo:')).toBeTruthy();
 
     const analytics = await request.get(`${CLOUD_URL}/api/v1/analytics/fleet`, {
-      headers: { Authorization: `Bearer ${ADMIN_KEY}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (analytics.status() === 404) {
       // Route not yet deployed in static preview — skip

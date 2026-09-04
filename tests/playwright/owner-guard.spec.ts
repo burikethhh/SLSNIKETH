@@ -6,7 +6,23 @@ import { test, expect } from '@playwright/test';
  * Skips if cloud not running.
  */
 const CLOUD_URL = process.env.CLOUD_URL || 'http://127.0.0.1:8080';
-const ADMIN_KEY = process.env.ADMIN_SECRET_KEY || 'gympos_master_ceo_secret_2026';
+const CEO_EMAIL = process.env.CEO_EMAIL || 'ceo@test.local';
+const CEO_PASSWORD = process.env.CEO_PASSWORD || 'TestCEO123';
+
+// Bootstrap the first CEO account (open only on a fresh database), login,
+// and return a `ceo:<email>` session token for CEO-gated endpoints.
+async function ceoToken(request: any): Promise<string> {
+  await request.post(`${CLOUD_URL}/api/v1/auth/ceo-register`, {
+    data: { email: CEO_EMAIL, password: CEO_PASSWORD, display_name: 'Test CEO' },
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {});
+  const login = await request.post(`${CLOUD_URL}/api/v1/auth/ceo-login`, {
+    data: { email: CEO_EMAIL, password: CEO_PASSWORD },
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const body = await login.json();
+  return body.token as string;
+}
 
 async function cloudUp(request: any): Promise<boolean> {
   try { const r = await request.get(`${CLOUD_URL}/health`, { timeout: 2000 }); return r.ok(); } catch { return false; }
@@ -17,8 +33,9 @@ function uniqEmail(prefix='qa'){ return `${prefix}+${Date.now()}${Math.floor(Mat
 test.describe('CEO guard: qualified email + owner exists', () => {
   test('unqualified email -> 400 QUALIFIED_EMAIL_REQUIRED', async ({ request }) => {
     if (!await cloudUp(request)) test.skip(true, 'cloud not running');
+    const CEO = await ceoToken(request);
     const r = await request.post(`${CLOUD_URL}/api/v1/gyms/register`, {
-      headers: { 'Authorization': `Bearer ${ADMIN_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${CEO}`, 'Content-Type': 'application/json' },
       data: { name: 'Ghost Gym', owner_email: 'notanemail', tier: 'basic', duration_days: 30 }
     });
     expect(r.status()).toBe(400);
@@ -28,9 +45,10 @@ test.describe('CEO guard: qualified email + owner exists', () => {
 
   test('unregistered owner -> 422 UNREGISTERED_OWNER with invite_url', async ({ request }) => {
     if (!await cloudUp(request)) test.skip(true, 'cloud not running');
+    const CEO = await ceoToken(request);
     const ghost = uniqEmail('ghost');
     const r = await request.post(`${CLOUD_URL}/api/v1/gyms/register`, {
-      headers: { 'Authorization': `Bearer ${ADMIN_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${CEO}`, 'Content-Type': 'application/json' },
       data: { name: 'Phantom Branch', owner_email: ghost, tier: 'basic', duration_days: 30 }
     });
     expect(r.status()).toBe(422);
@@ -72,8 +90,9 @@ test.describe('Multi-key per single owner email (interbranch)', () => {
     const branch1 = await r.json();
     expect(branch1.license_key).toContain('GPOS-');
     // 3. CEO mints second key for SAME owner (different branch)
+    const CEO = await ceoToken(request);
     r = await request.post(`${CLOUD_URL}/api/v1/gyms/register`, {
-      headers: { 'Authorization': `Bearer ${ADMIN_KEY}`, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': `Bearer ${CEO}`, 'Content-Type': 'application/json' },
       data: { name: 'Branch Beta', owner_email: owner, tier: 'pro', duration_days: 30 }
     });
     expect(r.status()).toBe(201);

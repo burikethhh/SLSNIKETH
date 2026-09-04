@@ -115,7 +115,7 @@ GymPOS SaaS is a subscription-based gym management and access control system del
 - [x] License key generator (RSA-2048 / PSS with SHA-256 signatures)
 - [x] Subscription & gym management endpoints
 - [x] Gym registration & fleet onboarding endpoints
-- [x] Master Admin API Key Authentication (`/api/v1/auth/admin-login`)
+- [x] CEO account authentication (`POST /api/v1/auth/ceo-register`, `POST /api/v1/auth/ceo-login` — validated email + password, `ceo:<email>` session tokens)
 
 **Track B (Rust)**
 - [x] Hardware COM port module (ESP32 serial communication with broken pipe auto-clear)
@@ -253,7 +253,7 @@ GymPOS SaaS is a subscription-based gym management and access control system del
 
 **Track A (Cloud)**
 - [x] Render deployment configuration verified (`render.yaml`)
-- [x] Environment variable documentation (`ADMIN_SECRET_KEY`, `RSA_PRIVATE_KEY_PEM`, `PORT`)
+- [x] Environment variable documentation (`RSA_PRIVATE_KEY_PEM`, `PORT` — CEO access is an email+password account, no master key)
 - [x] Multi-gym inter-branch synchronization validated
 
 **Track B (Rust)**

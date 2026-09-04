@@ -20,7 +20,9 @@ import os
 
 CLOUD_PORT = 8088
 CLOUD_URL = f"http://127.0.0.1:{CLOUD_PORT}"
-ADMIN_KEY = "gympos_master_ceo_secret_2026"
+CEO_EMAIL = "ceo@test.local"
+CEO_PASSWORD = "TestCEO123"
+CEO_NAME = "Test CEO"
 OWNER_EMAIL = f"franchise_{uuid.uuid4().hex[:6]}@titan.fitness"
 OWNER_PASSWORD = "titan_secure_password_2026"
 
@@ -77,11 +79,8 @@ def main():
         
         env = os.environ.copy()
         env["PORT"] = str(CLOUD_PORT)
-        # Pin ADMIN_SECRET_KEY for deterministic local/CI test auth. The server
-        # now generates a random ephemeral admin key when this is unset (see
-        # cloud/src/main.rs), which is correct for production security but
-        # would otherwise make this script's hardcoded ADMIN_KEY mismatch.
-        env["ADMIN_SECRET_KEY"] = ADMIN_KEY
+        # CEO accounts replaced the shared master key: no ADMIN_SECRET_KEY is
+        # needed. The test bootstraps its own CEO below via ceo-register.
         server_proc = subprocess.Popen([exe_path], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
         
@@ -112,7 +111,20 @@ def main():
 
 def run_full_e2e():
     print("\n[Phase 2: CEO Dashboard] Onboarding Franchise Gym Branches & Issuing RSA Keys...")
-    admin_headers = {"Authorization": f"Bearer {ADMIN_KEY}"}
+    # Bootstrap the CEO account (open only on a fresh test database), then login.
+    try:
+        post_json(f"{CLOUD_URL}/api/v1/auth/ceo-register", {
+            "email": CEO_EMAIL,
+            "password": CEO_PASSWORD,
+            "display_name": CEO_NAME
+        })
+    except Exception:
+        pass  # CEO may already exist
+    ceo_login, _ = post_json(f"{CLOUD_URL}/api/v1/auth/ceo-login", {
+        "email": CEO_EMAIL,
+        "password": CEO_PASSWORD
+    })
+    admin_headers = {"Authorization": f"Bearer {ceo_login['token']}"}
 
     # Ensure Owner Account is registered on portal (CEO Guard compliance)
     try:

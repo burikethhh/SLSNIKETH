@@ -68,12 +68,20 @@ def test_ui_ceo_hierarchy_flow():
         time.sleep(1)
 
         print("[7] Verifying Collapsible Owner Hierarchy on CEO Dashboard...")
-        # Authorize admin session if needed
-        ceo_page.evaluate("""() => {
-            localStorage.setItem('gympos_admin_key', 'gympos_master_ceo_secret_2026');
-            fetchGyms();
-        }""")
+        # CEO email+password login via the dashboard modal (no master key).
+        # Try sign-in; if no CEO exists yet, bootstrap via First-Time Setup.
+        ceo_page.click("#admin-auth-badge")
+        ceo_page.fill("#input-ceo-email", "ceo@test.local")
+        ceo_page.fill("#input-ceo-password", "TestCEO123")
+        ceo_page.click("#ceo-auth-submit")
         time.sleep(1.5)
+        if ceo_page.is_visible("#admin-key-modal"):
+            ceo_page.click("#ceo-tab-register")
+            ceo_page.fill("#input-ceo-email", "ceo@test.local")
+            ceo_page.fill("#input-ceo-password", "TestCEO123")
+            ceo_page.fill("#input-ceo-name", "Test CEO")
+            ceo_page.click("#ceo-auth-submit")
+            time.sleep(1.5)
 
         # Expand our owner card if not expanded
         owner_card_selector = f"div:has-text('{owner_email}')"

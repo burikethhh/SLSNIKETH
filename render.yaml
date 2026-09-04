@@ -16,10 +16,9 @@ services:
         fromDatabase:
           name: gympos-db
           property: connectionString
-      # Persistent CEO/admin bearer secret. Render generates and stores this
-      # once per service so it survives restarts/redeploys.
-      - key: ADMIN_SECRET_KEY
-        generateValue: true
+      # CEO platform access is an email+password account (cloud_ceo_accounts),
+      # created once via the Command Center First-Time Setup tab — no shared
+      # master key env var is needed anymore.
       # REQUIRED for production: without this, the server signs licenses with
       # a throwaway key that changes on every restart, invalidating all
       # previously issued licenses. Generate one with:

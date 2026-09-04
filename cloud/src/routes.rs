@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::crypto::{verify_license_token, LicenseSigner};
 use crate::db::CloudDatabase;
 use crate::models::{
-    AdminLoginRequest, GenerateLicenseRequest, GymRecord, LicenseResponse, RegisterGymRequest,
+    GenerateLicenseRequest, GymRecord, LicenseResponse, RegisterGymRequest,
     RemoteDisableRequest, RevokeLicenseRequest,
 };
 
@@ -36,34 +36,41 @@ pub struct AppState {
     pub gyms: Arc<RwLock<HashMap<Uuid, GymRecord>>>,
     pub disabled_gyms: Arc<RwLock<HashSet<Uuid>>>,
     pub revoked_licenses: Arc<RwLock<HashSet<Uuid>>>,
-    pub admin_key: String,
     pub login_limiter: Arc<RateLimiter>,
 }
 
-fn verify_admin_auth(headers: &HeaderMap, admin_key: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    use subtle::ConstantTimeEq;
+/// CEO gate: accepts `Bearer ceo:<email>` session tokens issued by
+/// `ceo_login`, verified against `cloud_ceo_accounts`. This replaced the old
+/// shared master admin key (which failed whenever the two sides disagreed on
+/// the secret) with a real account: validated email + Argon2id password.
+fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let unauthorized = || {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "Unauthorized: CEO account login required",
+                "code": "CEO_AUTH_REQUIRED"
+            })),
+        ))
+    };
 
-    let auth_header = headers
+    let token = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
-        .or_else(|| headers.get("x-admin-key").and_then(|v| v.to_str().ok()));
+        .or_else(|| headers.get("x-admin-key").and_then(|v| v.to_str().ok()))
+        .map(|t| t.trim().to_string());
 
-    // Constant-time comparison to avoid leaking key material via response-timing
-    // side channels on this security-critical CEO/admin gate.
-    let matches = auth_header
-        .map(|token| token.trim().as_bytes().ct_eq(admin_key.as_bytes()).into())
-        .unwrap_or(false);
-
-    match matches {
-        true => Ok(()),
-        _ => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "Unauthorized: Master Admin API key required",
-                "code": "ADMIN_AUTH_REQUIRED"
-            })),
-        )),
+    let email = match token.as_deref() {
+        Some(t) => t.strip_prefix("ceo:").unwrap_or(t).trim().to_lowercase(),
+        None => return unauthorized(),
+    };
+    if !email.contains('@') {
+        return unauthorized();
+    }
+    match db.ceo_exists(&email) {
+        Ok(true) => Ok(email),
+        _ => unauthorized(),
     }
 }
 
@@ -103,39 +110,122 @@ pub async fn health_check() -> impl IntoResponse {
     )
 }
 
-pub async fn admin_login(
+pub async fn ceo_register(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Json(payload): Json<AdminLoginRequest>,
+    Json(payload): Json<gympos_shared::CeoRegisterRequest>,
 ) -> Result<impl IntoResponse, axum::response::Response> {
-    // This is the single most sensitive endpoint in the system (the CEO/master
-    // key gates license issuance for the entire fleet) — limit brute-force
-    // guesses tightly: 5 attempts per IP per 15 minutes.
+    // First CEO is open bootstrap (fresh server has no accounts yet);
+    // additional CEOs can only be created by an already-logged-in CEO.
+    let existing = state.db.count_ceos().unwrap_or(0);
+    if existing > 0 {
+        verify_admin_auth(&headers, &state.db).map_err(|e| e.into_response())?;
+    }
+
     let ip = client_ip(&headers, Some(addr));
-    let key = format!("admin-login:{}", ip);
-    if let Err(retry_after) = state.login_limiter.check(&key, 5, StdDuration::from_secs(15 * 60)) {
+    if let Err(retry_after) = state.login_limiter.check(
+        &format!("ceo-register:{}", ip),
+        5,
+        StdDuration::from_secs(60 * 60),
+    ) {
         return Err(too_many_requests(retry_after).into_response());
     }
 
-    use subtle::ConstantTimeEq;
-    let ok: bool = payload.admin_key.trim().as_bytes().ct_eq(state.admin_key.as_bytes()).into();
-    if ok {
-        state.login_limiter.reset(&key);
-        Ok((
-            StatusCode::OK,
-            Json(json!({
-                "authenticated": true,
-                "token": state.admin_key,
-                "message": "CEO Admin session verified"
-            })),
-        ))
-    } else {
-        Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "Invalid Master Admin Key", "authenticated": false })),
+    let email_norm = payload.email.trim().to_lowercase();
+    let name = payload.display_name.trim();
+    if !is_qualified_email(&email_norm) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "A valid email address is required", "code": "QUALIFIED_EMAIL_REQUIRED" })),
         )
-            .into_response())
+            .into_response());
+    }
+    if payload.password.len() < 8 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Password must be at least 8 characters", "code": "WEAK_PASSWORD" })),
+        )
+            .into_response());
+    }
+    if name.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Display name is required", "code": "INVALID_CREDENTIALS" })),
+        )
+            .into_response());
+    }
+    if state.db.ceo_exists(&email_norm).unwrap_or(false) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "CEO email already registered — please login", "code": "EMAIL_EXISTS" })),
+        )
+            .into_response());
+    }
+    let password_hash = gympos_shared::hash_password(&payload.password);
+    let created = state.db.create_ceo_account(&email_norm, &password_hash, name).unwrap_or(false);
+    if !created {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "CEO email already registered — please login", "code": "EMAIL_EXISTS" })),
+        )
+            .into_response());
+    }
+    let _ = state.db.log_audit(&email_norm, None, "ceo_register", Some(name));
+
+    Ok((
+        StatusCode::CREATED,
+        Json(gympos_shared::CeoLoginResponse {
+            authenticated: true,
+            token: format!("ceo:{}", email_norm),
+            ceo_email: email_norm,
+            display_name: name.to_string(),
+        }),
+    ))
+}
+
+pub async fn ceo_login(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<gympos_shared::CeoLoginRequest>,
+) -> Result<impl IntoResponse, axum::response::Response> {
+    // This is the single most sensitive endpoint in the system (the CEO account
+    // gates license issuance for the entire fleet) — limit brute-force guesses
+    // tightly: 5 attempts per (IP, email) per 15 minutes, plus a per-IP sweep cap.
+    let email_norm = payload.email.trim().to_lowercase();
+    if !is_qualified_email(&email_norm) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "A valid email address is required", "code": "QUALIFIED_EMAIL_REQUIRED"}))).into_response());
+    }
+    let ip = client_ip(&headers, Some(addr));
+    let per_account_key = format!("ceo-login:{}:{}", ip, email_norm);
+    let per_ip_key = format!("ceo-login-ip:{}", ip);
+    if let Err(retry_after) = state.login_limiter.check(&per_account_key, 5, StdDuration::from_secs(15 * 60)) {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+    if let Err(retry_after) = state.login_limiter.check(&per_ip_key, 30, StdDuration::from_secs(15 * 60)) {
+        return Err(too_many_requests(retry_after).into_response());
+    }
+
+    match state.db.verify_ceo_login(&email_norm, &payload.password).unwrap_or(None) {
+        Some(display_name) => {
+            state.login_limiter.reset(&per_account_key);
+            let _ = state.db.log_audit(&email_norm, None, "ceo_login", None);
+            Ok((
+                StatusCode::OK,
+                Json(gympos_shared::CeoLoginResponse {
+                    authenticated: true,
+                    token: format!("ceo:{}", email_norm),
+                    ceo_email: email_norm,
+                    display_name,
+                }),
+            ))
+        }
+        None => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Invalid email or password", "authenticated": false })),
+        )
+            .into_response()),
     }
 }
 
@@ -155,7 +245,7 @@ pub async fn register_gym(
     headers: HeaderMap,
     Json(payload): Json<RegisterGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     // --- Stand-out guard: qualified email + must have owner portal account + tier branch cap ---
     let email_norm = payload.owner_email.trim().to_lowercase();
@@ -235,7 +325,7 @@ pub async fn list_gyms(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let gyms = state.gyms.read();
     let list: Vec<GymRecord> = gyms.values().cloned().collect();
     Ok((StatusCode::OK, Json(json!(list))))
@@ -246,7 +336,7 @@ pub async fn update_gym(
     headers: HeaderMap,
     Json(payload): Json<gympos_shared::UpdateGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let mut gyms = state.gyms.write();
     if let Some(gym) = gyms.get_mut(&payload.id) {
         gym.name = payload.name.clone();
@@ -267,7 +357,7 @@ pub async fn delete_gym(
     headers: HeaderMap,
     Path(gym_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let mut gyms = state.gyms.write();
     let mut disabled = state.disabled_gyms.write();
     if gyms.remove(&gym_id).is_some() {
@@ -289,7 +379,7 @@ pub async fn generate_license(
     headers: HeaderMap,
     Json(payload): Json<GenerateLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     // --- Same guard for standalone license mint (may be orphan gym_id, so tier check optional but owner must exist) ---
     let email_norm = payload.owner_email.trim().to_lowercase();
@@ -356,7 +446,7 @@ pub async fn list_licenses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let list = state.db.list_licenses().unwrap_or_default();
     Ok((StatusCode::OK, Json(json!(list))))
 }
@@ -366,7 +456,7 @@ pub async fn revoke_license_endpoint(
     headers: HeaderMap,
     Json(payload): Json<RevokeLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let reason = payload.reason.as_deref().unwrap_or("Revoked by CEO / Platform Administrator");
 
     let _ = state.db.revoke_license(&payload.license_id, reason);
@@ -535,7 +625,7 @@ pub async fn remote_disable(
     headers: HeaderMap,
     Json(payload): Json<RemoteDisableRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     let mut disabled = state.disabled_gyms.write();
     if payload.disable {
@@ -562,7 +652,7 @@ pub async fn analytics_fleet(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     let gyms = state.gyms.read().clone();
     let revoked = state.revoked_licenses.read().len() + state.disabled_gyms.read().len();
@@ -781,7 +871,7 @@ pub async fn admin_list_owners_hierarchy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let hierarchy = state.db.list_all_owners_with_branches().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -797,7 +887,7 @@ pub async fn admin_create_branch_for_owner(
     Path(owner_email): Path<String>,
     Json(payload): Json<AdminCreateBranchForOwnerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let owner_norm = owner_email.trim().to_lowercase();
     let branch_name = payload.branch_name.trim().to_string();
 
@@ -880,7 +970,7 @@ pub async fn admin_issue_branch_key(
     Path(gym_id): Path<Uuid>,
     Json(payload): Json<IssueBranchKeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     let gym = state.db.get_gym_by_id(&gym_id).map_err(|e| {
         (
@@ -1320,7 +1410,7 @@ pub async fn publish_release_endpoint(
     headers: HeaderMap,
     Json(payload): Json<PublishReleaseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
 
     let release_info = ReleaseInfo {
         version: payload.version.trim().to_string(),
@@ -1348,7 +1438,7 @@ pub async fn list_releases_endpoint(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.admin_key)?;
+    verify_admin_auth(&headers, &state.db)?;
     let list = state.db.list_releases().unwrap_or_default();
     Ok((StatusCode::OK, Json(list)))
 }

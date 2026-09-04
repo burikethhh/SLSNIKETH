@@ -4,11 +4,27 @@ import time
 import base64
 
 BASE_URL = "http://localhost:8080"
-ADMIN_KEY = "gympos_master_ceo_secret_2026"
-ADMIN_HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {ADMIN_KEY}"
-}
+CEO_EMAIL = "ceo@test.local"
+CEO_PASSWORD = "TestCEO123"
+CEO_NAME = "Test CEO"
+
+def ceo_headers():
+    # Bootstrap the first CEO account (open only on a fresh database), then login.
+    requests.post(f"{BASE_URL}/api/v1/auth/ceo-register", json={
+        "email": CEO_EMAIL,
+        "password": CEO_PASSWORD,
+        "display_name": CEO_NAME
+    })
+    login = requests.post(f"{BASE_URL}/api/v1/auth/ceo-login", json={
+        "email": CEO_EMAIL,
+        "password": CEO_PASSWORD
+    })
+    assert login.status_code == 200, f"CEO login failed: {login.text}"
+    token = login.json()["token"]
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
 
 def decode_token_payload(token):
     # token format: GPOS-<base64_json_claims>.<base64_signature>
@@ -79,8 +95,9 @@ def test_full_license_distribution_flow():
     assert branches[0]["license_key"] is None or branches[0]["license_key"] == ""
     print("    Owner Portal branch table shows: Awaiting CEO License Key.")
 
-    # Step 5: CEO Master Command Center inspects Owner Hierarchy
+    # Step 5: CEO Command Center inspects Owner Hierarchy
     print("[5] CEO queries /api/v1/admin/owners hierarchy...")
+    ADMIN_HEADERS = ceo_headers()
     admin_hier_resp = requests.get(f"{BASE_URL}/api/v1/admin/owners", headers=ADMIN_HEADERS)
     assert admin_hier_resp.status_code == 200, f"Admin hierarchy failed: {admin_hier_resp.text}"
     hierarchy = admin_hier_resp.json()

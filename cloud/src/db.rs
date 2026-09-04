@@ -98,6 +98,13 @@ impl CloudDatabase {
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS cloud_ceo_accounts (
+                ceo_email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS cloud_products (
                 id TEXT NOT NULL,
                 owner_email TEXT NOT NULL,
@@ -662,6 +669,57 @@ impl CloudDatabase {
             |r| r.get(0),
         ).unwrap_or(0);
         Ok(n > 0)
+    }
+
+    // --- CEO Accounts (platform super-admins; replaces the shared master key) ---
+
+    pub fn count_ceos(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cloud_ceo_accounts", [], |r| r.get(0))
+            .unwrap_or(0);
+        Ok(n as usize)
+    }
+
+    pub fn ceo_exists(&self, email: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM cloud_ceo_accounts WHERE ceo_email = ?1",
+            params![email.to_lowercase().trim()],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        Ok(n > 0)
+    }
+
+    /// Creates a CEO account. Returns `false` when the email is already taken
+    /// (never overwrites — use password reset flow instead of silent replace).
+    pub fn create_ceo_account(&self, email: &str, password_hash: &str, display_name: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let res = conn.execute(
+            "INSERT INTO cloud_ceo_accounts (ceo_email, password_hash, display_name, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(ceo_email) DO NOTHING",
+            params![email.to_lowercase().trim(), password_hash, display_name, Utc::now().to_rfc3339()],
+        )?;
+        Ok(res > 0)
+    }
+
+    /// Verifies a CEO plaintext password against the stored Argon2id hash.
+    /// Returns the display name on success.
+    pub fn verify_ceo_login(&self, email: &str, password: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT display_name, password_hash FROM cloud_ceo_accounts WHERE ceo_email = ?1",
+        )?;
+        let mut rows = stmt.query(params![email.to_lowercase().trim()])?;
+        if let Some(row) = rows.next()? {
+            let display_name: String = row.get(0)?;
+            let stored_hash: String = row.get(1)?;
+            if gympos_shared::verify_password(password, &stored_hash) {
+                return Ok(Some(display_name));
+            }
+        }
+        Ok(None)
     }
 
     pub fn count_owner_gyms(&self, email: &str) -> Result<usize> {

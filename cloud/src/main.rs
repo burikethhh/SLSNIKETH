@@ -43,24 +43,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         LicenseSigner::generate_ephemeral()?
     };
 
-    let admin_key = if let Ok(key) = std::env::var("ADMIN_SECRET_KEY") {
-        key
-    } else if let Ok(key) = std::fs::read_to_string("admin_secret_key.txt") {
-        key.trim().to_string()
-    } else {
-        let generated = crypto::generate_random_secret();
-        let _ = std::fs::write("admin_secret_key.txt", &generated);
-        tracing::warn!("================================================================");
-        tracing::warn!("SECURITY WARNING: ADMIN_SECRET_KEY is not set.");
-        tracing::warn!("Generated a random CEO admin key and saved it to admin_secret_key.txt");
-        tracing::warn!("(gitignored) so it persists across restarts on this machine.");
-        tracing::warn!("Set ADMIN_SECRET_KEY as a real secret for production deployments.");
-        tracing::warn!("================================================================");
-        generated
-    };
-    tracing::info!("Master Admin Authentication active");
+    // CEO accounts (email + Argon2id password) replaced the old shared master
+    // admin key: the first CEO registers once via POST /api/v1/auth/ceo-register
+    // (open bootstrap on a fresh database only), then logs in via
+    // POST /api/v1/auth/ceo-login for a `ceo:<email>` session token used on all
+    // /api/v1/admin/*, /licenses, /remote/* and /updates/* endpoints.
+    // Do NOT reintroduce a hardcoded fallback key/secret here.
+    tracing::info!("CEO account authentication active");
 
     let cloud_db = Arc::new(CloudDatabase::new("gympos_cloud.sqlite")?);
+    if cloud_db.count_ceos().unwrap_or(0) == 0 {
+        tracing::warn!("No CEO account exists yet — register the first one via POST /api/v1/auth/ceo-register (or the Command Center login screen).");
+    }
     let loaded_gyms = cloud_db.load_all_gyms().unwrap_or_default();
     let loaded_disabled = cloud_db.load_disabled_gyms().unwrap_or_default();
     let loaded_revoked_licenses = cloud_db.load_revoked_license_ids().unwrap_or_default();
@@ -86,7 +80,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         gyms: Arc::new(RwLock::new(loaded_gyms)),
         disabled_gyms: Arc::new(RwLock::new(loaded_disabled)),
         revoked_licenses: Arc::new(RwLock::new(loaded_revoked_licenses)),
-        admin_key,
         login_limiter,
     });
 
@@ -106,7 +99,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let app = Router::new()
         .route("/health", get(routes::health_check))
         .route("/api/v1/health", get(routes::health_check))
-        .route("/api/v1/auth/admin-login", post(routes::admin_login))
+        .route("/api/v1/auth/ceo-register", post(routes::ceo_register))
+        .route("/api/v1/auth/ceo-login", post(routes::ceo_login))
         .route("/api/v1/licenses/public-key", get(routes::get_public_key))
         .route("/api/v1/licenses", get(routes::list_licenses))
         .route("/api/v1/licenses/generate", post(routes::generate_license))
