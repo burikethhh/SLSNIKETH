@@ -220,7 +220,7 @@
     </div>
 
     <!-- Main Workspace Area -->
-    <div class="flex flex-1 mx-4 my-3 gap-4 overflow-hidden z-10">
+    <div class="flex flex-1 min-h-0 mx-4 my-3 gap-4 overflow-hidden z-10">
 
         <!-- Sidebar Navigation -->
         <aside class="glass-panel w-56 p-3 flex flex-col justify-between shrink-0">
@@ -319,7 +319,7 @@
         </aside>
 
         <!-- Viewport -->
-        <main id="viewport" class="glass-panel flex-1 p-6 overflow-y-auto">
+        <main id="viewport" class="glass-panel flex-1 min-h-0 p-6 overflow-y-auto">
             
             <!-- 1. DASHBOARD VIEW -->
             <div id="view-dashboard" class="space-y-6">
@@ -2124,11 +2124,11 @@
         </div>
     </div>
 
-    <!-- Dedicated Background Worker Viewports for Constant AI/Vision Processing -->
-    <div style="position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0.001; pointer-events: none; z-index: -9999; overflow: hidden;">
-        <video id="worker-cam1-entry" autoplay playsinline muted></video>
-        <video id="worker-cam2-exit" autoplay playsinline muted></video>
-        <video id="worker-cam3-tailgate" autoplay playsinline muted></video>
+    <!-- Background Worker Viewports: MUST stay at 1x1px, never rendered visually -->
+    <div style="position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; visibility: hidden; pointer-events: none; z-index: -9999;">
+        <video id="worker-cam1-entry" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
+        <video id="worker-cam2-exit" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
+        <video id="worker-cam3-tailgate" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
     </div>
 
     <script src="static/js/app.js"></script>

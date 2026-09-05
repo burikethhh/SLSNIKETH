@@ -4594,8 +4594,14 @@ function unlockTerminalUI() {
         }
 
         applyRolePermissions(currentTerminalSession.role);
+
+        // Always navigate to a visible view after unlocking.
+        // Staff (cashier) lands on POS; everyone else on Dashboard.
+        const landingView = (currentTerminalSession.role === 'staff') ? 'pos' : 'dashboard';
+        switchView(landingView);
     }
 }
+
 
 function applyRolePermissions(role) {
     const isStaff = (role === 'staff');
