@@ -53,10 +53,10 @@ jobs:
           workspaces: gympos-saas/desktop/src-tauri -> target
 
       # ── 4. Node.js (Tauri CLI bundler dependency) ─────────────────────────
-      - name: Setup Node.js 20
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       # ── 5. Verify ONNX models exist (fail fast) ───────────────────────────
       - name: Verify ONNX models are present
@@ -76,21 +76,9 @@ jobs:
             Write-Host "  ✓ $m ($sz MB)"
           }
 
-      # ── 6. Verify seed SQLite exists ──────────────────────────────────────
-      - name: Verify seed database
-        shell: pwsh
-        run: |
-          $db = "gympos-saas/bin/gympos_local.sqlite"
-          if (-not (Test-Path $db)) {
-            Write-Error "Missing seed DB: $db"
-            exit 1
-          }
-          $sz = [math]::Round((Get-Item $db).Length / 1KB, 0)
-          Write-Host "  ✓ Seed DB: $db (${sz} KB)"
-
       # ── 7. Build + publish via tauri-action ──────────────────────────────
       #    tauri-action reads tauri.conf.json, compiles the binary, runs the
-      #    NSIS bundler (with resources: ../models/* + seed DB), signs the
+      #    NSIS bundler (with resources: ../models/*), signs the
       #    installer, creates the GitHub Release, and uploads all artifacts.
       - name: Build and publish installer (Tauri Action)
         uses: tauri-apps/tauri-action@v0
