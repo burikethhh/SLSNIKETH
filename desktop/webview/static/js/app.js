@@ -1119,6 +1119,51 @@ function clearLiveConfirm(key) {
     delete liveConfirmState[key];
 }
 
+// Pre-match liveness (deadlock-free): each lane holds ONE pending detection.
+// process_face_scan is called only AFTER two consecutive live frames, so the
+// backend 3s atomic cooldown never suppresses the confirmation frame (that
+// was the old deadlock: frame 1 armed 'wait', frame 2 arrived at ~650ms and
+// Rust returned matched:false). Static photos yield near-identical embeddings
+// frame after frame; live faces always differ slightly (sensor noise,
+// micro-motion), so identical consecutive frames = spoof.
+const livePending = { cam1: null, cam2: null };
+const liveSpoofToastAt = { cam1: 0, cam2: 0 };
+function checkLivePending(lane, vector, landmarks) {
+    const prev = livePending[lane];
+    if (!prev) {
+        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes: 0 };
+        return 'wait';
+    }
+    if (Date.now() - prev.ts > 2000) { // stale pending — re-arm
+        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes: 0 };
+        return 'wait';
+    }
+    const cos = cosineOf(prev.vector, vector);
+    const disp = eyeDisplacement(prev.landmarks, landmarks);
+    if (cos >= 0.999 && disp < livenessMinPx()) {
+        const strikes = (prev.strikes || 0) + 1;
+        if (strikes >= 2) {
+            livePending[lane] = null;
+            return 'spoof';
+        }
+        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes };
+        return 'wait';
+    }
+    livePending[lane] = null;
+    return 'confirmed';
+}
+
+// Per-lane consecutive inference-failure counters — surfaces WHICH camera is
+// struggling (entry/exit/tailgate) instead of failing silently every 650ms.
+const camErr = { cam1: 0, cam2: 0, cam3: 0 };
+function noteCamErr(lane, label) {
+    camErr[lane] = (camErr[lane] || 0) + 1;
+    if (camErr[lane] === 15) {
+        showHudToast(`${label} struggling`, "15 consecutive scan failures — check Hardware Settings camera assignment.", "warn");
+    }
+}
+function noteCamOk(lane) { camErr[lane] = 0; }
+
 function toggleAutoGateMode() {
     autoGateActive = !autoGateActive;
     const badge = document.getElementById('auto-gate-mode-badge');
@@ -1339,7 +1384,7 @@ function armDoorOpenTailgateSurveillance(durationMs = TAILGATE_WINDOW_MS) {
 async function startAutonomousBiometricEngine() {
     // ── Loop 1: Camera 1 Entry Face Scanner (Direction 'in') — 650ms tick ──
     setInterval(async () => {
-        if (!autoGateActive || autoScanCam1Busy) return;
+        if (!autoGateActive || autoScanCam1Busy || document.hidden) return;
         autoScanCam1Busy = true;
         try {
             const video = getCaptureElement(1);
@@ -1352,9 +1397,30 @@ async function startAutonomousBiometricEngine() {
             try {
                 scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
             } catch (e) {
+                noteCamErr('cam1', 'Camera 1 (Entry)');
                 return;
             }
             if (!scanRes || !scanRes.face_detected || !scanRes.vector) return;
+            noteCamOk('cam1');
+
+            // Live-scan quality floors (mirror enrollment): YuNet ghost floor
+            // + 80px minimum face size (too far/small = unreliable embedding).
+            if ((scanRes.confidence ?? 0) < 0.5) return;
+            const _bb1 = scanRes.box || {};
+            if (Math.min(_bb1.w || 0, _bb1.h || 0) < 80) return;
+
+            // Pre-match liveness: first sighting only arms pending state;
+            // process_face_scan runs once, on the confirmed-live frame.
+            const live1 = checkLivePending('cam1', scanRes.vector, scanRes.landmarks);
+            if (live1 === 'wait') return;
+            if (live1 === 'spoof') {
+                const now0 = Date.now();
+                if (now0 - (liveSpoofToastAt.cam1 || 0) > 8000) {
+                    liveSpoofToastAt.cam1 = now0;
+                    showHudToast("Liveness Check Failed", "Static image suspected — entry denied. Present a live face.", "danger");
+                }
+                return;
+            }
 
             let res;
             try {
@@ -1369,15 +1435,6 @@ async function startAutonomousBiometricEngine() {
             const now = Date.now();
             if (res && res.matched) {
                 const matchedId = res.member_id || 'unknown';
-                // Two-frame confirmation + liveness: first sighting only arms
-                // pending state; unlock needs a second consecutive live match.
-                const confirm = confirmLiveMatch('cam1', matchedId, scanRes.vector, scanRes.landmarks);
-                if (confirm === 'wait') return;
-                if (confirm === 'spoof') {
-                    memberCooldownMap.set(matchedId, now);
-                    showHudToast("Liveness Check Failed", "Static image suspected — entry denied. Present a live face.", "danger");
-                    return;
-                }
                 const lastSeen = memberCooldownMap.get(matchedId) || 0;
                 if (now - lastSeen < 12000) return; // 12-second debounce
                 memberCooldownMap.set(matchedId, now);
@@ -1433,7 +1490,7 @@ async function startAutonomousBiometricEngine() {
 
     // ── Loop 2: Camera 2 Exit Face Scanner (Direction 'out') — 650ms tick ──
     setInterval(async () => {
-        if (!autoGateActive || autoScanCam2Busy) return;
+        if (!autoGateActive || autoScanCam2Busy || document.hidden) return;
         autoScanCam2Busy = true;
         try {
             const video = getCaptureElement(2);
@@ -1446,9 +1503,28 @@ async function startAutonomousBiometricEngine() {
             try {
                 scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
             } catch (e) {
+                noteCamErr('cam2', 'Camera 2 (Exit)');
                 return;
             }
             if (!scanRes || !scanRes.face_detected || !scanRes.vector) return;
+            noteCamOk('cam2');
+
+            // Live-scan quality floors (same as entry).
+            if ((scanRes.confidence ?? 0) < 0.5) return;
+            const _bb2 = scanRes.box || {};
+            if (Math.min(_bb2.w || 0, _bb2.h || 0) < 80) return;
+
+            // Pre-match liveness (per-lane state, deadlock-free).
+            const live2 = checkLivePending('cam2', scanRes.vector, scanRes.landmarks);
+            if (live2 === 'wait') return;
+            if (live2 === 'spoof') {
+                const now0 = Date.now();
+                if (now0 - (liveSpoofToastAt.cam2 || 0) > 8000) {
+                    liveSpoofToastAt.cam2 = now0;
+                    showHudToast("Liveness Check Failed", "Static image suspected — exit denied. Present a live face.", "danger");
+                }
+                return;
+            }
 
             let res;
             try {
@@ -1463,14 +1539,6 @@ async function startAutonomousBiometricEngine() {
             const now = Date.now();
             if (res && res.matched) {
                 const matchedId = res.member_id || 'unknown';
-                // Same two-frame confirmation + liveness as entry (per-lane state).
-                const confirm = confirmLiveMatch('cam2', matchedId, scanRes.vector, scanRes.landmarks);
-                if (confirm === 'wait') return;
-                if (confirm === 'spoof') {
-                    memberCooldownMap.set(matchedId, now);
-                    showHudToast("Liveness Check Failed", "Static image suspected — exit denied. Present a live face.", "danger");
-                    return;
-                }
                 const lastSeen = memberCooldownMap.get(matchedId) || 0;
                 if (now - lastSeen < 12000) return;
                 memberCooldownMap.set(matchedId, now);
@@ -1523,7 +1591,7 @@ async function startAutonomousBiometricEngine() {
     // only); armed ticks run every tick. All three camera loops stay concurrent.
     let cam3Economy = 0;
     setInterval(async () => {
-        if (!autoGateActive || autoScanCam3Busy) return;
+        if (!autoGateActive || autoScanCam3Busy || document.hidden) return;
         const armed = activeDoorPassageWindow;
         if (!armed) {
             cam3Economy++;
@@ -1542,13 +1610,20 @@ async function startAutonomousBiometricEngine() {
                 x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
                 w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
             };
-            const res = await invokeTauri('count_persons_in_frame', {
-                imageBase64: frame,
-                roiX: roi.x,
-                roiY: roi.y,
-                roiWidth: roi.w,
-                roiHeight: roi.h,
-            });
+            let res;
+            try {
+                res = await invokeTauri('count_persons_in_frame', {
+                    imageBase64: frame,
+                    roiX: roi.x,
+                    roiY: roi.y,
+                    roiWidth: roi.w,
+                    roiHeight: roi.h,
+                });
+            } catch (e) {
+                noteCamErr('cam3', 'Camera 3 (Tailgate)');
+                return;
+            }
+            noteCamOk('cam3');
 
             // Tracker overlay (always, cheap JS-side): stable IDs + ROI box.
             const boxes = (res && res.boxes) || [];
@@ -1558,10 +1633,11 @@ async function startAutonomousBiometricEngine() {
 
             if (!activeDoorPassageWindow) return;
             doorOpenFrameCount++;
-            // Alarm legs (motion-confirmed): 2+ in-ROI persons with ROI
-            // motion, OR 2+ distinct tracked IDs having entered the ROI.
+            // Alarm legs: 2+ in-ROI persons WITH ROI motion (>=2% pixel churn,
+            // kills YOLO ghost false alarms on posters/shadows), OR 2+ distinct
+            // tracked IDs having entered the ROI (tracks imply movement already).
             const motion = (res && res.motion_in_roi) || 0;
-            const multiStatic = res && res.person_count > 1;
+            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
             const multiTracked = tracked.everCount >= 2;
             if (multiStatic || multiTracked) {
                 suspiciousFrames++;

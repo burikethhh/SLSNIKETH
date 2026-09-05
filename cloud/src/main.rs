@@ -95,10 +95,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokens,
     });
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // CORS: the dashboards and portal are served same-origin from this
+    // process, and the desktop terminals are non-browser clients (no CORS
+    // enforcement), so a wide-open `allow_origin(Any)` only benefited
+    // third-party sites calling the authenticated API from a victim's
+    // browser. Default: no CORS layer at all (browsers enforce same-origin).
+    // Set ALLOWED_CORS_ORIGIN to the single origin that needs cross-site API
+    // access if one ever exists.
+    let cors = std::env::var("ALLOWED_CORS_ORIGIN")
+        .ok()
+        .map(|origin| origin.trim().to_string())
+        .filter(|origin| !origin.is_empty())
+        .and_then(|origin| origin.parse::<axum::http::HeaderValue>().ok())
+        .map(|value| {
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::AllowOrigin::exact(value))
+                .allow_methods(Any)
+                .allow_headers(Any)
+        });
 
     let dashboard_dir = if std::path::Path::new("cloud/dashboard").exists() {
         "cloud/dashboard"
@@ -150,9 +164,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .route("/api/v1/updates/publish", post(routes::publish_release_endpoint))
         .route("/api/v1/updates/releases", get(routes::list_releases_endpoint))
         .fallback_service(dashboard_service)
-        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
+
+    // Optional CORS applied last so it only exists when explicitly configured.
+    let app = match cors {
+        Some(cors) => app.layer(cors),
+        None => app,
+    };
 
     let port: u16 = std::env::var("PORT")
         .ok()

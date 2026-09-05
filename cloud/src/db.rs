@@ -663,6 +663,8 @@ impl CloudDatabase {
 
     /// Verifies a plaintext password against the stored Argon2id hash (or a
     /// legacy unsalted SHA-256 hash for accounts created before the migration).
+    /// On a successful legacy match the stored hash is transparently upgraded
+    /// to Argon2id so pre-migration accounts stop being rainbow-tableable.
     pub async fn verify_owner_login(&self, email: &str, password: &str) -> sqlx::Result<Option<String>> {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT company_name, password_hash FROM cloud_owner_accounts WHERE owner_email = $1",
@@ -672,6 +674,17 @@ impl CloudDatabase {
         .await?;
         if let Some((company_name, stored_hash)) = row {
             if gympos_shared::verify_password(password, &stored_hash) {
+                if gympos_shared::password_is_legacy(&stored_hash) {
+                    let upgraded = gympos_shared::hash_password(password);
+                    if let Err(e) = sqlx::query("UPDATE cloud_owner_accounts SET password_hash = $1 WHERE owner_email = $2")
+                        .bind(&upgraded)
+                        .bind(email)
+                        .execute(&self.pool)
+                        .await
+                    {
+                        tracing::warn!("Failed to upgrade legacy owner password hash for {}: {}", email, e);
+                    }
+                }
                 return Ok(Some(company_name));
             }
         }
@@ -721,7 +734,8 @@ impl CloudDatabase {
     }
 
     /// Verifies a CEO plaintext password against the stored Argon2id hash.
-    /// Returns the display name on success.
+    /// Returns the display name on success. Legacy unsalted-SHA-256 hashes are
+    /// transparently upgraded to Argon2id on the successful login itself.
     pub async fn verify_ceo_login(&self, email: &str, password: &str) -> sqlx::Result<Option<String>> {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT display_name, password_hash FROM cloud_ceo_accounts WHERE ceo_email = $1",
@@ -731,6 +745,17 @@ impl CloudDatabase {
         .await?;
         if let Some((display_name, stored_hash)) = row {
             if gympos_shared::verify_password(password, &stored_hash) {
+                if gympos_shared::password_is_legacy(&stored_hash) {
+                    let upgraded = gympos_shared::hash_password(password);
+                    if let Err(e) = sqlx::query("UPDATE cloud_ceo_accounts SET password_hash = $1 WHERE ceo_email = $2")
+                        .bind(&upgraded)
+                        .bind(email.to_lowercase().trim().to_string())
+                        .execute(&self.pool)
+                        .await
+                    {
+                        tracing::warn!("Failed to upgrade legacy CEO password hash for {}: {}", email, e);
+                    }
+                }
                 return Ok(Some(display_name));
             }
         }

@@ -178,54 +178,36 @@ pub struct LicenseManager {
     current_claims: parking_lot::RwLock<Option<LicenseClaims>>,
 }
 
-use gympos_shared::LicenseTier;
-use uuid::Uuid;
-
 impl LicenseManager {
-    pub fn default_pro_claims() -> LicenseClaims {
-        LicenseClaims {
-            license_id: Uuid::parse_str("f6fbf1ad-bdf3-43fb-b25c-5f8809859c8f")
-                .unwrap_or_else(|_| Uuid::new_v4()),
-            gym_id: Uuid::parse_str("dac52d74-056d-405c-b25b-43a6eeb0c94f")
-                .unwrap_or_else(|_| Uuid::new_v4()),
-            gym_name: "Titan Fitness".to_string(),
-            owner_email: "ceo@titan.fitness".to_string(),
-            tier: LicenseTier::Pro,
-            issued_at: Utc::now() - chrono::Duration::days(1),
-            expires_at: Utc::now() + chrono::Duration::days(365),
-            max_members: 500,
-            hardware_lock_enabled: true,
-            tailgate_detection_enabled: true,
-            hwid: String::new(),
-            ip_hint: String::new(),
-            exp_unix: (Utc::now() + chrono::Duration::days(365)).timestamp(),
-            grace_until: (Utc::now() + chrono::Duration::days(368)).timestamp(),
-        }
-    }
-
+    /// Starts UNLICENSED. There is deliberately no built-in default license:
+    /// a demo claims blob shipped in the binary previously made every fresh
+    /// install report an active Pro subscription without any key at all,
+    /// defeating the CEO-only licensing model.
     pub fn new(public_key_pem: Option<String>) -> Self {
         Self {
             public_key_pem: public_key_pem.unwrap_or_else(|| EMBEDDED_PUBLIC_KEY_PEM.to_string()),
-            current_claims: parking_lot::RwLock::new(Some(Self::default_pro_claims())),
+            current_claims: parking_lot::RwLock::new(None),
         }
     }
 
-    pub fn set_public_key(&mut self, pem: String) {
-        self.public_key_pem = pem;
-    }
-
     pub fn verify_and_apply(&self, token: &str) -> Result<LicenseStatus, String> {
-        let mut claims = self.verify_token(token)?;
+        let claims = self.verify_token(token)?;
 
-        // Hardware lock: if issuer bound a hwid and HW lock is enabled, enforce 1-device binding.
+        // Hardware lock: if the issuer bound a HWID and HW lock is enabled,
+        // the license only activates on that device. Previously a mismatch was
+        // silently "auto-bound" to the current machine, which made HWID
+        // binding decorative — a copied license file now hard-fails here.
         if claims.hardware_lock_enabled && !claims.hwid.is_empty() {
             let this_hwid = get_hwid();
             if claims.hwid != this_hwid {
                 tracing::warn!(
-                    "Hardware lock bound to '{}', current machine is '{}'. Auto-binding for active session.",
+                    "Hardware lock bound to '{}', current machine is '{}'. Rejecting license.",
                     claims.hwid, this_hwid
                 );
-                claims.hwid = this_hwid;
+                return Err(format!(
+                    "License is hardware-locked to another device (bound HWID '{}'). Contact the platform administrator to re-issue.",
+                    claims.hwid
+                ));
             }
         }
 
@@ -254,28 +236,23 @@ impl LicenseManager {
             .decode(parts[1])
             .map_err(|e| format!("Base64 signature decode error: {}", e))?;
 
-        // 1. Attempt strict cryptographic verification with embedded public key
-        let verified_crypto = (|| -> Result<(), String> {
-            let public_key = rsa::RsaPublicKey::from_public_key_pem(&self.public_key_pem)
-                .map_err(|e| format!("Invalid public key PEM: {}", e))?;
-            let verifying_key = VerifyingKey::<Sha256>::new(public_key);
-            let signature = rsa::pss::Signature::try_from(sig_bytes.as_slice())
-                .map_err(|e| format!("Invalid signature structure: {}", e))?;
-            verifying_key
-                .verify(&claims_bytes, &signature)
-                .map_err(|e| format!("Cryptographic signature verification failed: {}", e))
-        })();
+        // RSA-PSS signature verification is MANDATORY and fail-closed. The
+        // previous build logged a warning and accepted the claims anyway,
+        // which let anyone forge an unlimited Ultra license from arbitrary
+        // JSON. If verification fails here the key is NOT valid — use
+        // `get_license_key_diagnostics` to compare this exe's embedded key
+        // fingerprint against the cloud's signing key and re-issue.
+        let public_key = rsa::RsaPublicKey::from_public_key_pem(&self.public_key_pem)
+            .map_err(|e| format!("Invalid public key PEM: {}", e))?;
+        let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+        let signature = rsa::pss::Signature::try_from(sig_bytes.as_slice())
+            .map_err(|e| format!("Invalid signature structure: {}", e))?;
+        verifying_key
+            .verify(&claims_bytes, &signature)
+            .map_err(|_| "Cryptographic signature verification failed: license key is invalid or was not issued by the platform".to_string())?;
 
-        // 2. Parse claims from payload
         let claims: LicenseClaims = serde_json::from_slice(&claims_bytes)
             .map_err(|e| format!("JSON deserialization error: {}", e))?;
-
-        if let Err(crypto_err) = verified_crypto {
-            tracing::warn!(
-                "RSA signature check bypassed for valid GPOS claims token ({:?}) during cloud key sync/testing: {}",
-                claims.license_id, crypto_err
-            );
-        }
 
         Ok(claims)
     }

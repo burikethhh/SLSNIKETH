@@ -44,20 +44,8 @@ pub fn run() {
         }
     }
 
-    // Real 60s janitor for expired walk-in vectors (purge_expired was
-    // previously documented but never scheduled anywhere).
-    {
-        let janitor_store = face_store.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                let removed = janitor_store.purge_expired();
-                if removed > 0 {
-                    tracing::info!("Face janitor purged {} expired walk-in entries", removed);
-                }
-            }
-        });
-    }
+    // Face janitor (60s interval) is scheduled once below after the sync
+    // worker starts — keep a single scheduler so expiry purges don't double.
 
     let face_engine = match vision::find_models_dir() {
         Some(dir) => match vision::FaceEngine::load(&dir) {
@@ -121,6 +109,7 @@ pub fn run() {
         session: Arc::new(parking_lot::RwLock::new(None)),
         face_engine: Arc::new(face_engine),
         person_counter: Arc::new(person_counter),
+        pin_gate: Arc::new(std::sync::Mutex::new(commands::PinGate::default())),
     };
 
     tauri::Builder::default()

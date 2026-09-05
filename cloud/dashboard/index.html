@@ -575,6 +575,19 @@
             return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         }
 
+        // Escapes a value interpolated into an inline `onclick="fn('…')"`
+        // attribute: JS-string escaping FIRST (backslash + single quote), then
+        // HTML-attribute escaping via ceoEscape. The old `.replace(/'/g,"\\'")`
+        // alone let a double quote in a branch/company name break out of the
+        // attribute and run arbitrary script in the CEO's session.
+        function jsAttr(s) {
+            const v = String(s ?? '')
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/[\r\n]/g, ' ');
+            return ceoEscape(v);
+        }
+
         let ceoAuthMode = 'login';
 
         function switchCeoTab(mode) {
@@ -793,7 +806,7 @@
                                         ACTIVE (${b.days_remaining}d)
                                     </span>
                                     ${branchIsAtRisk ? `<span class="inline-flex items-center gap-1 text-[10px] font-bold text-red-300 bg-red-950/80 border border-red-600 px-2 py-0.5 rounded animate-pulse" title="License expires within 7 days — renew now">⚠ AT RISK</span>` : ''}
-                                    <button onclick="prompt('Cryptographic RSA License Key for ${b.name.replace(/'/g, "\\'")}:', '${b.license_key}')" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950 border border-purple-800 text-purple-300 hover:text-white" title="View / Copy Key">
+                                    <button onclick="prompt('Cryptographic RSA License Key for ${jsAttr(b.name)}:', '${jsAttr(b.license_key)}')" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-950 border border-purple-800 text-purple-300 hover:text-white" title="View / Copy Key">
                                         GPOS-...
                                     </button>
                                 </div>
@@ -823,16 +836,16 @@
                                 </td>
                                 <td class="py-2.5">${licBadge}</td>
                                 <td class="py-2.5">
-                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono text-purple-300 bg-purple-950/60 border border-purple-800/50">HWID-BOUND</span>
+                                    <span class="px-1.5 py-0.5 rounded text-[10px] font-mono text-purple-300 bg-purple-950/60 border border-purple-800/50" title="Hardware lock is enforced on the terminal when the issued key carries a HWID binding">HW LOCK</span>
                                 </td>
                                 <td class="py-2.5 text-right space-x-1">
                                     ${b.license_key ? `
-                                        <button onclick="openIssueBranchKeyModal('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}', '${owner.owner_email}', '${b.tier}')" title="Renew License" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Renew</button>
+                                        <button onclick="openIssueBranchKeyModal('${jsAttr(b.gym_id)}', '${jsAttr(b.name)}', '${jsAttr(owner.owner_email)}', '${jsAttr(b.tier)}')" title="Renew License" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Renew</button>
                                     ` : `
-                                        <button onclick="openIssueBranchKeyModal('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}', '${owner.owner_email}', '${b.tier}')" title="Issue RSA-2048 Key" class="px-2.5 py-1 rounded text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow animate-pulse">⚡ Issue Key</button>
+                                        <button onclick="openIssueBranchKeyModal('${jsAttr(b.gym_id)}', '${jsAttr(b.name)}', '${jsAttr(owner.owner_email)}', '${jsAttr(b.tier)}')" title="Issue RSA-2048 Key" class="px-2.5 py-1 rounded text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white shadow animate-pulse">⚡ Issue Key</button>
                                     `}
-                                    <button onclick="toggleKillSwitch('${b.gym_id}', ${!isDisabled})" title="${isDisabled ? 'Reactivate' : 'Kill Switch'}" class="px-2 py-1 rounded text-[10px] font-bold ${isDisabled ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">${isDisabled ? 'Enable' : 'Kill'}</button>
-                                    <button onclick="deleteGym('${b.gym_id}', '${b.name.replace(/'/g, "\\'")}')" title="Delete Branch" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-900 hover:bg-red-950 text-red-400 border border-slate-800">Del</button>
+                                    <button onclick="toggleKillSwitch('${jsAttr(b.gym_id)}', ${!isDisabled})" title="${isDisabled ? 'Reactivate' : 'Kill Switch'}" class="px-2 py-1 rounded text-[10px] font-bold ${isDisabled ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">${isDisabled ? 'Enable' : 'Kill'}</button>
+                                    <button onclick="deleteGym('${jsAttr(b.gym_id)}', '${jsAttr(b.name)}')" title="Delete Branch" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-900 hover:bg-red-950 text-red-400 border border-slate-800">Del</button>
                                 </td>
                             </tr>
                         `;
@@ -841,7 +854,7 @@
                 return `
                     <div class="border border-purple-900/40 rounded-lg overflow-hidden bg-purple-950/20 transition">
                         <!-- Collapsible Header -->
-                        <div onclick="toggleOwnerAccordion('${owner.owner_email}')" class="p-3.5 flex items-center justify-between cursor-pointer hover:bg-purple-900/20 transition select-none">
+                        <div onclick="toggleOwnerAccordion('${jsAttr(owner.owner_email)}')" class="p-3.5 flex items-center justify-between cursor-pointer hover:bg-purple-900/20 transition select-none">
                             <div class="flex items-center gap-3">
                                 <div class="w-6 h-6 rounded bg-purple-900/60 flex items-center justify-center text-purple-300 text-xs font-bold">
                                     ${isExpanded ? '▲' : '▼'}
@@ -867,7 +880,7 @@
                                         All Licensed
                                     </span>
                                 `}
-                                <button onclick="event.stopPropagation(); openAdminAddBranchModal('${owner.owner_email}', '${owner.company_name.replace(/'/g, "\\'")}')" class="px-2.5 py-1 rounded text-xs font-bold bg-purple-700 hover:bg-purple-600 text-white shadow transition">
+                                <button onclick="event.stopPropagation(); openAdminAddBranchModal('${jsAttr(owner.owner_email)}', '${jsAttr(owner.company_name)}')" class="px-2.5 py-1 rounded text-xs font-bold bg-purple-700 hover:bg-purple-600 text-white shadow transition">
                                     + Add Branch
                                 </button>
                             </div>
@@ -1048,15 +1061,15 @@
 
                 return `
                     <tr class="hover:bg-purple-950/20 transition ${isRevoked ? 'opacity-50' : ''}">
-                        <td class="py-2.5 font-mono text-[11px] text-purple-300" title="${lic.license_id}">${lic.license_id.substring(0, 8)}...</td>
-                        <td class="py-2.5 font-semibold text-purple-100">${lic.gym_name}</td>
-                        <td class="py-2.5 text-purple-300 font-mono text-[11px]">${lic.owner_email}</td>
-                        <td class="py-2.5 uppercase font-bold text-amber-300 text-[11px]">${lic.tier} (${lic.max_members} max)</td>
-                        <td class="py-2.5 text-purple-400 font-mono text-[11px]">${new Date(lic.expires_at).toLocaleDateString()}</td>
+                        <td class="py-2.5 font-mono text-[11px] text-purple-300" title="${ceoEscape(lic.license_id)}">${ceoEscape(String(lic.license_id).substring(0, 8))}...</td>
+                        <td class="py-2.5 font-semibold text-purple-100">${ceoEscape(lic.gym_name)}</td>
+                        <td class="py-2.5 text-purple-300 font-mono text-[11px]">${ceoEscape(lic.owner_email)}</td>
+                        <td class="py-2.5 uppercase font-bold text-amber-300 text-[11px]">${ceoEscape(lic.tier)} (${ceoEscape(lic.max_members)} max)</td>
+                        <td class="py-2.5 text-purple-400 font-mono text-[11px]">${ceoEscape(new Date(lic.expires_at).toLocaleDateString())}</td>
                         <td class="py-2.5">${statusBadge}</td>
                         <td class="py-2.5 text-right space-x-1">
-                            <button onclick="copyRawToken('${lic.raw_token.replace(/'/g, "\\'")}')" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-800 transition">Copy Key</button>
-                            ${!isRevoked ? `<button onclick="revokeLicense('${lic.license_id}', '${lic.gym_name.replace(/'/g, "\\'")}')" class="px-2 py-1 rounded text-[10px] font-bold bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 transition">Revoke</button>` : `<span class="text-[10px] text-slate-500 font-mono">Revoked</span>`}
+                            <button onclick="copyRawToken('${jsAttr(lic.raw_token)}')" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-800 transition">Copy Key</button>
+                            ${!isRevoked ? `<button onclick="revokeLicense('${jsAttr(lic.license_id)}', '${jsAttr(lic.gym_name)}')" class="px-2 py-1 rounded text-[10px] font-bold bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 transition">Revoke</button>` : `<span class="text-[10px] text-slate-500 font-mono">Revoked</span>`}
                         </td>
                     </tr>
                 `;

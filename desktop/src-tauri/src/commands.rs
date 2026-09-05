@@ -2,7 +2,7 @@ use chrono::Utc;
 use gympos_shared::{
     AppSettings, CartItem, Coach, CoachSession, CreateCoachRequest, CreateExpenseRequest, CreateMemberRequest,
     CreateProductRequest, CreateWalkInRequest, ExpenseRecord, LicenseStatus, Member, ProductItem, SaleTransaction,
-    StaffAccount, StaffLoginResponse, StaffRole, TerminalSession, UpdateCoachRequest, UpdateMemberRequest,
+    StaffLoginResponse, StaffRole, TerminalSession, UpdateCoachRequest, UpdateMemberRequest,
     UpdateProductRequest, WalkInRecord,
 };
 use serde_json::json;
@@ -29,6 +29,63 @@ pub struct AppContext {
     /// (`yolov8n.onnx`). `None` when the model failed to load — callers of
     /// `count_persons_in_frame` get a clear error instead of a panic.
     pub person_counter: Arc<Option<crate::vision::PersonCounter>>,
+    /// Brute-force defense for the 4-8 digit staff PIN pad (only 10^4-10^8
+    /// combinations, so an unlocked kiosk must not accept unlimited guesses).
+    pub pin_gate: Arc<std::sync::Mutex<PinGate>>,
+    /// Last-known remote tailgate policy for this branch (Phase A-D),
+    /// refreshed by the sync worker from `SyncResponse.tailgate_policy`.
+    /// Defaults to enabled + 300s siren cooldown when the cloud has no row.
+    pub tailgate_policy: Arc<parking_lot::RwLock<gympos_shared::TailgatePolicy>>,
+    /// When the siren last blasted. Incident ROWS are always written (evidence
+    /// must never be dropped), but the physical siren is rate-limited by the
+    /// policy cooldown so a lingering crowd doesn't strobe the gym.
+    pub last_tailgate_alarm: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+}
+
+/// Consecutive-failure lockout for staff PIN entry: after 5 wrong PINs the
+/// terminal refuses further attempts for 30s, doubling per extra failure up
+/// to 5 minutes. Reset by a successful login or app restart.
+#[derive(Default)]
+pub struct PinGate {
+    consecutive_failures: u32,
+    locked_until: Option<std::time::Instant>,
+}
+
+impl PinGate {
+    const MAX_FAILURES_BEFORE_LOCK: u32 = 5;
+    const BASE_LOCK_SECS: u64 = 30;
+    const MAX_LOCK_SECS: u64 = 300;
+
+    fn check_locked(&mut self) -> Result<(), String> {
+        if let Some(until) = self.locked_until {
+            let now = std::time::Instant::now();
+            if now < until {
+                let secs = (until - now).as_secs() + 1;
+                return Err(format!(
+                    "Too many failed PIN attempts. Terminal locked for {}s.",
+                    secs
+                ));
+            }
+            self.locked_until = None;
+        }
+        Ok(())
+    }
+
+    fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= Self::MAX_FAILURES_BEFORE_LOCK {
+            let extra_steps = self.consecutive_failures - Self::MAX_FAILURES_BEFORE_LOCK;
+            let secs = (Self::BASE_LOCK_SECS)
+                .saturating_mul(1u64 << extra_steps.min(4))
+                .min(Self::MAX_LOCK_SECS);
+            self.locked_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
+        }
+    }
+
+    fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.locked_until = None;
+    }
 }
 
 fn check_license_active(state: &AppContext) -> Result<(), String> {
@@ -71,10 +128,26 @@ fn check_license_active(state: &AppContext) -> Result<(), String> {
 /// or hardware state requires a terminal session with a sufficient role.
 /// Cashier = front-desk sales/intake; Manager = inventory/members/hardware;
 /// Owner = everything including license activation.
+///
+/// Also enforces the idle auto-lock: a session unused for longer than
+/// `SESSION_IDLE_TIMEOUT_SECS` is dropped, so an unattended terminal does not
+/// stay authorized all day.
 fn require_role(state: &AppContext, allowed: &[StaffRole]) -> Result<(), String> {
-    let session = state.session.read().clone();
-    match session {
-        Some(s) if s.is_authenticated && allowed.contains(&s.role) => Ok(()),
+    let mut guard = state.session.write();
+    match &mut *guard {
+        Some(s) if s.is_authenticated => {
+            let idle_secs = (Utc::now() - s.last_activity_at).num_seconds();
+            if idle_secs > gympos_shared::SESSION_IDLE_TIMEOUT_SECS {
+                *guard = None;
+                return Err("Access Denied: session expired after inactivity. Please log in again.".to_string());
+            }
+            if allowed.contains(&s.role) {
+                s.last_activity_at = Utc::now();
+                Ok(())
+            } else {
+                Err("Access Denied: your terminal role cannot perform this action. Ask a manager/owner.".to_string())
+            }
+        }
         Some(_) => Err("Access Denied: your terminal role cannot perform this action. Ask a manager/owner.".to_string()),
         None => Err("Access Denied: login on the terminal PIN screen first.".to_string()),
     }
@@ -173,19 +246,50 @@ pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContex
 }
 
 #[tauri::command]
-pub fn trigger_tailgate_alarm(reason: Option<String>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
-    // 1. Fire ESP32 hardware buzzer/strobe relay for 5 seconds
-    let _ = state.hardware.trigger_alarm(5000);
+pub fn trigger_tailgate_alarm(
+    reason: Option<String>,
+    linked_member_id: Option<String>,
+    person_count: Option<i32>,
+    state: State<'_, AppContext>,
+) -> Result<serde_json::Value, String> {
+    // Phase A-D: incident rows are ALWAYS written (evidence first). The siren
+    // honors the remote policy: disabled branches log silently, and repeat
+    // blasts inside the cooldown window are suppressed (still logged).
+    let policy = state.tailgate_policy.read().clone();
+    let siren_due = if !policy.enabled {
+        false
+    } else {
+        let mut last = state.last_tailgate_alarm.lock().expect("alarm clock poisoned");
+        let now = std::time::Instant::now();
+        let due = match *last {
+            Some(t) => now.duration_since(t).as_secs() >= policy.siren_cooldown_secs,
+            None => true,
+        };
+        if due {
+            *last = Some(now);
+        }
+        due
+    };
+    if siren_due {
+        // 1. Fire ESP32 hardware buzzer/strobe relay for 5 seconds
+        let _ = state.hardware.trigger_alarm(5000);
+    }
 
-    // 2. Log high-priority security violation
+    // 2. Log attributed security violation (whose window + YOLO snapshot)
     let log = state
         .db
-        .log_attendance(None, Some("⚠️ Tailgate Intrusion"), "in", None, true)
+        .log_tailgate_incident(
+            linked_member_id.as_deref(),
+            "⚠️ Tailgate Intrusion",
+            person_count,
+        )
         .map_err(|e| e.to_string())?;
 
     Ok(json!({
         "status": "ALARM_TRIGGERED",
         "reason": reason.unwrap_or_else(|| "Turnstile ROI multi-occupancy violation".to_string()),
+        "siren_suppressed": !siren_due,
+        "policy_enabled": policy.enabled,
         "log": log
     }))
 }
@@ -899,30 +1003,47 @@ pub fn authenticate_staff_pin(
         return Err("PIN code cannot be empty".to_string());
     }
 
-    let staff = state.db.authenticate_staff_pin(pin)
-        .map_err(|e| format!("Database error: {}", e))?
-        .ok_or_else(|| "Invalid PIN. Access Denied.".to_string())?;
+    // Brute-force gate BEFORE touching the database: a 4-digit PIN only has
+    // 10,000 combinations, so unlimited silent retries are not acceptable.
+    {
+        let mut gate = state.pin_gate.lock().expect("pin_gate poisoned");
+        gate.check_locked()?;
+        let result = state.db.authenticate_staff_pin(pin).map_err(|e| format!("Database error: {}", e));
+        match result {
+            Ok(Some(staff)) => {
+                gate.record_success();
+                Ok(staff)
+            }
+            Ok(None) => {
+                gate.record_failure();
+                Err("Invalid PIN. Access Denied.".to_string())
+            }
+            Err(e) => Err(e),
+        }
+    }
+    .map(|staff| {
+        let session = TerminalSession {
+            is_authenticated: true,
+            user_id: staff.id.clone(),
+            display_name: staff.full_name.clone(),
+            role: staff.role,
+            gym_id: staff.gym_id,
+            gym_name: staff.gym_name.clone(),
+            logged_in_at: chrono::Utc::now(),
+            last_activity_at: chrono::Utc::now(),
+        };
 
-    let session = TerminalSession {
-        is_authenticated: true,
-        user_id: staff.id.clone(),
-        display_name: staff.full_name.clone(),
-        role: staff.role,
-        gym_id: staff.gym_id,
-        gym_name: staff.gym_name.clone(),
-        logged_in_at: chrono::Utc::now(),
-    };
+        *state.session.write() = Some(session);
 
-    *state.session.write() = Some(session);
-
-    Ok(StaffLoginResponse {
-        authenticated: true,
-        staff_id: staff.id,
-        full_name: staff.full_name,
-        username: staff.username,
-        role: staff.role,
-        gym_id: staff.gym_id,
-        gym_name: staff.gym_name,
+        StaffLoginResponse {
+            authenticated: true,
+            staff_id: staff.id,
+            full_name: staff.full_name,
+            username: staff.username,
+            role: staff.role,
+            gym_id: staff.gym_id,
+            gym_name: staff.gym_name,
+        }
     })
 }
 
@@ -967,14 +1088,21 @@ pub async fn authenticate_owner(
                 }
             }
         }
-        _ => {
-            // Offline fallback: Check if email matches active license claims and password length >= 6
-            if let Some(claims) = state.license.current_claims() {
-                if claims.owner_email.to_lowercase() == email && password.len() >= 6 {
-                    authenticated = true;
-                    company_name = format!("Owner ({})", claims.gym_name);
-                }
-            }
+        // SECURITY: no offline fallback. The previous build accepted ANY
+        // password of length >= 6 when the cloud was unreachable, so anyone
+        // at the terminal could gain full Owner privileges by blocking the
+        // network and typing the license owner's email (visible on screen).
+        // Owner elevation now strictly requires a successful cloud login.
+        Ok(r) => {
+            return Err(format!(
+                "Owner verification failed (cloud returned HTTP {}). Owner login requires a working internet connection.",
+                r.status()
+            ));
+        }
+        Err(_) => {
+            return Err(
+                "Cannot reach the cloud to verify owner credentials. Owner login requires an internet connection — use a staff PIN for offline front-desk work.".to_string(),
+            );
         }
     }
 
@@ -990,6 +1118,7 @@ pub async fn authenticate_owner(
         gym_id: None,
         gym_name: None,
         logged_in_at: chrono::Utc::now(),
+        last_activity_at: chrono::Utc::now(),
     };
 
     *state.session.write() = Some(session);
@@ -1075,6 +1204,19 @@ pub fn logout_terminal_session(state: State<'_, AppContext>) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn list_terminal_staff(state: State<'_, AppContext>) -> Result<Vec<StaffAccount>, String> {
-    state.db.list_local_staff().map_err(|e| e.to_string())
+pub fn list_terminal_staff(state: State<'_, AppContext>) -> Result<Vec<serde_json::Value>, String> {
+    // Argon2 PIN hashes stay internal: a 4-digit PIN's hash falls to offline
+    // brute-force instantly, so the UI only ever receives sanitized records
+    // (the sync layer separately persists hashes it needs for PIN login).
+    let staff = state.db.list_local_staff().map_err(|e| e.to_string())?;
+    Ok(staff
+        .iter()
+        .map(|s| {
+            let mut v = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("pin_hash");
+            }
+            v
+        })
+        .collect())
 }

@@ -93,6 +93,11 @@ impl Database {
                 confidence REAL,
                 tailgate_flag INTEGER NOT NULL DEFAULT 0,
                 synced_to_cloud INTEGER NOT NULL DEFAULT 0,
+                -- Phase A-D tailgate incidents: whose window was piggybacked,
+                -- YOLO count snapshot, local acknowledge state.
+                linked_member_id TEXT,
+                person_count INTEGER,
+                acknowledged INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (member_id) REFERENCES members(id)
             );
 
@@ -184,6 +189,10 @@ impl Database {
         // POS discount tracking (Senior / Student / PWD ID discounts)
         let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''", []);
         let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0", []);
+        // Phase A-D tailgate incidents (attribution + local acknowledge)
+        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN linked_member_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN person_count INTEGER", []);
+        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0", []);
         // Expenses ledger (local bookkeeping for End-of-Day)
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS expenses (
@@ -870,13 +879,49 @@ impl Database {
             tailgate_flag,
             timestamp: now,
             sync_status: "pending".to_string(),
+            linked_member_id: None,
+            person_count: None,
+        })
+    }
+
+    /// Phase A-D: logs a tailgate incident with attribution — whose admitted
+    /// window was piggybacked (`linked_member_id`) plus the YOLO count
+    /// snapshot. `member_id` stays NULL (the intruder is unknown by design).
+    pub fn log_tailgate_incident(
+        &self,
+        linked_member_id: Option<&str>,
+        display_name: &str,
+        person_count: Option<i32>,
+    ) -> Result<AttendanceRecord> {
+        let conn = self.conn.lock().unwrap();
+        let id = format!("ATT-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
+        let now = Utc::now();
+        let now_str = now.to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO attendance_logs (id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, synced_to_cloud, linked_member_id, person_count, acknowledged)
+             VALUES (?1, NULL, ?2, 'in', ?3, NULL, 1, 0, ?4, ?5, 0)",
+            params![id, display_name, now_str, linked_member_id, person_count],
+        )?;
+
+        Ok(AttendanceRecord {
+            id,
+            member_id: None,
+            member_name: Some(display_name.to_string()),
+            direction: "in".to_string(),
+            confidence: None,
+            tailgate_flag: true,
+            timestamp: now,
+            sync_status: "pending".to_string(),
+            linked_member_id: linked_member_id.map(|s| s.to_string()),
+            person_count,
         })
     }
 
     pub fn list_recent_attendance(&self, limit: usize) -> Result<Vec<AttendanceRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag
+            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, linked_member_id, person_count
              FROM attendance_logs ORDER BY timestamp DESC LIMIT ?1",
         )?;
 
@@ -895,6 +940,8 @@ impl Database {
                 confidence: row.get(5)?,
                 tailgate_flag: row.get::<_, i32>(6)? == 1,
                 sync_status: "synced".to_string(),
+                linked_member_id: row.get(7).unwrap_or(None),
+                person_count: row.get(8).unwrap_or(None),
             })
         })?;
 
@@ -903,6 +950,63 @@ impl Database {
             list.push(r?);
         }
         Ok(list)
+    }
+
+    /// Phase D: tailgate incident history for the exe resolve-view (newest
+    /// first). Uses `unwrap_or` on the Phase-A columns so pre-migration
+    /// databases that somehow missed the ALTER still read instead of erroring.
+    pub fn list_tailgate_incidents(&self, limit: usize) -> Result<Vec<AttendanceRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, linked_member_id, person_count
+             FROM attendance_logs WHERE tailgate_flag = 1 ORDER BY timestamp DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let time_str: String = row.get(4)?;
+            let timestamp = chrono::DateTime::parse_from_rfc3339(&time_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(AttendanceRecord {
+                id: row.get(0)?,
+                member_id: row.get(1)?,
+                member_name: row.get(2)?,
+                direction: row.get(3)?,
+                timestamp,
+                confidence: row.get(5)?,
+                tailgate_flag: true,
+                sync_status: "synced".to_string(),
+                linked_member_id: row.get(7).unwrap_or(None),
+                person_count: row.get(8).unwrap_or(None),
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    }
+
+    /// Phase D: marks a local tailgate incident reviewed. Returns true when a
+    /// row was actually updated. Cloud acknowledgement is separate (owner/CEO
+    /// ack via the dashboards); this only clears the local queue badge.
+    pub fn resolve_tailgate_incident(&self, id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE attendance_logs SET acknowledged = 1 WHERE id = ?1 AND tailgate_flag = 1",
+            params![id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Phase D: unreviewed local tailgate incidents (drives the exe badge).
+    pub fn count_unacked_tailgates(&self) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM attendance_logs WHERE tailgate_flag = 1 AND acknowledged = 0",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(count as usize)
     }
 
     /// Queries the last recorded direction ('in' or 'out') for Anti-Passback validation
@@ -1034,7 +1138,7 @@ impl Database {
     pub fn get_unsynced_attendance(&self) -> Result<Vec<gympos_shared::AttendanceRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag
+            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, linked_member_id, person_count
              FROM attendance_logs WHERE synced_to_cloud = 0 ORDER BY timestamp ASC LIMIT 50"
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1045,6 +1149,8 @@ impl Database {
             let time_str: String = row.get(4)?;
             let confidence: Option<f32> = row.get(5)?;
             let tailgate_flag: i32 = row.get(6)?;
+            let linked_member_id: Option<String> = row.get(7).unwrap_or(None);
+            let person_count: Option<i32> = row.get(8).unwrap_or(None);
 
             let timestamp = chrono::DateTime::parse_from_rfc3339(&time_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -1059,6 +1165,8 @@ impl Database {
                 tailgate_flag: tailgate_flag == 1,
                 timestamp,
                 sync_status: "pending".to_string(),
+                linked_member_id,
+                person_count,
             })
         })?;
 
@@ -1762,7 +1870,9 @@ impl Database {
     /// Authenticates a cashier/manager PIN. Argon2id hashes are salted, so a
     /// direct `WHERE pin_hash = ?` lookup (the previous SHA-256 approach) is no
     /// longer possible — instead we scan the (small, per-branch) active staff
-    /// list and verify the PIN against each stored hash.
+    /// list and verify the PIN against each stored hash. A successful login
+    /// against a legacy unsalted-SHA-256 hash transparently re-hashes the PIN
+    /// with Argon2id so pre-migration accounts stop being rainbow-tableable.
     pub fn authenticate_staff_pin(&self, pin: &str) -> Result<Option<StaffAccount>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1796,6 +1906,18 @@ impl Database {
             let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
+            drop(rows);
+            drop(stmt);
+
+            if gympos_shared::password_is_legacy(&pin_hash) {
+                let upgraded = gympos_shared::hash_password(pin);
+                if let Err(e) = conn.execute(
+                    "UPDATE local_staff_accounts SET pin_hash = ?1, updated_at = ?2 WHERE id = ?3",
+                    rusqlite::params![upgraded, Utc::now().to_rfc3339(), id],
+                ) {
+                    tracing::warn!("Failed to upgrade legacy PIN hash for staff {}: {}", id, e);
+                }
+            }
 
             return Ok(Some(StaffAccount {
                 id,

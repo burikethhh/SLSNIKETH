@@ -90,8 +90,12 @@ fn is_qualified_email(email: &str) -> bool {
     let (local, domain) = (parts[0], parts[1]);
     if local.is_empty() || domain.is_empty() || !domain.contains('.') { return false; }
     if local.len() > 64 || domain.len() > 253 { return false; }
-    // No spaces, no consecutive dots, domain has valid TLD
+    // No spaces, no consecutive dots, domain has valid TLD.
+    // Also reject HTML/JS metacharacters: branch/owner names and emails are
+    // rendered in the CEO dashboard, so a quote in the local part must never
+    // reach stored data (attribute-injection XSS, see H1).
     if e.contains(' ') || e.contains("..") { return false; }
+    if e.contains(['"', '\'', '<', '>', '`']) { return false; }
     let tld = domain.rsplit('.').next().unwrap_or("");
     if tld.len() < 2 { return false; }
     true
@@ -791,32 +795,42 @@ pub async fn analytics_fleet(
 /// Owner gate: accepts HMAC-signed `owner:<email>:<exp>:<sig>` session tokens
 /// issued by `owner_login`/`owner_register`. Legacy bare `owner:<email>`
 /// strings are rejected outright — they were forgeable by anyone who knew an
-/// email address. Note: unlike the CEO gate this does NOT hit the DB (owner
-/// rows are looked up per-endpoint); the HMAC + expiry is the authentication.
-fn extract_owner_email(
+/// email address. Like the CEO gate, the account must still exist in the
+/// database, so deleting/disabling an owner row immediately kills all of that
+/// owner's outstanding 30-day tokens instead of letting them ride to expiry.
+async fn extract_owner_email(
     headers: &HeaderMap,
+    db: &CloudDatabase,
     tokens: &SessionTokens,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let unauthorized = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "Unauthorized: Owner session token required", "code": "OWNER_AUTH_REQUIRED" })),
+        )
+    };
+
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
         .or_else(|| headers.get("x-owner-token").and_then(|v| v.to_str().ok()));
 
-    match auth_header {
+    let email = match auth_header {
         Some(token) if !token.trim().is_empty() => {
-            match tokens.verify("owner", token.trim(), Utc::now().timestamp(), OWNER_TOKEN_TTL_SECS) {
-                Some(email) => Ok(email),
-                None => Err((
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({ "error": "Invalid or expired owner session token — please login again", "code": "OWNER_TOKEN_INVALID" })),
-                )),
-            }
+            tokens.verify("owner", token.trim(), Utc::now().timestamp(), OWNER_TOKEN_TTL_SECS)
         }
-        _ => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "Unauthorized: Owner session token required", "code": "OWNER_AUTH_REQUIRED" })),
-        )),
+        _ => None,
+    };
+    match email {
+        Some(e) => match db.owner_exists(&e).await {
+            Ok(true) => Ok(e),
+            _ => Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "Owner account no longer exists — session revoked. Please login again.", "code": "OWNER_TOKEN_INVALID" })),
+            )),
+        },
+        None => Err(unauthorized()),
     }
 }
 
@@ -836,10 +850,12 @@ pub async fn owner_register(
     }
 
     let email_norm = payload.email.trim().to_lowercase();
-    if !is_qualified_email(&email_norm) || payload.password.len() < 4 {
+    // Same 8-char floor as CEO accounts: owner credentials gate branch
+    // registration, catalog pricing and staff PINs for the whole franchise.
+    if !is_qualified_email(&email_norm) || payload.password.len() < 8 {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Qualified email and minimum 4-char password required", "code": "INVALID_CREDENTIALS" })),
+            Json(json!({ "error": "Qualified email and minimum 8-char password required", "code": "INVALID_CREDENTIALS" })),
         )
             .into_response());
     }
@@ -944,7 +960,7 @@ pub async fn owner_create_gym(
     headers: HeaderMap,
     Json(payload): Json<RegisterGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let owner_norm = owner_email.trim().to_lowercase();
     // Owner can only create gym for themselves
     let req_email_norm = payload.owner_email.trim().to_lowercase();
@@ -1174,7 +1190,7 @@ pub async fn owner_get_branches(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let branches = state.db.get_owner_branches(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
@@ -1190,7 +1206,7 @@ pub async fn owner_get_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let analytics = state.db.get_owner_analytics(&owner_email).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1204,7 +1220,7 @@ pub async fn owner_get_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let products = state.db.get_products(&owner_email).await.unwrap_or_default();
     let plans = state.db.get_plans(&owner_email).await.unwrap_or_default();
     let promos = state.db.get_promos(&owner_email).await.unwrap_or_default();
@@ -1223,7 +1239,7 @@ pub async fn owner_save_products(
     headers: HeaderMap,
     Json(payload): Json<SaveProductsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let count = state.db.upsert_products(&owner_email, &payload.products).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1245,7 +1261,7 @@ pub async fn owner_save_plans(
     headers: HeaderMap,
     Json(payload): Json<SavePlansRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let count = state.db.upsert_plans(&owner_email, &payload.plans).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1267,7 +1283,7 @@ pub async fn owner_save_promos(
     headers: HeaderMap,
     Json(payload): Json<SavePromosRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let count = state.db.upsert_promos(&owner_email, &payload.promos).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1290,14 +1306,29 @@ pub async fn owner_list_staff(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let staff = state.db.list_staff_by_owner(&owner_email).await.unwrap_or_default();
+    // Strip PIN hashes: the owner browser needs names/roles, never the hashes
+    // (Argon2 of a 4-digit PIN falls to offline brute-force instantly). The
+    // licensed-terminal sync channel (`SyncResponse.staff_accounts`) keeps the
+    // hashes — the desktop needs them for offline PIN verification.
+    let staff_sanitized: Vec<serde_json::Value> = staff
+        .iter()
+        .map(|s| {
+            let mut v = serde_json::to_value(s).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = v.as_object_mut() {
+                obj.remove("pin_hash");
+            }
+            v
+        })
+        .collect();
+    let count = staff_sanitized.len();
     Ok((
         StatusCode::OK,
         Json(json!({
             "owner_email": owner_email,
-            "staff": staff,
-            "count": staff.len()
+            "staff": staff_sanitized,
+            "count": count
         })),
     ))
 }
@@ -1307,7 +1338,7 @@ pub async fn owner_create_staff(
     headers: HeaderMap,
     Json(payload): Json<CreateStaffRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
 
     let full_name = payload.full_name.trim().to_string();
     let username = payload.username.trim().to_lowercase();
@@ -1368,7 +1399,7 @@ pub async fn owner_update_staff(
     Path(staff_id): Path<String>,
     Json(payload): Json<UpdateStaffRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
 
     if let Some(ref pin) = payload.pin_code {
         let pin = pin.trim();
@@ -1406,7 +1437,7 @@ pub async fn owner_delete_staff(
     headers: HeaderMap,
     Path(staff_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     let deleted = state.db.delete_staff_account(&owner_email, &staff_id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1441,7 +1472,7 @@ pub async fn owner_save_branch_override(
     headers: HeaderMap,
     Json(payload): Json<BranchOverridePayload>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers, &state.tokens)?;
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
     state.db.save_branch_product_override(
         &owner_email,
         &payload.gym_id,

@@ -30,3 +30,6 @@ admin_secret_key.txt
 playwright-report/
 test-results/
 
+# PlatformIO build artifacts
+.pio/
+**/.pio/

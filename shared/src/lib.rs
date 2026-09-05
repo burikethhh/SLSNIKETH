@@ -49,6 +49,15 @@ pub fn verify_password(password: &str, stored_hash: &str) -> bool {
     false
 }
 
+/// True when `stored_hash` is a legacy unsalted SHA-256 digest rather than an
+/// Argon2id PHC string. Callers use this right after a successful
+/// [`verify_password`] to transparently re-hash the credential with Argon2id
+/// (a legacy 4-digit PIN hash falls to offline brute-force instantly, so the
+/// upgrade must happen on the next successful login, not "whenever").
+pub fn password_is_legacy(stored_hash: &str) -> bool {
+    !stored_hash.starts_with("$argon2")
+}
+
 // --- License & Tier Domain Models ---
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -383,6 +392,43 @@ pub struct AttendanceRecord {
     pub tailgate_flag: bool,
     pub timestamp: DateTime<Utc>,
     pub sync_status: String,
+    /// Tailgate attribution: whose admitted entry window was piggybacked.
+    /// `None` for non-tailgate rows and legacy rows written before Phase A.
+    #[serde(default)]
+    pub linked_member_id: Option<String>,
+    /// YOLO person count observed in the ROI when the incident fired.
+    #[serde(default)]
+    pub person_count: Option<i32>,
+}
+
+/// Per-branch tailgate policy, synced cloud → exe inside `SyncResponse`.
+/// `None` on the wire means "no remote policy yet — keep local behavior".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailgatePolicy {
+    pub enabled: bool,
+    pub siren_cooldown_secs: u64,
+}
+
+impl Default for TailgatePolicy {
+    fn default() -> Self {
+        Self { enabled: true, siren_cooldown_secs: 300 }
+    }
+}
+
+/// A tailgate incident as served by the CEO / owner incident feeds.
+/// Shared so both dashboards and the exe resolve-view agree on field names.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TailgateIncident {
+    pub id: String,
+    pub gym_id: String,
+    pub gym_name: String,
+    pub owner_email: String,
+    pub member_name: Option<String>,
+    pub linked_member_id: Option<String>,
+    pub person_count: Option<i32>,
+    pub timestamp: DateTime<Utc>,
+    pub acknowledged: bool,
+    pub acknowledged_by: Option<String>,
 }
 
 // --- POS & Store Models ---
@@ -664,6 +710,11 @@ pub struct SyncResponse {
     pub remote_plans: Option<Vec<MembershipPlanConfig>>,
     pub remote_promos: Option<Vec<PromoVoucherConfig>>,
     pub staff_accounts: Option<Vec<StaffAccount>>,
+    /// Remote tailgate policy for the syncing branch (Phase A-D). `None`
+    /// when the cloud has no explicit policy row yet — the exe keeps local
+    /// behavior. Old exes ignore the field via `#[serde(default)]`.
+    #[serde(default)]
+    pub tailgate_policy: Option<TailgatePolicy>,
     pub server_time: DateTime<Utc>,
 }
 
@@ -739,6 +790,12 @@ pub struct StaffAccount {
     pub gym_name: Option<String>,
     pub full_name: String,
     pub username: String,
+    // NOTE: `pin_hash` serializes with the struct because the license-
+    // authenticated `/sync/push` channel needs it (desktop ingests hashes for
+    // offline PIN verify). Browser-facing endpoints must strip it instead:
+    // desktop `list_terminal_staff` and cloud `owner_list_staff` both return
+    // sanitized records. Argon2 hashes of 4-digit PINs fall to offline
+    // brute-force instantly, so the webview/portal must never receive them.
     #[serde(default)]
     pub pin_hash: String,
     pub role: StaffRole,
@@ -794,7 +851,18 @@ pub struct TerminalSession {
     pub gym_id: Option<Uuid>,
     pub gym_name: Option<String>,
     pub logged_in_at: DateTime<Utc>,
+    /// Last time the session was used for a gated action. Desktop RBAC treats
+    /// a session idle longer than `SESSION_IDLE_TIMEOUT_SECS` as logged out
+    /// (kiosk auto-lock). Defaults to `logged_in_at` for sessions persisted
+    /// before this field existed.
+    #[serde(default = "Utc::now")]
+    pub last_activity_at: DateTime<Utc>,
 }
+
+/// A terminal session idle longer than this is treated as logged out by the
+/// desktop RBAC gate — an unattended cashier/manager kiosk must not stay
+/// authorized indefinitely. Owner/elevated sessions inherit the same bound.
+pub const SESSION_IDLE_TIMEOUT_SECS: i64 = 30 * 60;
 
 // --- CEO Hierarchical Multi-Owner Licensing Models ---
 
