@@ -4129,6 +4129,13 @@ function dismissSiren() {
 // --- Quick Hardware & License ---
 
 async function quickUnlockDoor() {
+    // Require a reason — this becomes the audit log entry on the owner's dashboard
+    const reason = prompt(
+        '🔓 Manual Gate Override\n\nState the reason for opening the gate:\n(e.g. "Member forgot card", "Equipment delivery", "Emergency exit")',
+        ''
+    );
+    if (reason === null) return; // Staff cancelled — do nothing
+
     const btn = document.getElementById('btn-quick-unlock');
     const lockEl = document.getElementById('telemetry-lock-state');
     try {
@@ -4137,7 +4144,10 @@ async function quickUnlockDoor() {
             lockEl.innerText = "UNLOCKED (PULSE)";
             lockEl.className = "text-sm font-bold text-amber-400 mt-1 animate-pulse";
         }
-        await invokeTauri('unlock_magnetic_lock', { durationMs: 3000 });
+        await invokeTauri('unlock_magnetic_lock', {
+            durationMs: 3000,
+            reason: reason.trim() || 'No reason provided'
+        });
         // Any door opening gets the 7.5s tailgate window, operator or not.
         armDoorOpenTailgateSurveillance();
         setTimeout(() => {
@@ -4158,6 +4168,7 @@ async function quickUnlockDoor() {
         btn.classList.remove('opacity-50');
     }
 }
+
 
 async function refreshComPorts() {
     try {

@@ -221,29 +221,66 @@ pub fn connect_com_port(port: String, baud: Option<u32>, state: State<'_, AppCon
 }
 
 #[tauri::command]
-pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContext>) -> Result<String, String> {
+pub fn unlock_magnetic_lock(
+    duration_ms: Option<u32>,
+    reason: Option<String>,
+    state: State<'_, AppContext>,
+) -> Result<String, String> {
     check_license_active(&state)?;
-    require_manager(&state)?;
-    let claims = state.license.current_claims().ok_or("License required to trigger hardware lock")?;
+    // Any authenticated staff member may manually open the gate.
+    // The RBAC gate just ensures no unauthenticated terminal can fire the lock.
+    require_login(&state)?;
+
+    let claims = state
+        .license
+        .current_claims()
+        .ok_or("License required to trigger hardware lock")?;
     if !claims.hardware_lock_enabled {
         return Err("Hardware lock is disabled on this license tier".to_string());
     }
 
-    // Log security audit trail so gym owner can track staff unlocking door without member payment
+    // Identify who is opening the door
+    let opener_name = state
+        .session
+        .read()
+        .as_ref()
+        .map(|s| format!("{} ({})", s.display_name, format!("{:?}", s.role).to_lowercase()))
+        .unwrap_or_else(|| "Unknown Staff".to_string());
+
+    let unlock_reason = reason
+        .as_deref()
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or("No reason provided");
+
+    // Audit log — syncs to owner's cloud dashboard via CloudSyncWorker
+    let audit_note = format!(
+        "MANUAL GATE UNLOCK | Staff: {} | Reason: {}",
+        opener_name, unlock_reason
+    );
     let _ = state.db.log_attendance(
         None,
-        Some("STAFF MANUAL OVERRIDE (Unauthenticated Pulse)"),
-        "override",
+        Some(&audit_note),
+        "manual_override",
         Some(0.0),
         false,
+    );
+
+    tracing::warn!(
+        "Manual gate override: staff='{}' reason='{}'",
+        opener_name,
+        unlock_reason
     );
 
     let ms = duration_ms.unwrap_or(3000);
     match state.hardware.unlock_door(ms) {
         Ok(msg) => Ok(msg),
-        Err(_) => Ok(format!("Gate unlocked for {}ms (Hardware relay pulse / Standby mode)", ms)),
+        Err(_) => Ok(format!(
+            "Gate unlocked for {}ms (Hardware relay pulse / Standby mode)",
+            ms
+        )),
     }
 }
+
 
 #[tauri::command]
 pub fn trigger_tailgate_alarm(
