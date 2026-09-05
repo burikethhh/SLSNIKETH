@@ -308,6 +308,36 @@ async function getStreamForDevice(deviceId) {
         || (lastErr.message && /in use|busy|occupied|could not start|concurrent|exclusive/i.test(lastErr.message))
     );
 
+    // Saved-device gone (unplugged / USB renumber / different PC): every
+    // exact-deviceId attempt fails with NotFound/OverconstrainedError and the
+    // slot would stay dead forever behind a "Camera access error" toast.
+    // Fall back to ANY available camera so the terminal keeps scanning, and
+    // flag `recovered` so the caller tells the operator to re-assign.
+    const deviceMissing = !!deviceId && lastErr && (
+        lastErr.name === 'NotFoundError'
+        || lastErr.name === 'OverconstrainedError'
+        || (lastErr.message && /not found|could not find|device.*(gone|removed|unplug)|overconstrain/i.test(lastErr.message))
+    );
+    if (deviceMissing) {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 } },
+                audio: false,
+            });
+            const track = stream.getVideoTracks()[0];
+            const settings = (track && track.getSettings && track.getSettings()) || {};
+            return {
+                stream,
+                error: null,
+                recovered: true,
+                recoveredLabel: (track && track.label) || 'default camera',
+                recoveredDeviceId: settings.deviceId || '',
+            };
+        } catch (e2) {
+            console.warn("Device-less fallback also failed:", e2);
+        }
+    }
+
     const userMsg = isOccupied
         ? "Camera is currently locked by another application or USB bus bandwidth is exceeded. Please close conflicting video apps (Zoom/OBS/Teams)."
         : `Camera access error (${lastErr?.name || 'Error'}): ${lastErr?.message || lastErr}`;
@@ -336,9 +366,20 @@ function syncAllCameraViewports() {
         if (stream && stream.active) {
             if (videoEl.srcObject !== stream) {
                 videoEl.srcObject = stream;
+                if (videoEl.dataset) delete videoEl.dataset.framesSeen;
             }
             videoEl.play().catch(e => console.debug("Autoplay handled:", e));
-            if (standbyEl) standbyEl.classList.add('hidden');
+            // Standby hides ONLY on proven frames. A MediaStream reports
+            // active=true while delivering zero frames (starved USB, ended
+            // track, un-fan-out-able mirror) — hiding standby on active alone
+            // produced the reported black-void dashboard. The watchdog below
+            // re-shows standby for stalls after first frames.
+            if (videoEl.videoWidth > 0) {
+                if (videoEl.dataset) videoEl.dataset.framesSeen = '1';
+                if (standbyEl) standbyEl.classList.add('hidden');
+            } else if (!(videoEl.dataset && videoEl.dataset.framesSeen)) {
+                if (standbyEl) standbyEl.classList.remove('hidden');
+            }
         } else {
             videoEl.srcObject = null;
             if (standbyEl) standbyEl.classList.remove('hidden');
@@ -364,6 +405,54 @@ function syncAllCameraViewports() {
     bindViewport(document.getElementById('kiosk-cam3-tailgate'), document.getElementById('kiosk-cam3-standby'), streamCam3);
     bindViewport(document.getElementById('test-preview-cam3'), null, streamCam3);
     bindViewport(document.getElementById('roi-preview-video'), null, streamCam3);
+}
+
+/**
+ * Camera signal watchdog: a bound-but-frameless slot shows its standby panel
+ * plus a NO SIGNAL pill instead of a black box. Runs every 2.5s; started once
+ * from initCameraStreams. Badges are created by JS so no markup changes were
+ * needed across the 6 dashboard/kiosk slots.
+ */
+function setNoSignalBadge(videoId, show) {
+    const videoEl = document.getElementById(videoId);
+    if (!videoEl || !videoEl.parentElement) return;
+    let badge = videoEl.parentElement.querySelector('[data-nosignal-badge]');
+    if (!badge) {
+        badge = document.createElement('div');
+        badge.setAttribute('data-nosignal-badge', '1');
+        badge.className = 'absolute top-1 right-1 px-2 py-0.5 rounded text-[9px] font-bold bg-red-950/90 text-red-300 border border-red-700 font-mono pointer-events-none';
+        badge.innerText = 'NO SIGNAL';
+        videoEl.parentElement.appendChild(badge);
+    }
+    badge.classList.toggle('hidden', !show);
+}
+
+function watchCameraSignals() {
+    const slots = [
+        ['dash-cam1-entry', 'dash-cam1-standby'],
+        ['dash-cam2-exit', 'dash-cam2-standby'],
+        ['dash-cam3-tailgate', 'dash-cam3-standby'],
+        ['kiosk-cam1-entry', 'kiosk-cam1-standby'],
+        ['kiosk-cam2-exit', 'kiosk-cam2-standby'],
+        ['kiosk-cam3-tailgate', 'kiosk-cam3-standby'],
+    ];
+    for (const [vid, sid] of slots) {
+        const v = document.getElementById(vid);
+        if (!v) continue;
+        const s = document.getElementById(sid);
+        const hasStream = !!(v.srcObject && v.srcObject.active);
+        const hasFrames = hasStream && v.videoWidth > 0 && v.readyState >= 2;
+        if (hasFrames) {
+            if (v.dataset) v.dataset.framesSeen = '1';
+            if (s) s.classList.add('hidden');
+            setNoSignalBadge(vid, false);
+        } else {
+            if (s) s.classList.remove('hidden');
+            // Badge only when a stream is attached but barren (as opposed to
+            // simply unassigned, where the standby panel alone suffices).
+            setNoSignalBadge(vid, hasStream);
+        }
+    }
 }
 
 /**
@@ -584,8 +673,15 @@ async function initCameraStreams() {
             const res1 = await getStreamForDevice(cfg.camera1_entry_device_id);
             if (res1.stream) {
                 streamCam1 = res1.stream;
-                streamCam1DeviceId = cfg.camera1_entry_device_id;
+                streamCam1DeviceId = (res1.recovered && res1.recoveredDeviceId) ? res1.recoveredDeviceId : cfg.camera1_entry_device_id;
                 setCameraSlotFeedback(1, 'active');
+                if (res1.recovered) {
+                    // Slot is alive on a substitute camera — say so loudly so
+                    // the saved (now missing) device gets re-assigned instead
+                    // of silently scanning the wrong lens.
+                    setCameraSlotFeedback(1, 'shared', `Saved Camera 1 not found — using ${res1.recoveredLabel}. Re-assign in Hardware Settings.`);
+                    showHudToast("Camera 1 Reassigned", `Saved device missing. Streaming ${res1.recoveredLabel} until you re-assign Camera 1.`, "warn");
+                }
             } else if (res1.error) {
                 setCameraSlotFeedback(1, 'bandwidth', res1.error.message);
                 showHudToast("Camera 1 Error", res1.error.message, "danger");
@@ -665,6 +761,13 @@ async function initCameraStreams() {
 
         // Synchronize all video viewports across the entire application immediately
         syncAllCameraViewports();
+
+        // Signal watchdog (once): turns barren-but-bound slots into standby +
+        // NO SIGNAL instead of black boxes.
+        if (!window.__camSignalWatchdog) {
+            window.__camSignalWatchdog = true;
+            setInterval(watchCameraSignals, 2500);
+        }
 
         // Apply ROI Calibrated Zone styling across overlays
         applyRoiConfigToOverlays(cfg);
@@ -4297,14 +4400,25 @@ let currentTerminalSession = null;
 let currentEnteredPin = "";
 
 function updatePinDots() {
-    for (let i = 1; i <= 4; i++) {
-        const dot = document.getElementById(`pin-dot-${i}`);
-        if (dot) {
-            if (i <= currentEnteredPin.length) {
-                dot.className = "w-4 h-4 rounded-full bg-purple-400 border-2 border-purple-300 shadow-md shadow-purple-500/50 transition-all scale-110";
-            } else {
-                dot.className = "w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all";
-            }
+    // PINs are 4–8 digits (owner-issued): render as many dots as needed,
+    // minimum 4 slots so the pad never looks broken when empty.
+    const box = document.getElementById('pin-dots-box');
+    if (!box) return;
+    const slots = Math.max(4, Math.min(8, currentEnteredPin.length));
+    while (box.children.length < slots) {
+        const d = document.createElement('div');
+        box.appendChild(d);
+    }
+    while (box.children.length > slots && box.children.length > 4) {
+        const last = box.lastElementChild;
+        if (last) last.remove();
+    }
+    for (let i = 0; i < box.children.length; i++) {
+        const dot = box.children[i];
+        if (i < currentEnteredPin.length) {
+            dot.className = "w-4 h-4 rounded-full bg-purple-400 border-2 border-purple-300 shadow-md shadow-purple-500/50 transition-all scale-110";
+        } else {
+            dot.className = "w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all";
         }
     }
 }
@@ -4312,12 +4426,12 @@ function updatePinDots() {
 function pressPinKey(digit) {
     const err = document.getElementById('pin-error-text');
     if (err) err.innerText = "";
-    if (currentEnteredPin.length < 4) {
+    // Owner-issued PINs run 4–8 digits: accept up to 8 and submit explicitly
+    // (arrow button / Enter). Auto-submitting at 4 would truncate longer PINs
+    // into a guaranteed "Invalid PIN".
+    if (currentEnteredPin.length < 8) {
         currentEnteredPin += digit;
         updatePinDots();
-        if (currentEnteredPin.length === 4) {
-            setTimeout(submitPinLogin, 150);
-        }
     }
 }
 
@@ -4353,7 +4467,7 @@ document.addEventListener('keydown', (e) => {
         clearPin();
     } else if (e.key === 'Enter') {
         e.preventDefault();
-        if (currentEnteredPin.length === 4) {
+        if (currentEnteredPin.length >= 4) {
             submitPinLogin();
         }
     }
@@ -4442,6 +4556,15 @@ function showLockScreen() {
     if (lockScreen) {
         lockScreen.classList.remove('hidden');
         lockScreen.classList.add('flex');
+    }
+    // Header must never claim a session that doesn't exist (the static
+    // markup used to read "Staff Active / Cashier Mode" while locked).
+    const nameEl = document.getElementById('session-user-name');
+    if (nameEl) nameEl.innerText = 'Locked';
+    const roleEl = document.getElementById('session-user-role');
+    if (roleEl) {
+        roleEl.innerText = 'Locked Out';
+        roleEl.className = 'text-[10px] uppercase font-mono font-bold text-slate-500';
     }
 }
 

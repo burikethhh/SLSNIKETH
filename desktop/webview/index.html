@@ -184,8 +184,8 @@
             <!-- User Session Badge & Lock Button -->
             <div id="session-user-container" class="flex items-center gap-2 pl-3 border-l border-slate-700/60">
                 <div class="flex flex-col text-right">
-                    <span id="session-user-name" class="text-xs font-semibold text-slate-200">Staff Active</span>
-                    <span id="session-user-role" class="text-[10px] uppercase font-mono font-bold text-purple-400">Cashier Mode</span>
+                    <span id="session-user-name" class="text-xs font-semibold text-slate-200">Locked</span>
+                    <span id="session-user-role" class="text-[10px] uppercase font-mono font-bold text-purple-400">Locked Out</span>
                 </div>
                 <button id="btn-lock-terminal" onclick="lockTerminal()" class="px-2.5 py-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1" title="Lock Terminal / Shift Handoff">
                     <svg class="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
@@ -2047,10 +2047,10 @@
                 <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
             </div>
             <h2 class="text-xl font-bold font-rajdhani tracking-wide text-purple-300">GYMPOS TERMINAL ACCESS</h2>
-            <p class="text-xs text-slate-400 mt-0.5 mb-4">Enter your 4-digit Cashier PIN or Owner Credentials</p>
+            <p class="text-xs text-slate-400 mt-0.5 mb-4">Enter your staff PIN (4–8 digits) or Owner Credentials</p>
 
             <!-- PIN Code Display -->
-            <div class="mb-5 flex justify-center items-center gap-3">
+            <div id="pin-dots-box" class="mb-5 flex justify-center items-center gap-3">
                 <div id="pin-dot-1" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
                 <div id="pin-dot-2" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
                 <div id="pin-dot-3" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
