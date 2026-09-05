@@ -67,13 +67,14 @@ impl Default for RateLimiter {
     }
 }
 
-/// Best-effort client IP resolution: prefers `X-Forwarded-For` (set by
-/// Render's proxy and most reverse proxies) and falls back to the raw TCP
-/// peer address from `ConnectInfo`.
+/// Best-effort client IP resolution: uses the LAST `X-Forwarded-For` entry
+/// (appended by the closest proxy, e.g. Render's edge — attacker-controlled
+/// leftmost entries can't spoof it) and falls back to the raw TCP peer
+/// address from `ConnectInfo`.
 pub fn client_ip(headers: &HeaderMap, connect_info: Option<SocketAddr>) -> String {
     if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = xff.split(',').next() {
-            let ip = first.trim();
+        if let Some(last) = xff.split(',').next_back() {
+            let ip = last.trim();
             if !ip.is_empty() {
                 return ip.to_string();
             }

@@ -489,6 +489,9 @@ pub struct CeoRegisterRequest {
     pub email: String,
     pub password: String,
     pub display_name: String,
+    /// Required only when the server sets CEO_BOOTSTRAP_SECRET (first-CEO lockdown).
+    #[serde(default)]
+    pub setup_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

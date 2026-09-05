@@ -34,6 +34,10 @@ impl CloudSyncWorker {
 
             let mut consecutive_failures: u32 = 0;
             let base_interval_secs: u64 = 5;
+            // Idle terminals (nothing to upload) poll the kill-switch on a
+            // slower cadence: every 6th tick (~30s). Pending-data pushes stay
+            // on the fast 5s loop so check-ins/sales land quickly.
+            let mut idle_ticks: u32 = 0;
 
             loop {
                 // Exponential backoff: 5s -> 15s -> 30s -> 60s cap
@@ -67,14 +71,22 @@ impl CloudSyncWorker {
                     // idle terminals (and catalog went stale). Fall through to
                     // a lightweight empty push when we have a bearer token; the
                     // server returns remote_disabled + fresh catalog/plans/promos.
+                    // Idle polls run every 6th tick (~30s) to avoid hammering
+                    // the cloud with full roster reads from every terminal.
                     let has_bearer = self.db.get_cached_license().ok().flatten().is_some();
-                    if unsynced_members.is_empty() && unsynced_att.is_empty() && unsynced_sales.is_empty() && !has_bearer {
-                        if consecutive_failures > 0 {
-                            consecutive_failures = 0;
+                    let is_idle = unsynced_members.is_empty() && unsynced_att.is_empty() && unsynced_sales.is_empty();
+                    if is_idle {
+                        idle_ticks = idle_ticks.saturating_add(1);
+                        if !has_bearer || idle_ticks % 6 != 1 {
+                            if consecutive_failures > 0 {
+                                consecutive_failures = 0;
+                            }
+                            // No bearer: cannot poll kill-switch; local heartbeat only.
+                            let _ = self.db.heartbeat_ok();
+                            continue;
                         }
-                        // No bearer: cannot poll kill-switch; local heartbeat only.
-                        let _ = self.db.heartbeat_ok();
-                        continue;
+                    } else {
+                        idle_ticks = 0;
                     }
 
                     let sync_url = format!("{}/api/v1/sync/push", self.cloud_url.trim_end_matches('/'));

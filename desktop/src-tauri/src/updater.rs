@@ -32,15 +32,18 @@ impl AutoUpdater {
         channel: Option<String>,
     ) -> Result<UpdateCheckResponse, String> {
         let ch = channel.unwrap_or_else(|| DEFAULT_UPDATE_CHANNEL.to_string());
-        let gym_id_str = gym_id.map(|g| g.to_string()).unwrap_or_default();
-
-        let url = format!(
-            "{}/api/v1/updates/check?current_version={}&gym_id={}&channel={}",
+        // Omit gym_id when unlicensed: an empty `gym_id=` breaks Axum's
+        // Option<Uuid> parsing (whole request 422s) and would wrongly bypass
+        // staged-rollout bucketing on the server.
+        let mut url = format!(
+            "{}/api/v1/updates/check?current_version={}&channel={}",
             self.cloud_url.trim_end_matches('/'),
             CURRENT_APP_VERSION,
-            gym_id_str,
             ch
         );
+        if let Some(g) = gym_id {
+            url.push_str(&format!("&gym_id={}", g));
+        }
 
         let resp = self
             .client
@@ -89,18 +92,25 @@ impl AutoUpdater {
             .await
             .map_err(|e| format!("Failed to read binary stream: {}", e))?;
 
-        // Verify SHA256 if provided
-        if !expected_sha256.is_empty() {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            let calculated_hash = format!("{:x}", hasher.finalize());
+        // SHA-256 is MANDATORY: an update with no recorded hash is refused
+        // outright (previously an empty hash silently skipped verification,
+        // letting any bytes at the URL execute as the new binary).
+        let expected = expected_sha256.trim();
+        if expected.is_empty() {
+            return Err("Refusing update with no recorded SHA-256 hash".to_string());
+        }
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("Refusing update: recorded SHA-256 hash is malformed".to_string());
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let calculated_hash = format!("{:x}", hasher.finalize());
 
-            if !calculated_hash.eq_ignore_ascii_case(expected_sha256.trim()) {
-                return Err(format!(
-                    "Integrity check mismatch! Expected SHA-256: {}, Calculated: {}",
-                    expected_sha256, calculated_hash
-                ));
-            }
+        if !calculated_hash.eq_ignore_ascii_case(expected) {
+            return Err(format!(
+                "Integrity check mismatch! Expected SHA-256: {}, Calculated: {}",
+                expected, calculated_hash
+            ));
         }
 
         let mut file = File::create(&temp_update_path)

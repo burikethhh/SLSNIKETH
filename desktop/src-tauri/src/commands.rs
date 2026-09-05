@@ -65,6 +65,36 @@ fn check_license_active(state: &AppContext) -> Result<(), String> {
     result
 }
 
+/// Role gate for sensitive terminal commands. The kiosk gate scans, POS
+/// sales, walk-in intake and all read-only views stay open (no login needed
+/// for members to enter), but anything that mutates money-adjacent, identity
+/// or hardware state requires a terminal session with a sufficient role.
+/// Cashier = front-desk sales/intake; Manager = inventory/members/hardware;
+/// Owner = everything including license activation.
+fn require_role(state: &AppContext, allowed: &[StaffRole]) -> Result<(), String> {
+    let session = state.session.read().clone();
+    match session {
+        Some(s) if s.is_authenticated && allowed.contains(&s.role) => Ok(()),
+        Some(_) => Err("Access Denied: your terminal role cannot perform this action. Ask a manager/owner.".to_string()),
+        None => Err("Access Denied: login on the terminal PIN screen first.".to_string()),
+    }
+}
+
+fn require_manager(state: &AppContext) -> Result<(), String> {
+    require_role(state, &[StaffRole::Manager, StaffRole::Owner])
+}
+
+/// Any authenticated terminal session (cashier/manager/owner). Used for
+/// front-desk operations (sales, intake, close-out) that must be attributable
+/// to a logged-in user but need no elevated privilege.
+fn require_login(state: &AppContext) -> Result<(), String> {
+    require_role(state, &[StaffRole::Staff, StaffRole::Manager, StaffRole::Owner])
+}
+
+fn require_owner(state: &AppContext) -> Result<(), String> {
+    require_role(state, &[StaffRole::Owner])
+}
+
 // --- App Settings (White-Label Branding) ---
 
 #[tauri::command]
@@ -74,6 +104,7 @@ pub fn get_app_settings(state: State<'_, AppContext>) -> Result<AppSettings, Str
 
 #[tauri::command]
 pub fn save_app_settings(settings: AppSettings, state: State<'_, AppContext>) -> Result<AppSettings, String> {
+    require_manager(&state)?;
     state.db.save_app_settings(&settings).map_err(|e| e.to_string())?;
     Ok(settings)
 }
@@ -92,6 +123,7 @@ pub fn get_license_status(state: State<'_, AppContext>) -> serde_json::Value {
 
 #[tauri::command]
 pub fn apply_license_key(key: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    require_owner(&state)?;
     let status = state.license.verify_and_apply(&key)?;
     state.db.set_cached_license(&key).map_err(|e| e.to_string())?;
     // Fresh online verification → reset 7-day heartbeat (mirrors validator.py install_license last_verify=now)
@@ -111,12 +143,14 @@ pub fn list_com_ports() -> Vec<String> {
 
 #[tauri::command]
 pub fn connect_com_port(port: String, baud: Option<u32>, state: State<'_, AppContext>) -> Result<String, String> {
+    require_manager(&state)?;
     state.hardware.connect(&port, baud.unwrap_or(115200))
 }
 
 #[tauri::command]
 pub fn unlock_magnetic_lock(duration_ms: Option<u32>, state: State<'_, AppContext>) -> Result<String, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     let claims = state.license.current_claims().ok_or("License required to trigger hardware lock")?;
     if !claims.hardware_lock_enabled {
         return Err("Hardware lock is disabled on this license tier".to_string());
@@ -213,6 +247,7 @@ pub fn get_member(id: String, state: State<'_, AppContext>) -> Result<Option<Mem
 #[tauri::command]
 pub fn register_member(req: CreateMemberRequest, state: State<'_, AppContext>) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
 
     // Check tier member limits
     let current_count = state.db.count_members().map_err(|e| e.to_string())?;
@@ -239,6 +274,7 @@ pub fn register_member(req: CreateMemberRequest, state: State<'_, AppContext>) -
 #[tauri::command]
 pub fn update_member(req: UpdateMemberRequest, state: State<'_, AppContext>) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
     let member = state.db.update_member(&req).map_err(|e| e.to_string())?;
 
     // Update in-memory biometric display name if member exists in face store
@@ -253,6 +289,7 @@ pub fn update_member(req: UpdateMemberRequest, state: State<'_, AppContext>) -> 
 #[tauri::command]
 pub fn delete_member(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.delete_member(&id).map_err(|e| e.to_string())?;
     state.face_store.remove(&id);
     Ok(())
@@ -263,6 +300,7 @@ pub fn delete_member(id: String, state: State<'_, AppContext>) -> Result<(), Str
 #[tauri::command]
 pub fn process_walk_in(req: CreateWalkInRequest, state: State<'_, AppContext>) -> Result<WalkInRecord, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
 
     // 1. Create walk-in record & write sale transaction
     let record = state.db.create_walk_in(&req).map_err(|e| e.to_string())?;
@@ -529,24 +567,28 @@ pub fn list_products(state: State<'_, AppContext>) -> Result<Vec<ProductItem>, S
 #[tauri::command]
 pub fn create_product(req: CreateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.create_product(&req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn update_product(req: UpdateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.update_product(&req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn adjust_product_stock(id: String, delta: i32, state: State<'_, AppContext>) -> Result<ProductItem, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.adjust_product_stock(&id, delta).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_product(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.delete_product(&id).map_err(|e| e.to_string())
 }
 
@@ -560,6 +602,7 @@ pub fn checkout_pos_sale(
     state: State<'_, AppContext>,
 ) -> Result<SaleTransaction, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
 
     if items.is_empty() {
         return Err("Cart is empty".to_string());
@@ -579,18 +622,21 @@ pub fn checkout_pos_sale(
 #[tauri::command]
 pub fn renew_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.renew_member(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn freeze_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.set_member_status(&id, "suspended").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn unfreeze_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.set_member_status(&id, "active").map_err(|e| e.to_string())
 }
 
@@ -602,6 +648,7 @@ pub fn rescan_member_face(
     state: State<'_, AppContext>,
 ) -> Result<Member, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     let member = state
         .db
         .update_member_vectors(&id, &face_vectors, photo_data_url.as_deref())
@@ -625,6 +672,7 @@ pub fn create_expense(
     state: State<'_, AppContext>,
 ) -> Result<ExpenseRecord, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
     let by = state
         .session
         .read()
@@ -642,11 +690,13 @@ pub fn list_expenses(limit: Option<i64>, state: State<'_, AppContext>) -> Result
 #[tauri::command]
 pub fn delete_expense(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.delete_expense(&id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_end_of_day(day: Option<String>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    require_login(&state)?;
     let day_str = day.unwrap_or_else(|| Utc::now().format("%Y-%m-%d").to_string());
     if day_str.len() != 10 || !day_str.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
         return Err("Day must be YYYY-MM-DD".to_string());
@@ -664,18 +714,21 @@ pub fn list_coaches(state: State<'_, AppContext>) -> Result<Vec<Coach>, String> 
 #[tauri::command]
 pub fn create_coach(req: CreateCoachRequest, state: State<'_, AppContext>) -> Result<Coach, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.create_coach(&req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn update_coach(req: UpdateCoachRequest, state: State<'_, AppContext>) -> Result<Coach, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.update_coach(&req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_coach(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.delete_coach(&id).map_err(|e| e.to_string())
 }
 
@@ -690,6 +743,7 @@ pub fn schedule_coach_session(
     state: State<'_, AppContext>,
 ) -> Result<CoachSession, String> {
     check_license_active(&state)?;
+    require_login(&state)?;
 
     state
         .db
@@ -705,6 +759,7 @@ pub fn list_coach_sessions(state: State<'_, AppContext>) -> Result<Vec<CoachSess
 #[tauri::command]
 pub fn cancel_coach_session(session_id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.cancel_coach_session(&session_id).map_err(|e| e.to_string())
 }
 
@@ -713,6 +768,7 @@ pub fn cancel_coach_session(session_id: String, state: State<'_, AppContext>) ->
 #[tauri::command]
 pub fn extend_walk_in(id: String, extra_hours: i64, state: State<'_, AppContext>) -> Result<WalkInRecord, String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     let record = state.db.extend_walk_in(&id, extra_hours).map_err(|e| e.to_string())?;
 
     // Update in-memory biometric expiry if present
@@ -728,6 +784,7 @@ pub fn extend_walk_in(id: String, extra_hours: i64, state: State<'_, AppContext>
 #[tauri::command]
 pub fn void_walk_in(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
+    require_manager(&state)?;
     state.db.void_walk_in(&id).map_err(|e| e.to_string())?;
     let temp_id = format!("WALKIN-{}", id);
     state.face_store.remove(&temp_id);
@@ -752,7 +809,9 @@ pub async fn check_for_updates(
 pub async fn download_and_install_update(
     download_url: String,
     sha256: String,
+    state: State<'_, AppContext>,
 ) -> Result<String, String> {
+    require_owner(&state)?;
     let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
     let updater = crate::updater::AutoUpdater::new(cloud_url);
 

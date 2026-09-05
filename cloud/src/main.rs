@@ -32,16 +32,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // LOCAL persistence convenience (so the key survives restarts without an
     // env var), but it must never be committed, and there is still a secure
     // ephemeral fallback if neither is present.
-    let signer = if let Ok(pem) = std::env::var("RSA_PRIVATE_KEY_PEM") {
+    let (signer, rsa_pem_for_tokens) = if let Ok(pem) = std::env::var("RSA_PRIVATE_KEY_PEM") {
         tracing::info!("Loaded RSA private key from RSA_PRIVATE_KEY_PEM environment variable");
-        LicenseSigner::from_pem(&pem)?
+        (LicenseSigner::from_pem(&pem)?, Some(pem))
     } else if let Ok(pem) = std::fs::read_to_string("rsa_private_key.pem") {
         tracing::info!("Loaded RSA private key from rsa_private_key.pem");
-        LicenseSigner::from_pem(&pem)?
+        (LicenseSigner::from_pem(&pem)?, Some(pem))
     } else {
         tracing::warn!("Generating in-memory ephemeral signing key");
-        LicenseSigner::generate_ephemeral()?
+        (LicenseSigner::generate_ephemeral()?, None)
     };
+    // Session-token HMAC secret: explicit env wins, else derived from the RSA
+    // private key (stable iff the signing key is stable), else ephemeral.
+    let tokens = crypto::SessionTokens::from_env_or_rsa_pem(rsa_pem_for_tokens.as_deref());
 
     // CEO accounts (email + Argon2id password) replaced the old shared master
     // admin key: the first CEO registers once via POST /api/v1/auth/ceo-register
@@ -89,6 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         disabled_gyms: Arc::new(RwLock::new(loaded_disabled)),
         revoked_licenses: Arc::new(RwLock::new(loaded_revoked_licenses)),
         login_limiter,
+        tokens,
     });
 
     let cors = CorsLayer::new()

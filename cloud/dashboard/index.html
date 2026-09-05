@@ -568,6 +568,13 @@
             return localStorage.getItem('gympos_ceo_email') || "";
         }
 
+        // Escapes owner-controlled strings (company/branch names, emails)
+        // before innerHTML injection — a malicious owner name would otherwise
+        // execute in the CEO's browser and steal the session token.
+        function ceoEscape(s) {
+            return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+
         let ceoAuthMode = 'login';
 
         function switchCeoTab(mode) {
@@ -809,10 +816,10 @@
 
                         return `
                             <tr class="hover:bg-purple-900/20 transition border-b border-purple-900/20 ${isDisabled ? 'opacity-60 bg-red-950/10' : ''}">
-                                <td class="py-2.5 font-bold text-purple-100">${b.name}</td>
-                                <td class="py-2.5 font-mono text-[10px] text-purple-400" title="${b.gym_id}">${b.gym_id.substring(0, 8)}...</td>
+                                <td class="py-2.5 font-bold text-purple-100">${ceoEscape(b.name)}</td>
+                                <td class="py-2.5 font-mono text-[10px] text-purple-400" title="${ceoEscape(b.gym_id)}">${ceoEscape(String(b.gym_id).substring(0, 8))}...</td>
                                 <td class="py-2.5">
-                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${tierColor}">${b.tier}</span>
+                                    <span class="px-2 py-0.5 rounded text-[10px] font-bold border uppercase ${tierColor}">${ceoEscape(b.tier)}</span>
                                 </td>
                                 <td class="py-2.5">${licBadge}</td>
                                 <td class="py-2.5">
@@ -841,8 +848,8 @@
                                 </div>
                                 <div>
                                     <div class="flex items-center gap-2">
-                                        <span class="font-bold text-sm text-purple-100">${owner.company_name}</span>
-                                        <span class="text-xs text-purple-400 font-mono">(${owner.owner_email})</span>
+                                        <span class="font-bold text-sm text-purple-100">${ceoEscape(owner.company_name)}</span>
+                                        <span class="text-xs text-purple-400 font-mono">(${ceoEscape(owner.owner_email)})</span>
                                     </div>
                                     <div class="text-[11px] text-purple-400/60">Registered: ${regDate}</div>
                                 </div>

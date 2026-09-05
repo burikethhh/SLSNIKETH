@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::crypto::{verify_license_token, LicenseSigner};
+use crate::crypto::{verify_license_token, LicenseSigner, SessionTokens, CEO_TOKEN_TTL_SECS, OWNER_TOKEN_TTL_SECS};
 use crate::db::CloudDatabase;
 use crate::models::{
     GenerateLicenseRequest, GymRecord, LicenseResponse, RegisterGymRequest,
@@ -37,13 +37,19 @@ pub struct AppState {
     pub disabled_gyms: Arc<RwLock<HashSet<Uuid>>>,
     pub revoked_licenses: Arc<RwLock<HashSet<Uuid>>>,
     pub login_limiter: Arc<RateLimiter>,
+    pub tokens: SessionTokens,
 }
 
-/// CEO gate: accepts `Bearer ceo:<email>` session tokens issued by
-/// `ceo_login`, verified against `cloud_ceo_accounts`. This replaced the old
-/// shared master admin key (which failed whenever the two sides disagreed on
-/// the secret) with a real account: validated email + Argon2id password.
-async fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+/// CEO gate: accepts HMAC-signed `ceo:<email>:<exp>:<sig>` session tokens
+/// issued by `ceo_login`. The HMAC (server secret) + expiry are verified
+/// cryptographically, then the account must still exist in
+/// `cloud_ceo_accounts` (so disabling/deleting a CEO kills its sessions).
+/// Legacy bare `ceo:<email>` strings are rejected outright.
+async fn verify_admin_auth(
+    headers: &HeaderMap,
+    db: &CloudDatabase,
+    tokens: &SessionTokens,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let unauthorized = || {
         Err((
             StatusCode::UNAUTHORIZED,
@@ -62,12 +68,13 @@ async fn verify_admin_auth(headers: &HeaderMap, db: &CloudDatabase) -> Result<St
         .map(|t| t.trim().to_string());
 
     let email = match token.as_deref() {
-        Some(t) => t.strip_prefix("ceo:").unwrap_or(t).trim().to_lowercase(),
+        Some(t) => tokens.verify("ceo", t, Utc::now().timestamp(), CEO_TOKEN_TTL_SECS),
+        None => None,
+    };
+    let email = match email {
+        Some(e) => e,
         None => return unauthorized(),
     };
-    if !email.contains('@') {
-        return unauthorized();
-    }
     match db.ceo_exists(&email).await {
         Ok(true) => Ok(email),
         _ => unauthorized(),
@@ -116,11 +123,26 @@ pub async fn ceo_register(
     headers: HeaderMap,
     Json(payload): Json<gympos_shared::CeoRegisterRequest>,
 ) -> Result<impl IntoResponse, axum::response::Response> {
-    // First CEO is open bootstrap (fresh server has no accounts yet);
-    // additional CEOs can only be created by an already-logged-in CEO.
+    // First CEO is open bootstrap (fresh server has no accounts yet), unless
+    // the operator set CEO_BOOTSTRAP_SECRET — then the secret is required even
+    // for the first account (prevents fleet takeover on first boot).
+    // Additional CEOs can only be created by an already-logged-in CEO.
     let existing = state.db.count_ceos().await.unwrap_or(0);
     if existing > 0 {
-        verify_admin_auth(&headers, &state.db).await.map_err(|e| e.into_response())?;
+        verify_admin_auth(&headers, &state.db, &state.tokens).await.map_err(|e| e.into_response())?;
+    } else if let Ok(secret) = std::env::var("CEO_BOOTSTRAP_SECRET") {
+        if !secret.trim().is_empty() {
+            let provided = payload.setup_secret.as_deref().unwrap_or("").trim();
+            use subtle::ConstantTimeEq;
+            let ok: bool = provided.as_bytes().ct_eq(secret.trim().as_bytes()).into();
+            if !ok {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "First-CEO setup is locked by CEO_BOOTSTRAP_SECRET", "code": "BOOTSTRAP_LOCKED" })),
+                )
+                    .into_response());
+            }
+        }
     }
 
     let ip = client_ip(&headers, Some(addr));
@@ -173,12 +195,14 @@ pub async fn ceo_register(
     }
     let _ = state.db.log_audit(&email_norm, None, "ceo_register", Some(name)).await;
 
+    let now = Utc::now().timestamp();
+    let email_out = email_norm.clone();
     Ok((
         StatusCode::CREATED,
         Json(gympos_shared::CeoLoginResponse {
             authenticated: true,
-            token: format!("ceo:{}", email_norm),
-            ceo_email: email_norm,
+            token: state.tokens.mint("ceo", &email_norm, CEO_TOKEN_TTL_SECS, now),
+            ceo_email: email_out,
             display_name: name.to_string(),
         }),
     ))
@@ -211,12 +235,14 @@ pub async fn ceo_login(
         Some(display_name) => {
             state.login_limiter.reset(&per_account_key);
             let _ = state.db.log_audit(&email_norm, None, "ceo_login", None).await;
+            let now = Utc::now().timestamp();
+            let email_out = email_norm.clone();
             Ok((
                 StatusCode::OK,
                 Json(gympos_shared::CeoLoginResponse {
                     authenticated: true,
-                    token: format!("ceo:{}", email_norm),
-                    ceo_email: email_norm,
+                    token: state.tokens.mint("ceo", &email_norm, CEO_TOKEN_TTL_SECS, now),
+                    ceo_email: email_out,
                     display_name,
                 }),
             ))
@@ -245,7 +271,7 @@ pub async fn register_gym(
     headers: HeaderMap,
     Json(payload): Json<RegisterGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
 
     // --- Stand-out guard: qualified email + must have owner portal account + tier branch cap ---
     let email_norm = payload.owner_email.trim().to_lowercase();
@@ -325,7 +351,7 @@ pub async fn list_gyms(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let gyms = state.gyms.read();
     let list: Vec<GymRecord> = gyms.values().cloned().collect();
     Ok((StatusCode::OK, Json(json!(list))))
@@ -336,7 +362,7 @@ pub async fn update_gym(
     headers: HeaderMap,
     Json(payload): Json<gympos_shared::UpdateGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let exists = state.gyms.read().contains_key(&payload.id);
     if !exists {
         return Err((
@@ -364,7 +390,7 @@ pub async fn delete_gym(
     headers: HeaderMap,
     Path(gym_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     if !state.gyms.read().contains_key(&gym_id) {
         return Err((
             StatusCode::NOT_FOUND,
@@ -384,7 +410,7 @@ pub async fn generate_license(
     headers: HeaderMap,
     Json(payload): Json<GenerateLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
 
     // --- Same guard for standalone license mint (may be orphan gym_id, so tier check optional but owner must exist) ---
     let email_norm = payload.owner_email.trim().to_lowercase();
@@ -451,7 +477,7 @@ pub async fn list_licenses(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let list = state.db.list_licenses().await.unwrap_or_default();
     Ok((StatusCode::OK, Json(json!(list))))
 }
@@ -461,7 +487,7 @@ pub async fn revoke_license_endpoint(
     headers: HeaderMap,
     Json(payload): Json<RevokeLicenseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let reason = payload.reason.as_deref().unwrap_or("Revoked by CEO / Platform Administrator");
 
     let _ = state.db.revoke_license(&payload.license_id, reason).await;
@@ -480,8 +506,23 @@ pub async fn revoke_license_endpoint(
 
 pub async fn verify_license(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Public oracle (key validity probing) — cap per IP so stolen-key
+    // guessing runs can't be automated at line rate.
+    let ip = client_ip(&headers, Some(addr));
+    if let Err(retry_after) = state.login_limiter.check(
+        &format!("verify-license:{}", ip),
+        60,
+        StdDuration::from_secs(60),
+    ) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "Too many checks, slow down", "code": "RATE_LIMITED", "retry_after_seconds": retry_after })),
+        ));
+    }
     let token = payload
         .get("license_key")
         .and_then(|v| v.as_str())
@@ -527,9 +568,23 @@ pub async fn verify_license(
 
 pub async fn sync_push(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(payload): Json<SyncPushPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // 0. Flood guard BEFORE auth: wide per-IP bucket (franchises behind one
+    // NAT share an IP, so this only stops absurd abuse, not normal fleets).
+    let ip = client_ip(&headers, Some(addr));
+    if state
+        .login_limiter
+        .check(&format!("sync-ip:{}", ip), 600, StdDuration::from_secs(60))
+        .is_err()
+    {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "Sync flood guard tripped, slow down", "code": "RATE_LIMITED" })),
+        ));
+    }
     // 1. Strict Bearer license authentication — reject unauthenticated sync pushes (CRITICAL: prevents fake member injection)
     let auth_token = headers
         .get("authorization")
@@ -560,6 +615,23 @@ pub async fn sync_push(
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "Owner email mismatch: token owner does not match payload", "code": "OWNER_MISMATCH" })),
+        ));
+    }
+
+    // Per-gym sync budget (post-auth, so NAT sharing doesn't cross-throttle
+    // branches; 120/min is far above the 5-30s worker cadence).
+    if state
+        .login_limiter
+        .check(
+            &format!("sync-gym:{}", payload.gym_id),
+            120,
+            StdDuration::from_secs(60),
+        )
+        .is_err()
+    {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "Sync budget exceeded for this branch, slow down", "code": "RATE_LIMITED" })),
         ));
     }
 
@@ -611,18 +683,37 @@ pub async fn sync_push(
 }
 
 pub async fn sync_vectors(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(vectors): Json<Vec<FaceVectorSyncItem>>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Previously an unauthenticated discard sink (vectors were counted but
+    // never stored). Now requires a valid license Bearer like sync_push.
+    let auth_token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer ").or_else(|| v.strip_prefix("bearer ")))
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "Missing license Bearer token", "code": "LICENSE_REQUIRED" })),
+            )
+        })?;
+    verify_license_token(auth_token, state.signer.public_key_pem()).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": format!("Invalid license token: {}", e), "code": "LICENSE_INVALID" })),
+        )
+    })?;
     let count = vectors.len();
-    (
+    Ok((
         StatusCode::OK,
         Json(json!({
             "status": "success",
             "synced_vectors": count,
             "timestamp": Utc::now()
         })),
-    )
+    ))
 }
 
 pub async fn remote_disable(
@@ -630,7 +721,7 @@ pub async fn remote_disable(
     headers: HeaderMap,
     Json(payload): Json<RemoteDisableRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
 
     let _ = state.db.set_disabled(&payload.gym_id, payload.disable).await;
     let mut disabled = state.disabled_gyms.write();
@@ -657,7 +748,7 @@ pub async fn analytics_fleet(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
 
     let gyms = state.gyms.read().clone();
     let revoked = state.revoked_licenses.read().len() + state.disabled_gyms.read().len();
@@ -697,7 +788,15 @@ pub async fn analytics_fleet(
 // (Argon2id) so cloud and desktop always agree on the hash format — see that
 // crate for details, including transparent legacy SHA-256 verification.
 
-fn extract_owner_email(headers: &HeaderMap) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+/// Owner gate: accepts HMAC-signed `owner:<email>:<exp>:<sig>` session tokens
+/// issued by `owner_login`/`owner_register`. Legacy bare `owner:<email>`
+/// strings are rejected outright — they were forgeable by anyone who knew an
+/// email address. Note: unlike the CEO gate this does NOT hit the DB (owner
+/// rows are looked up per-endpoint); the HMAC + expiry is the authentication.
+fn extract_owner_email(
+    headers: &HeaderMap,
+    tokens: &SessionTokens,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -706,14 +805,12 @@ fn extract_owner_email(headers: &HeaderMap) -> Result<String, (StatusCode, Json<
 
     match auth_header {
         Some(token) if !token.trim().is_empty() => {
-            let email = token.strip_prefix("owner:").unwrap_or(token).trim().to_string();
-            if email.contains('@') {
-                Ok(email)
-            } else {
-                Err((
+            match tokens.verify("owner", token.trim(), Utc::now().timestamp(), OWNER_TOKEN_TTL_SECS) {
+                Some(email) => Ok(email),
+                None => Err((
                     StatusCode::UNAUTHORIZED,
-                    Json(json!({ "error": "Invalid owner session token format", "code": "OWNER_TOKEN_INVALID" })),
-                ))
+                    Json(json!({ "error": "Invalid or expired owner session token — please login again", "code": "OWNER_TOKEN_INVALID" })),
+                )),
             }
         }
         _ => Err((
@@ -757,12 +854,14 @@ pub async fn owner_register(
     let _ = state.db.create_owner_account(&email_norm, &password_hash, &payload.company_name).await;
     let _ = state.db.log_audit(&email_norm, None, "owner_register", Some(&payload.company_name)).await;
 
+    let now = Utc::now().timestamp();
+    let email_out = email_norm.clone();
     Ok((
         StatusCode::CREATED,
         Json(OwnerLoginResponse {
             authenticated: true,
-            token: format!("owner:{}", email_norm),
-            owner_email: email_norm,
+            token: state.tokens.mint("owner", &email_norm, OWNER_TOKEN_TTL_SECS, now),
+            owner_email: email_out,
             company_name: payload.company_name,
         }),
     ))
@@ -800,12 +899,14 @@ pub async fn owner_login(
     state.login_limiter.reset(&per_account_key);
     let company = company_name.unwrap();
     let _ = state.db.log_audit(&email_norm, None, "owner_login", None).await;
+    let now = Utc::now().timestamp();
+    let email_out = email_norm.clone();
     Ok((
         StatusCode::OK,
         Json(OwnerLoginResponse {
             authenticated: true,
-            token: format!("owner:{}", email_norm),
-            owner_email: email_norm,
+            token: state.tokens.mint("owner", &email_norm, OWNER_TOKEN_TTL_SECS, now),
+            owner_email: email_out,
             company_name: company,
         }),
     ))
@@ -813,12 +914,29 @@ pub async fn owner_login(
 
 pub async fn owner_check_exists(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    // Account-enumeration oracle — cap per IP. Returns 429 JSON on excess.
+    let ip = client_ip(&headers, Some(addr));
+    if state
+        .login_limiter
+        .check(&format!("owner-exists:{}", ip), 60, StdDuration::from_secs(60))
+        .is_err()
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "Too many checks, slow down", "code": "RATE_LIMITED" })),
+        );
+    }
     let email = params.get("email").map(|s| s.trim().to_lowercase()).unwrap_or_default();
     let qualified = is_qualified_email(&email);
     let exists = if qualified { state.db.owner_exists(&email).await.unwrap_or(false) } else { false };
-    Json(json!({"email": email, "qualified": qualified, "exists": exists, "can_mint": qualified && exists}))
+    (
+        StatusCode::OK,
+        Json(json!({"email": email, "qualified": qualified, "exists": exists, "can_mint": qualified && exists})),
+    )
 }
 
 pub async fn owner_create_gym(
@@ -826,7 +944,7 @@ pub async fn owner_create_gym(
     headers: HeaderMap,
     Json(payload): Json<RegisterGymRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let owner_norm = owner_email.trim().to_lowercase();
     // Owner can only create gym for themselves
     let req_email_norm = payload.owner_email.trim().to_lowercase();
@@ -876,7 +994,7 @@ pub async fn admin_list_owners_hierarchy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let hierarchy = state.db.list_all_owners_with_branches().await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -892,7 +1010,7 @@ pub async fn admin_create_branch_for_owner(
     Path(owner_email): Path<String>,
     Json(payload): Json<AdminCreateBranchForOwnerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let owner_norm = owner_email.trim().to_lowercase();
     let branch_name = payload.branch_name.trim().to_string();
 
@@ -975,7 +1093,7 @@ pub async fn admin_issue_branch_key(
     Path(gym_id): Path<Uuid>,
     Json(payload): Json<IssueBranchKeyRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
 
     let gym = state.db.get_gym_by_id(&gym_id).await.map_err(|e| {
         (
@@ -1056,7 +1174,7 @@ pub async fn owner_get_branches(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let branches = state.db.get_owner_branches(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
@@ -1072,7 +1190,7 @@ pub async fn owner_get_analytics(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let analytics = state.db.get_owner_analytics(&owner_email).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1086,7 +1204,7 @@ pub async fn owner_get_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let products = state.db.get_products(&owner_email).await.unwrap_or_default();
     let plans = state.db.get_plans(&owner_email).await.unwrap_or_default();
     let promos = state.db.get_promos(&owner_email).await.unwrap_or_default();
@@ -1105,7 +1223,7 @@ pub async fn owner_save_products(
     headers: HeaderMap,
     Json(payload): Json<SaveProductsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let count = state.db.upsert_products(&owner_email, &payload.products).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1127,7 +1245,7 @@ pub async fn owner_save_plans(
     headers: HeaderMap,
     Json(payload): Json<SavePlansRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let count = state.db.upsert_plans(&owner_email, &payload.plans).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1149,7 +1267,7 @@ pub async fn owner_save_promos(
     headers: HeaderMap,
     Json(payload): Json<SavePromosRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let count = state.db.upsert_promos(&owner_email, &payload.promos).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1172,7 +1290,7 @@ pub async fn owner_list_staff(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let staff = state.db.list_staff_by_owner(&owner_email).await.unwrap_or_default();
     Ok((
         StatusCode::OK,
@@ -1189,7 +1307,7 @@ pub async fn owner_create_staff(
     headers: HeaderMap,
     Json(payload): Json<CreateStaffRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
 
     let full_name = payload.full_name.trim().to_string();
     let username = payload.username.trim().to_lowercase();
@@ -1250,7 +1368,7 @@ pub async fn owner_update_staff(
     Path(staff_id): Path<String>,
     Json(payload): Json<UpdateStaffRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
 
     if let Some(ref pin) = payload.pin_code {
         let pin = pin.trim();
@@ -1288,7 +1406,7 @@ pub async fn owner_delete_staff(
     headers: HeaderMap,
     Path(staff_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     let deleted = state.db.delete_staff_account(&owner_email, &staff_id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1323,7 +1441,7 @@ pub async fn owner_save_branch_override(
     headers: HeaderMap,
     Json(payload): Json<BranchOverridePayload>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let owner_email = extract_owner_email(&headers)?;
+    let owner_email = extract_owner_email(&headers, &state.tokens)?;
     state.db.save_branch_product_override(
         &owner_email,
         &payload.gym_id,
@@ -1421,7 +1539,25 @@ pub async fn publish_release_endpoint(
     headers: HeaderMap,
     Json(payload): Json<PublishReleaseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
+
+    // Integrity is mandatory: a release without a SHA-256 (or without a
+    // download URL) would now be refused by every terminal, so reject it at
+    // publish time instead of shipping a dead update.
+    if payload.sha256.trim().len() != 64
+        || !payload.sha256.trim().chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "A valid 64-hex SHA-256 of the release binary is required", "code": "INVALID_SHA256" })),
+        ));
+    }
+    if payload.download_url.trim().is_empty() || payload.version.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "download_url and version are required", "code": "INVALID_RELEASE" })),
+        ));
+    }
 
     let release_info = ReleaseInfo {
         version: payload.version.trim().to_string(),
@@ -1449,7 +1585,7 @@ pub async fn list_releases_endpoint(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    verify_admin_auth(&headers, &state.db).await?;
+    verify_admin_auth(&headers, &state.db, &state.tokens).await?;
     let list = state.db.list_releases().await.unwrap_or_default();
     Ok((StatusCode::OK, Json(list)))
 }

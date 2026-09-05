@@ -80,7 +80,7 @@ test.describe('Multi-key per single owner email (interbranch)', () => {
     let r = await request.post(`${CLOUD_URL}/api/v1/owner/auth/register`, { data: { email: owner, password: 'StrongPass123', company_name: 'Multi Titan' } });
     expect(r.status()).toBe(201);
     const { token } = await r.json();
-    expect(token).toBe(`owner:${owner}`);
+    expect(token.startsWith(`owner:${owner}:`)).toBeTruthy();
     // 2. owner self-service create gym (Pro allows 5)
     r = await request.post(`${CLOUD_URL}/api/v1/owner/gyms`, {
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },

@@ -2079,30 +2079,32 @@ function filterMembersList() {
         } else if (isExpired) {
             statusBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-semibold">EXPIRED</span>`;
         }
-        const photo = m.photo_data_url
-            ? `<img src="${m.photo_data_url}" alt="ref" class="w-8 h-8 rounded-full object-cover border border-slate-600" title="Enrollment reference photo"/>`
-            : `<span class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 inline-flex items-center justify-center text-slate-400 font-bold text-xs">${(m.first_name || '?').charAt(0)}</span>`;
-        const escId = m.id.replace(/'/g, "\\'");
-        const escName = `${m.first_name.replace(/'/g, "\\'")} ${m.last_name.replace(/'/g, "\\'")}`;
+        const safePhoto = (m.photo_data_url && m.photo_data_url.startsWith('data:image/')) ? m.photo_data_url : null;
+        const photo = safePhoto
+            ? `<img src="${safePhoto}" alt="ref" class="w-8 h-8 rounded-full object-cover border border-slate-600" title="Enrollment reference photo"/>`
+            : `<span class="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 inline-flex items-center justify-center text-slate-400 font-bold text-xs">${escapeHtml((m.first_name || '?').charAt(0))}</span>`;
+        const escId = String(m.id || '').replace(/'/g, "\\'");
+        const escName = `${String(m.first_name || '').replace(/'/g, "\\'")} ${String(m.last_name || '').replace(/'/g, "\\'")}`;
+        const dispName = escapeHtml(`${m.first_name || ''} ${m.last_name || ''}`.trim());
         const freezeBtn = isSuspended
             ? `<button onclick="unfreezeMember('${escId}')" title="Unfreeze (reactivate)" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Unfreeze</button>`
             : `<button onclick="freezeMember('${escId}')" title="Freeze (deny gate, keep data)" class="px-2.5 py-1 rounded bg-amber-950/60 hover:bg-amber-900 text-xs text-amber-300 border border-amber-800/50 font-medium transition">Freeze</button>`;
 
         return `
             <tr class="hover:bg-slate-800/30 transition ${isSuspended || isExpired ? 'opacity-70' : ''}">
-                <td class="p-3 font-mono text-blue-300">${m.id}</td>
+                <td class="p-3 font-mono text-blue-300">${escapeHtml(m.id)}</td>
                 <td class="p-3">
                     <div class="flex items-center gap-2">
                         ${photo}
                         <div>
-                            <span class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</span>
-                            <div class="text-[10px] text-slate-500">${m.email || '--'}</div>
+                            <span class="font-semibold text-slate-200">${dispName}</span>
+                            <div class="text-[10px] text-slate-500">${escapeHtml(m.email || '--')}</div>
                         </div>
-                        ${m.home_gym_name && m.home_gym_name !== appSettings.gym_name ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60" title="Inter-Branch Member">📍 ${m.home_gym_name}</span>` : ''}
+                        ${m.home_gym_name && m.home_gym_name !== appSettings.gym_name ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60" title="Inter-Branch Member">📍 ${escapeHtml(m.home_gym_name)}</span>` : ''}
                     </div>
                 </td>
-                <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${m.membership_type}</td>
-                <td class="p-3 text-slate-400 font-mono">${m.phone || '--'}</td>
+                <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${escapeHtml(m.membership_type)}</td>
+                <td class="p-3 text-slate-400 font-mono">${escapeHtml(m.phone || '--')}</td>
                 <td class="p-3">${statusBadge}</td>
                 <td class="p-3 text-right">
                     <div class="flex flex-wrap justify-end gap-1.5">
@@ -2218,11 +2220,12 @@ function filterInterbranchList() {
     tbody.innerHTML = filtered.map(m => {
         const statusCls = m.status === 'active' ? 'bg-emerald-950 text-emerald-400 border-emerald-800' : 'bg-amber-950 text-amber-300 border-amber-800';
         const isLocalVisitor = m.home_gym_name && m.home_gym_name !== (appSettings.gym_name||'');
+        const ibName = escapeHtml(`${m.first_name || ''} ${m.last_name || ''}`.trim());
         return `<tr class="hover:bg-slate-800/30 transition">
-            <td class="p-3 font-mono text-blue-300">${m.id}</td>
-            <td class="p-3"><div class="font-semibold text-slate-200">${m.first_name} ${m.last_name}</div><div class="text-[10px] text-slate-500">${m.email||'--'}</div></td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60">${m.home_gym_name||'—'}</span><div class="text-[10px] font-mono text-slate-500">${(m.home_gym_id||'').slice(0,8)}</div></td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] border font-semibold uppercase ${statusCls}">${m.membership_type||'regular'} · ${m.status||'active'}</span></td>
+            <td class="p-3 font-mono text-blue-300">${escapeHtml(m.id)}</td>
+            <td class="p-3"><div class="font-semibold text-slate-200">${ibName}</div><div class="text-[10px] text-slate-500">${escapeHtml(m.email||'--')}</div></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[11px] font-bold bg-purple-950 text-purple-300 border border-purple-800/60">${escapeHtml(m.home_gym_name||'—')}</span><div class="text-[10px] font-mono text-slate-500">${escapeHtml((m.home_gym_id||'').slice(0,8))}</div></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] border font-semibold uppercase ${statusCls}">${escapeHtml(m.membership_type||'regular')} · ${escapeHtml(m.status||'active')}</span></td>
             <td class="p-3 text-center"><span class="font-mono text-slate-200">${m.vector_count||0}</span><span class="text-[10px] text-slate-500"> vectors</span></td>
             <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] bg-emerald-950/50 text-emerald-300 border border-emerald-800">Synced</span></td>
             <td class="p-3 text-right"><button onclick="switchView('members'); setTimeout(()=>{document.getElementById('member-search-input').value='${(m.first_name+" "+m.last_name).replace(/'/g,"\\'")}'; filterMembersList();}, 100)" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700">View Profile</button></td>
