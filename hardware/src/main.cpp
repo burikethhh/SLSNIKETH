@@ -80,7 +80,7 @@ static const int LCD_SDA_PIN    = 18;  // I2C SDA (Wire.begin(18, 19))
 static const int LCD_SCL_PIN    = 19;  // I2C SCL
 #endif
 #ifndef BUZZER_PIN
-static const int BUZZER_PIN     = 9;   // 5V active buzzer
+static const int BUZZER_PIN     = 10;  // 5V active buzzer on safe GPIO10 (NOT GPIO9 strapping pin)
 #endif
 
 // ───────────── I2C Pin & Address Auto-Detection ─────────────
@@ -244,10 +244,10 @@ void initLcdHardware(int sda, int scl, uint8_t addr) {
 
   lcd = new LiquidCrystal_I2C(addr, 16, 2);
   // init() executes full HD44780 4-bit initialization
-  lcd->init();
-  // Ensure Wire configuration persists on active pins
+  Wire.end();
   Wire.setPins(activeSdaPin, activeSclPin);
   Wire.begin(activeSdaPin, activeSclPin);
+  lcd->init();
   Wire.setTimeOut(50);
   Wire.setClock(100000);
 
