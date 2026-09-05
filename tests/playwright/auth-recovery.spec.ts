@@ -105,7 +105,7 @@ test.describe('owner portal screens + 401 recovery', () => {
     await seedOwnerSession(page, goodOwnerToken);
     await mockPortalHappy(page);
     await page.goto(`${STATIC}/portal.html`);
-    await expect(page.locator('#owner-new-branch-tier')).toContainText('₱199');
+    await expect(page.locator('#owner-new-branch-tier')).toContainText('Pro');
     const emailVal = await page.locator('#auth-email-input').inputValue();
     const passVal = await page.locator('#auth-pass-input').inputValue();
     expect(emailVal).toBe('');
@@ -206,7 +206,7 @@ test.describe('CEO command center screens + 401 recovery', () => {
     await expect(page.locator('#security-incidents-tbody')).toContainText('MEM-001');
     await expect(page.locator('#ceo-security-unacked')).toContainText('1 unacked');
     await expect(page.locator('#ceo-security-branches')).toContainText('2/7d');
-    await expect(page.locator('#gym-tier')).toContainText('₱199');
+    await expect(page.locator('#gym-tier')).toContainText('Pro');
     await expect(page.locator('#stat-mrr')).toContainText('₱199.00'); // 1 mocked Pro branch
     await page.getByRole('button', { name: 'Acknowledge' }).first().click();
     await expect.poll(() => acked).toBe(true);

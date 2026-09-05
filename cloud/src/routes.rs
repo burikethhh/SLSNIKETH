@@ -130,10 +130,10 @@ pub async fn ceo_register(
     // First CEO is open bootstrap (fresh server has no accounts yet), unless
     // the operator set CEO_BOOTSTRAP_SECRET — then the secret is required even
     // for the first account (prevents fleet takeover on first boot).
-    // Additional CEOs can only be created by an already-logged-in CEO.
+    // Hide creation account endpoint once first CEO exists (returns 404 Not Found)
     let existing = state.db.count_ceos().await.unwrap_or(0);
     if existing > 0 {
-        verify_admin_auth(&headers, &state.db, &state.tokens).await.map_err(|e| e.into_response())?;
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response());
     } else if let Ok(secret) = std::env::var("CEO_BOOTSTRAP_SECRET") {
         if !secret.trim().is_empty() {
             let provided = payload.setup_secret.as_deref().unwrap_or("").trim();

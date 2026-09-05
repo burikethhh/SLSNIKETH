@@ -176,9 +176,9 @@
                     <div>
                         <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
                         <select id="gym-tier" class="input-dark">
-                            <option value="basic">Basic Tier — ₱99/mo (Max 200 Members)</option>
-                            <option value="pro" selected>Pro Tier — ₱199/mo (Max 500 Members, Multi-Loc)</option>
-                            <option value="ultra">Ultra Tier — ₱349/mo (Max 1000 Members, Full API)</option>
+                            <option value="basic">Basic</option>
+                            <option value="pro" selected>Pro</option>
+                            <option value="ultra">Ultra</option>
                         </select>
                     </div>
                     <div>
@@ -460,9 +460,9 @@
                 <div>
                     <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
                     <select id="edit-gym-tier" class="input-dark">
-                        <option value="basic">Basic Tier — ₱99/mo (Max 200)</option>
-                        <option value="pro">Pro Tier — ₱199/mo (Max 500, Multi-Loc)</option>
-                        <option value="ultra">Ultra Tier — ₱349/mo (Max 1000, Full API)</option>
+                        <option value="basic">Basic</option>
+                        <option value="pro">Pro</option>
+                        <option value="ultra">Ultra</option>
                     </select>
                 </div>
             </div>
@@ -483,10 +483,6 @@
             <p class="text-xs text-purple-300/80">
                 Sign in with your CEO email and password to authorize fleet licensing and remote kill-switch commands.
             </p>
-            <div class="flex gap-2 text-xs">
-                <button id="ceo-tab-login" onclick="switchCeoTab('login')" class="flex-1 py-1.5 rounded bg-purple-900/60 text-purple-200 border border-purple-500/40 font-bold">Sign In</button>
-                <button id="ceo-tab-register" onclick="switchCeoTab('register')" class="flex-1 py-1.5 rounded bg-slate-900/60 text-slate-400 border border-slate-800 font-bold">First-Time Setup</button>
-            </div>
             <div>
                 <label class="block text-xs text-purple-300 mb-1">CEO Email</label>
                 <input type="email" id="input-ceo-email" class="input-dark text-sm" placeholder="ceo@yourcompany.com" autocomplete="username">
@@ -494,10 +490,6 @@
             <div>
                 <label class="block text-xs text-purple-300 mb-1">Password (min 8 characters)</label>
                 <input type="password" id="input-ceo-password" class="input-dark text-sm" placeholder="••••••••" autocomplete="current-password">
-            </div>
-            <div id="ceo-register-name-wrap" class="hidden">
-                <label class="block text-xs text-purple-300 mb-1">Display Name</label>
-                <input type="text" id="input-ceo-name" class="input-dark text-sm" placeholder="e.g. Gym Avenue CEO">
             </div>
             <div id="ceo-auth-error" class="text-xs text-red-400 min-h-[1rem]"></div>
             <div class="flex justify-end gap-2 pt-2">
@@ -529,9 +521,9 @@
                     <div>
                         <label class="block text-purple-300 font-medium mb-1">Subscription Tier</label>
                         <select id="admin-add-branch-tier" class="input-dark">
-                            <option value="basic">Basic (₱99/mo, 200)</option>
-                            <option value="pro" selected>Pro (₱199/mo, 500)</option>
-                            <option value="ultra">Ultra (₱349/mo, 1000)</option>
+                            <option value="basic">Basic</option>
+                            <option value="pro" selected>Pro</option>
+                            <option value="ultra">Ultra</option>
                         </select>
                     </div>
                     <div>
@@ -571,9 +563,9 @@
                 <div>
                     <label class="block text-purple-300 font-medium mb-1">Tier</label>
                     <select id="issue-key-tier" class="input-dark">
-                        <option value="basic">Basic (200 Members)</option>
-                        <option value="pro" selected>Pro (500 Members)</option>
-                        <option value="ultra">Ultra (1000 Members)</option>
+                        <option value="basic">Basic</option>
+                        <option value="pro" selected>Pro</option>
+                        <option value="ultra">Ultra</option>
                     </select>
                 </div>
                 <div>
@@ -630,19 +622,7 @@
         let ceoAuthMode = 'login';
 
         function switchCeoTab(mode) {
-            ceoAuthMode = mode;
-            const loginBtn = document.getElementById('ceo-tab-login');
-            const regBtn = document.getElementById('ceo-tab-register');
-            const nameWrap = document.getElementById('ceo-register-name-wrap');
-            const submit = document.getElementById('ceo-auth-submit');
-            const err = document.getElementById('ceo-auth-error');
-            if (err) err.innerText = '';
-            const on = 'flex-1 py-1.5 rounded bg-purple-900/60 text-purple-200 border border-purple-500/40 font-bold';
-            const off = 'flex-1 py-1.5 rounded bg-slate-900/60 text-slate-400 border border-slate-800 font-bold';
-            if (loginBtn) loginBtn.className = mode === 'login' ? on : off;
-            if (regBtn) regBtn.className = mode === 'register' ? on : off;
-            if (nameWrap) nameWrap.classList.toggle('hidden', mode !== 'register');
-            if (submit) submit.innerText = mode === 'register' ? 'Create CEO Account' : 'Sign In as CEO';
+            ceoAuthMode = 'login';
         }
 
         function promptAdminKey() {
@@ -650,7 +630,6 @@
             if (em && getAdminEmail()) em.value = getAdminEmail();
             const pw = document.getElementById('input-ceo-password');
             if (pw) pw.value = '';
-            switchCeoTab('login');
             document.getElementById('admin-key-modal').classList.remove('hidden');
         }
 
@@ -665,11 +644,8 @@
             if (!email || !email.includes('@')) { ceoAuthError('Enter a valid CEO email address.'); return; }
             if (password.length < 8) { ceoAuthError('Password must be at least 8 characters.'); return; }
 
-            const isRegister = ceoAuthMode === 'register';
-            const url = isRegister ? '/api/v1/auth/ceo-register' : '/api/v1/auth/ceo-login';
-            const body = isRegister
-                ? { email: email, password: password, display_name: document.getElementById('input-ceo-name').value.trim() || email }
-                : { email: email, password: password };
+            const url = '/api/v1/auth/ceo-login';
+            const body = { email: email, password: password };
 
             try {
                 const res = await fetch(url, {
