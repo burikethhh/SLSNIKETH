@@ -273,3 +273,17 @@ impl LicenseManager {
         *self.current_claims.write() = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_verify_pg_token() {
+        let lm = LicenseManager::new(None);
+        let token = "GPOS-eyJsaWNlbnNlX2lkIjoiMDIzZWU5MDAtNjEwYi00YWQ1LTlmYTctNDU0NDliN2VmZTZhIiwiZ3ltX2lkIjoiYzQ1ZjkyNWYtYzVmNi00NDFhLTk0OGUtNDcwMWY5Y2UyMWIyIiwiZ3ltX25hbWUiOiJUZXN0Iiwib3duZXJfZW1haWwiOiJ0ZXN0QGdtYWlsLmNvbSIsInRpZXIiOiJiYXNpYyIsImlzc3VlZF9hdCI6IjIwMjYtMDktMDVUMDI6MDU6MTIuNDk2MjI0NzQyWiIsImV4cGlyZXNfYXQiOiIyMDI2LTEwLTA1VDAyOjA1OjEyLjQ5NjIyNDc0MloiLCJtYXhfbWVtYmVycyI6MjAwLCJoYXJkd2FyZV9sb2NrX2VuYWJsZWQiOnRydWUsInRhaWxnYXRlX2RldGVjdGlvbl9lbmFibGVkIjp0cnVlLCJod2lkIjoiIiwiaXBfaGludCI6IiIsImV4cF91bml4IjoxNzkxMTY1OTEyLCJncmFjZV91bnRpbCI6MTc5MTQyNTExMn0.yZwoHI0UZTEVSEUTPLS9TCxyuzVLgEAqnrlVe4sUrhdDf2OfegA4cnlIH7mNagF5jSvUiPZgFOludlhy7wTp9iTjJ8gcNu0WWTHYvrFoELpOXsLDbWXJCvPEo2QeIzPmY5MpbZCpgRJLdt1k_dpGzIDGOxVrBrSBfSzYWXvVnGJ32RLq522jKJcfmJl6-6yIoFH0ueOKEu9Z6SjWU1AfvcSUiHlA-E9Nplvj2WYUyhXL9n10ktUGmOY_lUJ_kLCpO5WQR_Kuou-Mal5gh1fZw5ZIS3rGuTT-lSKxIIlXqm4apFw50pnJdHYQjdOGi4zK1lQDcFWWXGbxiS-JUQo0iw";
+        let res = lm.verify_token(token);
+        println!("RESULT: {:?}", res);
+        assert!(res.is_ok(), "Failed: {:?}", res.err());
+    }
+}

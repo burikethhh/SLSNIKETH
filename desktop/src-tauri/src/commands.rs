@@ -1187,23 +1187,41 @@ pub async fn owner_login_preview(
 
     let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let login: serde_json::Value = client
+    let resp = client
         .post(format!("{}/api/v1/owner/auth/login", cloud_url))
         .json(&serde_json::json!({ "email": email, "password": password }))
         .send()
         .await
-        .map_err(|_| "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string())?
-        .json()
-        .await
-        .map_err(|_| "Owner verification failed: unexpected cloud response.".to_string())?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                "Cloud server timed out (Render may be starting up). Please wait a few moments and try again.".to_string()
+            } else {
+                "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string()
+            }
+        })?;
 
-    if !login["authenticated"].as_bool().unwrap_or(false) {
-        return Err("Invalid owner email or password.".to_string());
+    let status = resp.status();
+    let login: serde_json::Value = resp.json().await.unwrap_or_default();
+
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let wait = login["retry_after_seconds"].as_i64().unwrap_or(60);
+        return Err(format!("Too many login attempts. Please wait {} seconds before trying again.", wait));
     }
+
+    if status == reqwest::StatusCode::UNAUTHORIZED || !login["authenticated"].as_bool().unwrap_or(false) {
+        let err_msg = login["error"].as_str().unwrap_or("Invalid email or password. Use your GymPOS cloud dashboard credentials.");
+        return Err(err_msg.to_string());
+    }
+
+    if !status.is_success() {
+        let err_msg = login["error"].as_str().unwrap_or("Owner verification failed: unexpected cloud response.");
+        return Err(err_msg.to_string());
+    }
+
     let token = login["token"]
         .as_str()
         .ok_or_else(|| "Owner verification failed: cloud issued no session token.".to_string())?;
@@ -1264,7 +1282,7 @@ pub async fn authenticate_owner(
 
     let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -1294,16 +1312,19 @@ pub async fn authenticate_owner(
                 }
             }
         }
-        // SECURITY: no offline fallback. The previous build accepted ANY
-        // password of length >= 6 when the cloud was unreachable, so anyone
-        // at the terminal could gain full Owner privileges by blocking the
-        // network and typing the license owner's email (visible on screen).
-        // Owner elevation now strictly requires a successful cloud login.
+        Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let wait = body["retry_after_seconds"].as_i64().unwrap_or(60);
+            return Err(format!("Too many login attempts. Please wait {} seconds before trying again.", wait));
+        }
         Ok(r) => {
-            return Err(format!(
-                "Owner verification failed (cloud returned HTTP {}). Owner login requires a working internet connection.",
-                r.status()
-            ));
+            let status = r.status();
+            let body: serde_json::Value = r.json().await.unwrap_or_default();
+            let err_msg = body["error"].as_str().unwrap_or("Invalid email or password.");
+            return Err(format!("Owner verification failed: {} (HTTP {})", err_msg, status));
+        }
+        Err(e) if e.is_timeout() => {
+            return Err("Cloud server timed out (Render may be starting up). Please wait a moment and try again.".to_string());
         }
         Err(_) => {
             return Err(

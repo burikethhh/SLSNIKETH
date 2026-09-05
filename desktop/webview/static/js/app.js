@@ -1819,6 +1819,8 @@ async function startAutonomousBiometricEngine() {
 
 // --- App Initialization ---
 
+let camerasStarted = false;
+
 async function initApp() {
     await checkExistingTerminalSession();
     await loadAppSettings();
@@ -1830,9 +1832,12 @@ async function initApp() {
     await loadCoaches();
     await loadCoachSessions();
     await refreshComPorts();
-    await initCameraStreams();
-    await populateCameraDevices();
-    startAutonomousBiometricEngine();
+    if (currentTerminalSession && currentTerminalSession.is_authenticated) {
+        camerasStarted = true;
+        await initCameraStreams();
+        await populateCameraDevices();
+        startAutonomousBiometricEngine();
+    }
     startHardwareButtonPoll();
 
     // Auto refresh real-time polling every 2.5 seconds (skip when tab/window is hidden to save CPU/IPC)
@@ -4435,7 +4440,7 @@ async function submitTerminalLogin(e) {
     if (!email || !password) return;
 
     // Show loading state
-    if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Connecting to cloud…'; }
     if (errEl) errEl.classList.add('hidden');
 
     try {
@@ -4462,21 +4467,27 @@ function renderBranchPicker(preview) {
     const step = document.getElementById('terminal-branch-step');
     const list = document.getElementById('terminal-branch-list');
     const company = document.getElementById('terminal-branch-company');
+    const errEl = document.getElementById('terminal-login-error');
     if (!form || !step || !list) return;
+    if (errEl) errEl.classList.add('hidden');
+
     const branches = (preview && preview.branches) || [];
-    if (company) company.innerText = preview.company_name || preview.owner_email || '';
+    if (company) company.innerText = preview.company_name || preview.owner_email || 'Franchise';
     if (branches.length === 0) {
         list.innerHTML = '<div class="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 text-center">No branches on this account yet. Create one in the Owner Portal first.</div>';
     } else {
         list.innerHTML = branches.map(b => {
             const usable = b.has_key && b.is_active && !b.is_disabled;
-            const sub = !b.has_key ? 'Pending CEO key' : (!b.is_active || b.is_disabled ? 'Disabled' : `${b.tier || ''}`);
+            const sub = !b.has_key ? 'Pending CEO license key' : (!b.is_active || b.is_disabled ? 'Branch Disabled' : `${(b.tier || 'basic').toUpperCase()} Tier · License Active`);
             return `<button type="button" ${usable ? '' : 'disabled'} onclick="activateTerminalBranch('${b.gym_id}')"
-                class="w-full text-left px-3 py-2.5 rounded-xl border text-xs transition ${usable
-                    ? 'bg-purple-950/40 hover:bg-purple-900/60 border-purple-500/40 text-slate-100'
+                class="w-full text-left px-3.5 py-3 rounded-xl border text-xs transition ${usable
+                    ? 'bg-purple-950/50 hover:bg-purple-900/70 border-purple-500/50 text-slate-100 hover:scale-[1.01]'
                     : 'bg-slate-900/60 border-slate-800 text-slate-500 cursor-not-allowed'}">
-                <div class="font-bold">${escapeHtml(b.name || 'Branch')}</div>
-                <div class="text-[10px] ${usable ? 'text-purple-300' : 'text-slate-500'}">${escapeHtml(String(sub))}</div>
+                <div class="font-bold text-sm flex items-center justify-between">
+                    <span>${escapeHtml(b.name || 'Branch')}</span>
+                    ${usable ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono">Activate →</span>' : '<span class="text-[10px] text-slate-500">Locked</span>'}
+                </div>
+                <div class="text-[11px] ${usable ? 'text-purple-300' : 'text-slate-500'} mt-1">${escapeHtml(String(sub))}</div>
             </button>`;
         }).join('');
     }
@@ -4494,6 +4505,14 @@ function backToTerminalLogin() {
 async function activateTerminalBranch(gymId) {
     const email = (document.getElementById('terminal-login-email')?.value || '').trim();
     const password = document.getElementById('terminal-login-pass')?.value || '';
+    const errEl = document.getElementById('terminal-login-error');
+    const list = document.getElementById('terminal-branch-list');
+
+    if (errEl) errEl.classList.add('hidden');
+    if (list) {
+        list.innerHTML = '<div class="py-6 text-center text-xs text-purple-300 flex items-center justify-center gap-2 font-semibold"><span class="w-2.5 h-2.5 rounded-full bg-purple-400 animate-ping"></span> Activating terminal & validating license…</div>';
+    }
+
     try {
         // Step 2: re-authenticates, verifies ONLY this branch's key, binds it.
         const res = await invokeTauri('authenticate_owner', { email, password, gymId });
@@ -4509,6 +4528,7 @@ async function activateTerminalBranch(gymId) {
             backToTerminalLogin();
             unlockTerminalUI();
             try { await refreshDashboard(); } catch (_) {}
+            showHudToast('Terminal Activated', `Welcome! Terminal linked to ${res.gym_name || 'branch'}.`, 'success');
         } else {
             showTerminalLoginError('Activation failed. Please try again.');
             backToTerminalLogin();
@@ -4579,6 +4599,15 @@ function unlockTerminalUI() {
 
         // Always land on Dashboard after login
         switchView('dashboard');
+
+        // Start cameras & AI biometric engine once authenticated
+        if (!camerasStarted) {
+            camerasStarted = true;
+            initCameraStreams().then(() => {
+                populateCameraDevices();
+                startAutonomousBiometricEngine();
+            }).catch(e => console.error("Camera start error:", e));
+        }
     }
 }
 
@@ -4586,6 +4615,10 @@ function unlockTerminalUI() {
 function lockTerminal() {
     currentTerminalSession = null;
     licenseWasLockedOut = true;
+    camerasStarted = false;
+    if (streamCam1) { stopStream(streamCam1); streamCam1 = null; }
+    if (streamCam2) { stopStream(streamCam2); streamCam2 = null; }
+    if (streamCam3) { stopStream(streamCam3); streamCam3 = null; }
     try { invokeTauri('logout_terminal_session'); } catch (_) {}
     showLockScreen();
 }
