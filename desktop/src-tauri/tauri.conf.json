@@ -42,24 +42,16 @@
     "resources": [
       "../models/*"
     ],
-    "nsis": {
-      "displayLanguageSelector": false,
-      "installerIcon": "icons/icon.ico",
-      "headerImage": "icons/128x128.png",
-      "sidebarImage": "icons/128x128@2x.png",
-      "installMode": "perMachine",
-      "languages": ["English"],
-      "shortcuts": [
-        {
-          "id": "gympos-desktop",
-          "target": "{INSTALL_DIR}\\GymPOS.exe",
-          "name": "GymPOS",
-          "workingDirectory": "{INSTALL_DIR}",
-          "desktop": true,
-          "startMenu": "GymPOS"
-        }
-      ],
-      "template": null
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/128x128.png",
+        "sidebarImage": "icons/128x128@2x.png",
+        "installMode": "perMachine",
+        "languages": ["English"],
+        "template": null
+      }
     }
   },
   "plugins": {

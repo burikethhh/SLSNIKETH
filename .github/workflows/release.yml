@@ -89,21 +89,18 @@ jobs:
             ## GymPOS ${{ github.ref_name }} — Standalone Installer
 
             ### What's included
-            - ✅ GymPOS desktop application (fully offline-capable)
-            - ✅ ONNX AI models bundled (face detection/recognition + anti-tailgate YOLOv8)
-            - ✅ Auto-seeded database with default staff accounts on first launch
-            - ✅ Auto-updater (terminals will self-update from this release)
+            - GymPOS desktop application (fully offline-capable)
+            - ONNX AI models bundled (face detection/recognition + anti-tailgate YOLOv8)
+            - Owner-issued staff PINs only — no default credentials (create staff in the Owner Portal)
+            - Auto-updater (terminals self-update from this release, signature-verified)
 
             ### Installation
             1. Download `GymPOS_*_x64-setup.exe`
             2. Run as Administrator → installs to `Program Files\GymPOS\`
             3. Launch from Desktop shortcut
 
-            ### Default PIN Accounts
-            | Role | PIN |
-            |------|-----|
-            | Cashier | 1234 |
-            | Manager | 8888 |
+            ### First launch
+            The terminal starts locked with an empty catalog. The gym owner creates staff PINs, products, plans and promos in the Owner Portal — they sync to the terminal automatically.
 
             ### Auto-Update
             Running terminals on older versions detect this release on next launch

@@ -9,8 +9,15 @@ use std::process::Command;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub const CURRENT_APP_VERSION: &str = "0.1.0";
+pub const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_UPDATE_CHANNEL: &str = "stable";
+
+/// GitHub Releases channel: every tag push `v*` builds the installer via
+/// `.github/workflows/release.yml` and publishes `latest.json` + signed
+/// archives. This is the PRIMARY update source; the cloud channel below is
+/// kept as a silent fallback (and still serves the CEO dashboard).
+pub const GITHUB_LATEST_JSON: &str =
+    "https://github.com/burikethhh/SLSNIKETH/releases/latest/download/latest.json";
 
 pub struct AutoUpdater {
     client: Client,
@@ -167,4 +174,62 @@ exit
 
         std::process::exit(0);
     }
+}
+
+// --- GitHub Releases channel (Tauri updater plugin, minisign-verified) ---
+
+/// Checks `latest.json` on GitHub Releases. Returns `Ok(None)` when already
+/// current. Signature verification against the embedded pubkey happens inside
+/// `download_and_install` — a forged/unsigned payload never executes.
+pub async fn check_github(
+    app: &tauri::AppHandle,
+) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("GitHub updater unavailable: {}", e))?;
+    updater
+        .check()
+        .await
+        .map_err(|e| format!("GitHub update check failed: {}", e))
+}
+
+/// Maps a plugin `Update` onto the existing `UpdateCheckResponse` shape so
+/// the UI needs zero changes. `sha256` is empty by design here: trust comes
+/// from the minisign signature (verified at install), not a hash string.
+pub fn github_to_response(
+    update: &tauri_plugin_updater::Update,
+    channel: &str,
+) -> gympos_shared::UpdateCheckResponse {
+    gympos_shared::UpdateCheckResponse {
+        update_available: true,
+        current_version: update.current_version.clone(),
+        latest_version: update.version.clone(),
+        channel: channel.to_string(),
+        download_url: update.download_url.to_string(),
+        sha256: String::new(),
+        release_notes: update.body.clone().unwrap_or_default(),
+        is_mandatory: false,
+        rollout_percentage: 100,
+        server_time: chrono::Utc::now(),
+    }
+}
+
+/// Downloads + signature-verifies + installs the GitHub update, then
+/// restarts into it. Diverges (process restarts) on success.
+pub async fn download_install_restart(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app
+        .updater()
+        .map_err(|e| format!("GitHub updater unavailable: {}", e))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| format!("GitHub update check failed: {}", e))?
+        .ok_or_else(|| "No GitHub update available".to_string())?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| format!("GitHub update install failed: {}", e))?;
+    app.restart();
 }

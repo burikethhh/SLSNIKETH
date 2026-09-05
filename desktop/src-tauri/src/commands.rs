@@ -988,12 +988,33 @@ pub fn void_walk_in(id: String, state: State<'_, AppContext>) -> Result<(), Stri
 pub async fn check_for_updates(
     channel: Option<String>,
     state: State<'_, AppContext>,
+    app: tauri::AppHandle,
 ) -> Result<gympos_shared::UpdateCheckResponse, String> {
-    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
-    let updater = crate::updater::AutoUpdater::new(cloud_url);
-
-    let gym_id = state.license.current_claims().map(|c| c.gym_id);
-    updater.check_for_updates(gym_id, channel).await
+    let ch = channel.clone().unwrap_or_else(|| crate::updater::DEFAULT_UPDATE_CHANNEL.to_string());
+    // Primary: GitHub Releases (signed). Falls back to the cloud channel
+    // silently so a GitHub outage never blinds the terminal.
+    match crate::updater::check_github(&app).await {
+        Ok(Some(update)) => Ok(crate::updater::github_to_response(&update, &ch)),
+        Ok(None) => Ok(gympos_shared::UpdateCheckResponse {
+            update_available: false,
+            current_version: crate::updater::CURRENT_APP_VERSION.to_string(),
+            latest_version: crate::updater::CURRENT_APP_VERSION.to_string(),
+            channel: ch,
+            download_url: String::new(),
+            sha256: String::new(),
+            release_notes: String::new(),
+            is_mandatory: false,
+            rollout_percentage: 100,
+            server_time: chrono::Utc::now(),
+        }),
+        Err(github_err) => {
+            tracing::warn!("GitHub update check failed, trying cloud fallback: {}", github_err);
+            let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+            let updater = crate::updater::AutoUpdater::new(cloud_url);
+            let gym_id = state.license.current_claims().map(|c| c.gym_id);
+            updater.check_for_updates(gym_id, channel).await
+        }
+    }
 }
 
 #[tauri::command]
@@ -1001,14 +1022,28 @@ pub async fn download_and_install_update(
     download_url: String,
     sha256: String,
     state: State<'_, AppContext>,
+    app: tauri::AppHandle,
 ) -> Result<String, String> {
     require_owner(&state)?;
-    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
-    let updater = crate::updater::AutoUpdater::new(cloud_url);
-
-    let tmp_path = updater.download_and_verify(&download_url, &sha256).await?;
-    crate::updater::AutoUpdater::apply_update_and_restart(&tmp_path)?;
-    Ok("Update applying and restarting...".to_string())
+    // Primary: GitHub signed install (ignores the passed url/sha — trust root
+    // is the minisign signature, and the payload always comes from the same
+    // latest.json the check call just read).
+    match crate::updater::download_install_restart(&app).await {
+        Ok(()) => Ok("Update applying and restarting...".to_string()),
+        Err(github_err) => {
+            // Legacy path: explicit URL + mandatory SHA-256 (CEO/cloud
+            // channel). Preserved so staged cloud releases keep working.
+            if download_url.trim().is_empty() || sha256.trim().is_empty() {
+                return Err(format!("GitHub install failed and no cloud fallback payload was provided: {}", github_err));
+            }
+            tracing::warn!("GitHub install failed, using cloud fallback: {}", github_err);
+            let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+            let updater = crate::updater::AutoUpdater::new(cloud_url);
+            let tmp_path = updater.download_and_verify(&download_url, &sha256).await?;
+            crate::updater::AutoUpdater::apply_update_and_restart(&tmp_path)?;
+            Ok("Update applying and restarting...".to_string())
+        }
+    }
 }
 
 #[tauri::command]
