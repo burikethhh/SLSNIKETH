@@ -136,10 +136,11 @@ fn require_role(state: &AppContext, allowed: &[StaffRole]) -> Result<(), String>
     let mut guard = state.session.write();
     match &mut *guard {
         Some(s) if s.is_authenticated => {
-            let idle_secs = (Utc::now() - s.last_activity_at).num_seconds();
-            if idle_secs > gympos_shared::SESSION_IDLE_TIMEOUT_SECS {
+            // Terminal stays open indefinitely unless license expires or is revoked
+            if let Err(e) = check_license_active(state) {
                 *guard = None;
-                return Err("Access Denied: session expired after inactivity. Please log in again.".to_string());
+                let _ = state.db.clear_saved_terminal_session();
+                return Err(e);
             }
             if allowed.contains(&s.role) {
                 s.last_activity_at = Utc::now();
@@ -149,7 +150,7 @@ fn require_role(state: &AppContext, allowed: &[StaffRole]) -> Result<(), String>
             }
         }
         Some(_) => Err("Access Denied: your terminal role cannot perform this action. Ask a manager/owner.".to_string()),
-        None => Err("Access Denied: login on the terminal PIN screen first.".to_string()),
+        None => Err("Access Denied: terminal is locked. Please sign in with owner account.".to_string()),
     }
 }
 
@@ -1173,6 +1174,7 @@ pub async fn authenticate_owner(
 
     let mut authenticated = false;
     let mut company_name = "Franchise Owner".to_string();
+    let mut token_opt: Option<String> = None;
 
     match resp {
         Ok(r) if r.status().is_success() => {
@@ -1181,6 +1183,9 @@ pub async fn authenticate_owner(
                     authenticated = true;
                     if let Some(comp) = data["company_name"].as_str() {
                         company_name = comp.to_string();
+                    }
+                    if let Some(tok) = data["token"].as_str() {
+                        token_opt = Some(tok.to_string());
                     }
                 }
             }
@@ -1207,6 +1212,35 @@ pub async fn authenticate_owner(
         return Err("Invalid owner email or password.".to_string());
     }
 
+    // Auto-sync owner's active branch license key from cloud
+    if let Some(ref tok) = token_opt {
+        if let Ok(br_resp) = client
+            .get(format!("{}/api/v1/owner/branches", cloud_url))
+            .header("Authorization", format!("Bearer {}", tok))
+            .send()
+            .await
+        {
+            if br_resp.status().is_success() {
+                if let Ok(br_data) = br_resp.json::<serde_json::Value>().await {
+                    if let Some(branches) = br_data["branches"].as_array() {
+                        for b in branches {
+                            if let Some(lic_key) = b["license_key"].as_str() {
+                                if !lic_key.trim().is_empty() {
+                                    if let Ok(_) = state.license.verify_and_apply(lic_key) {
+                                        let _ = state.db.set_cached_license(lic_key);
+                                        let _ = state.db.heartbeat_ok();
+                                        tracing::info!("Auto-applied cloud license key for branch: {:?}", b["name"]);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let session = TerminalSession {
         is_authenticated: true,
         user_id: email.clone(),
@@ -1218,6 +1252,7 @@ pub async fn authenticate_owner(
         last_activity_at: chrono::Utc::now(),
     };
 
+    let _ = state.db.save_terminal_session(&session);
     *state.session.write() = Some(session);
 
     Ok(StaffLoginResponse {
@@ -1297,6 +1332,7 @@ pub async fn get_license_key_diagnostics(
 #[tauri::command]
 pub fn logout_terminal_session(state: State<'_, AppContext>) -> Result<(), String> {
     *state.session.write() = None;
+    let _ = state.db.clear_saved_terminal_session();
     Ok(())
 }
 

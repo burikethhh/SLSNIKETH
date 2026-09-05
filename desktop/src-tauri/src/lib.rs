@@ -113,12 +113,18 @@ pub fn run() {
         }
     });
 
+    let initial_session = if license_arc.current_status().is_operable() {
+        db_arc.get_saved_terminal_session().unwrap_or(None)
+    } else {
+        None
+    };
+
     let app_context = AppContext {
         db: db_arc,
         license: license_arc,
         hardware: HardwareManager::new(),
         face_store,
-        session: Arc::new(parking_lot::RwLock::new(None)),
+        session: Arc::new(parking_lot::RwLock::new(initial_session)),
         face_engine: Arc::new(face_engine),
         person_counter: Arc::new(person_counter),
         pin_gate: Arc::new(std::sync::Mutex::new(commands::PinGate::default())),

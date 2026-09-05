@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use gympos_shared::{
     AppSettings, AttendanceRecord, CartItem, Coach, CoachSession, CreateCoachRequest, CreateExpenseRequest,
     CreateMemberRequest, CreateProductRequest, CreateWalkInRequest, ExpenseRecord, Member, MembershipPlanConfig,
-    ProductItem, PromoVoucherConfig, RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole,
+    ProductItem, PromoVoucherConfig, RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole, TerminalSession,
     UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
 };
 use rusqlite::{params, Connection, Result};
@@ -172,6 +172,16 @@ impl Database {
                 role TEXT NOT NULL DEFAULT 'staff',
                 is_active INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS terminal_session (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                user_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                gym_id TEXT,
+                gym_name TEXT,
+                logged_in_at TEXT NOT NULL
             );
             "#,
         )?;
@@ -1974,6 +1984,69 @@ impl Database {
             list.push(r?);
         }
         Ok(list)
+    }
+
+    pub fn save_terminal_session(&self, session: &TerminalSession) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO terminal_session (id, user_id, display_name, role, gym_id, gym_name, logged_in_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                 user_id = excluded.user_id,
+                 display_name = excluded.display_name,
+                 role = excluded.role,
+                 gym_id = excluded.gym_id,
+                 gym_name = excluded.gym_name,
+                 logged_in_at = excluded.logged_in_at",
+            params![
+                session.user_id,
+                session.display_name,
+                serde_json::to_string(&session.role).unwrap_or_else(|_| "\"owner\"".to_string()),
+                session.gym_id.map(|u| u.to_string()),
+                session.gym_name,
+                session.logged_in_at.to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_saved_terminal_session(&self) -> Result<Option<TerminalSession>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT user_id, display_name, role, gym_id, gym_name, logged_in_at FROM terminal_session WHERE id = 1"
+        )?;
+        let mut rows = stmt.query([])?;
+        if let Some(row) = rows.next()? {
+            let user_id: String = row.get(0)?;
+            let display_name: String = row.get(1)?;
+            let role_str: String = row.get(2)?;
+            let gym_id_str: Option<String> = row.get(3)?;
+            let gym_name: Option<String> = row.get(4)?;
+            let logged_in_at_str: String = row.get(5)?;
+            let role: StaffRole = serde_json::from_str(&role_str).unwrap_or(StaffRole::Owner);
+            let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
+            let logged_in_at = DateTime::parse_from_rfc3339(&logged_in_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            Ok(Some(TerminalSession {
+                is_authenticated: true,
+                user_id,
+                display_name,
+                role,
+                gym_id,
+                gym_name,
+                logged_in_at,
+                last_activity_at: Utc::now(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn clear_saved_terminal_session(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM terminal_session WHERE id = 1", [])?;
+        Ok(())
     }
 }
 

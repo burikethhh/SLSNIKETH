@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2039,88 +2039,55 @@
         </div>
     </div>
 
-    <!-- ================= TERMINAL LOCK SCREEN / PIN GATEWAY ================= -->
-    <div id="terminal-lock-screen" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999;" class="hidden items-center justify-center bg-slate-950/95 backdrop-blur-xl transition-all duration-300">
-        <!-- Starts hidden: shown by JS only when no valid terminal session exists. -->
-        <div class="w-full max-w-sm p-6 glass-panel border border-purple-500/40 shadow-2xl rounded-2xl flex flex-col items-center text-center">
-            <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-500/40 mb-3">
-                <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-            </div>
-            <h2 class="text-xl font-bold font-rajdhani tracking-wide text-purple-300">GYMPOS TERMINAL ACCESS</h2>
-            <p class="text-xs text-slate-400 mt-0.5 mb-4">Enter your staff PIN (4–8 digits) or Owner Credentials</p>
+    <!-- ================= TERMINAL LOGIN SCREEN ================= -->
+    <!-- Shown only on first launch or if license expires. No auto-lock. -->
+    <div id="terminal-lock-screen" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 9999;" class="hidden items-center justify-center bg-slate-950/98 backdrop-blur-xl">
 
-            <!-- PIN Code Display -->
-            <div id="pin-dots-box" class="mb-5 flex justify-center items-center gap-3">
-                <div id="pin-dot-1" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
-                <div id="pin-dot-2" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
-                <div id="pin-dot-3" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
-                <div id="pin-dot-4" class="w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all"></div>
-            </div>
-            <div id="pin-error-text" class="text-xs text-red-400 font-semibold mb-2 min-h-[1.2rem]"></div>
+        <!-- Animated background glow -->
+        <div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 40%, rgba(124,58,237,0.12) 0%, transparent 65%);"></div>
 
-            <!-- Numeric Keypad -->
-            <div class="grid grid-cols-3 gap-2.5 w-full max-w-[260px] mb-4">
-                <button onclick="pressPinKey('1')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">1</button>
-                <button onclick="pressPinKey('2')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">2</button>
-                <button onclick="pressPinKey('3')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">3</button>
+        <div class="w-full max-w-sm p-8 glass-panel border border-purple-500/30 shadow-2xl rounded-2xl flex flex-col items-center relative z-10">
 
-                <button onclick="pressPinKey('4')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">4</button>
-                <button onclick="pressPinKey('5')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">5</button>
-                <button onclick="pressPinKey('6')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">6</button>
-
-                <button onclick="pressPinKey('7')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">7</button>
-                <button onclick="pressPinKey('8')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">8</button>
-                <button onclick="pressPinKey('9')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">9</button>
-
-                <button onclick="clearPin()" class="pin-key h-12 rounded-xl bg-slate-900/50 hover:bg-red-950/40 border border-red-900/40 text-xs font-bold text-red-300 transition active:scale-95">CLEAR</button>
-                <button onclick="pressPinKey('0')" class="pin-key h-12 rounded-xl bg-slate-900/80 hover:bg-purple-900/50 border border-slate-700/60 text-lg font-bold text-slate-100 transition active:scale-95">0</button>
-                <button onclick="submitPinLogin()" class="pin-key h-12 rounded-xl bg-purple-900/80 hover:bg-purple-800 border border-purple-500/60 text-xs font-bold text-purple-200 transition active:scale-95 flex items-center justify-center">
-                    <svg class="w-5 h-5 text-purple-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
-                </button>
+            <!-- Logo / Lock icon -->
+            <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-indigo-600 flex items-center justify-center shadow-lg shadow-purple-500/40 mb-5">
+                <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path>
+                </svg>
             </div>
 
-            <!-- No demo credentials: PINs are issued by the gym owner in the portal (Staff & Cashiers). Nothing works here until the owner creates staff. -->
+            <h2 class="text-2xl font-bold font-rajdhani tracking-wide text-white mb-1">GYMPOS TERMINAL</h2>
+            <p class="text-xs text-slate-400 mb-6 text-center">Sign in with your GymPOS dashboard account to activate this terminal.</p>
 
-            <div class="w-full pt-3 border-t border-slate-800 flex justify-between items-center text-xs">
-                <span class="text-slate-400">Franchise Owner?</span>
-                <button onclick="openOwnerLoginModal()" class="text-purple-400 hover:text-purple-300 font-semibold underline">
-                    Owner Master Login &rarr;
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ================= OWNER MASTER LOGIN MODAL ================= -->
-    <div id="modal-owner-login" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10000;" class="flex items-center justify-center bg-black/90 backdrop-blur-md hidden">
-        <div class="glass-panel p-6 w-full max-w-sm border border-purple-500/40 shadow-2xl rounded-xl">
-            <div class="flex justify-between items-center mb-4">
-                <div class="flex items-center gap-2">
-                    <div class="w-8 h-8 rounded-lg bg-purple-900/60 border border-purple-500/40 flex items-center justify-center text-purple-300 font-bold">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                    </div>
-                    <div>
-                        <h3 class="text-sm font-bold text-white font-rajdhani">OWNER MASTER LOGIN</h3>
-                        <div class="text-[10px] text-purple-300">Unlocks Full Revenue & Admin Privileges</div>
-                    </div>
-                </div>
-                <button onclick="closeOwnerLoginModal()" class="text-slate-400 hover:text-white">&times;</button>
-            </div>
-
-            <form onsubmit="submitOwnerLogin(event)" class="space-y-3 text-xs">
+            <!-- Login form -->
+            <form id="terminal-login-form" onsubmit="submitTerminalLogin(event)" class="w-full space-y-3">
                 <div>
-                    <label class="block text-slate-300 font-medium mb-1">Franchise Owner Email</label>
-                    <input id="owner-login-email" type="email" required class="input-dark w-full text-xs" placeholder="owner@yourgym.com">
+                    <label class="block text-xs text-slate-400 font-medium mb-1">Owner Email</label>
+                    <input id="terminal-login-email" type="email" required autocomplete="email"
+                        class="input-dark w-full"
+                        placeholder="owner@yourgym.com">
                 </div>
                 <div>
-                    <label class="block text-slate-300 font-medium mb-1">Cloud Account Password</label>
-                    <input id="owner-login-pass" type="password" required class="input-dark w-full text-xs" placeholder="••••••••">
+                    <label class="block text-xs text-slate-400 font-medium mb-1">Password</label>
+                    <input id="terminal-login-pass" type="password" required autocomplete="current-password"
+                        class="input-dark w-full"
+                        placeholder="••••••••">
                 </div>
-                <div id="owner-login-error" class="text-xs text-red-400 hidden"></div>
-                <div class="flex gap-2 pt-2">
-                    <button type="button" onclick="closeOwnerLoginModal()" class="px-3 py-2 rounded-lg bg-slate-800 text-slate-300 text-xs">Cancel</button>
-                    <button type="submit" class="brand-btn flex-1 py-2 rounded-lg text-xs font-bold">Authenticate Master</button>
-                </div>
+
+                <div id="terminal-login-error" class="hidden text-xs text-red-400 bg-red-950/40 border border-red-800/50 rounded-lg px-3 py-2"></div>
+
+                <button id="terminal-login-btn" type="submit"
+                    class="brand-btn w-full py-2.5 rounded-xl text-sm font-bold mt-2 flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path>
+                    </svg>
+                    Activate Terminal
+                </button>
             </form>
+
+            <p class="text-[10px] text-slate-600 mt-5 text-center">
+                Use the same credentials as your GymPOS cloud dashboard.<br>
+                License &amp; settings will sync automatically on login.
+            </p>
         </div>
     </div>
 

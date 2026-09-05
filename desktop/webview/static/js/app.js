@@ -1,5 +1,7 @@
 // GymPOS SaaS Frontend Client Controller (White-Label Branding & Walk-In Engine)
 
+let currentTerminalSession = null;
+
 async function invokeTauri(command, args = {}) {
     if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
         return window.__TAURI__.core.invoke(command, args);
@@ -1809,6 +1811,7 @@ async function startAutonomousBiometricEngine() {
 // --- App Initialization ---
 
 async function initApp() {
+    await checkExistingTerminalSession();
     await loadAppSettings();
     await refreshDashboard();
     await loadMembers();
@@ -2619,6 +2622,7 @@ async function refreshDashboard() {
             }
             if (licenseStateEl) licenseStateEl.innerText = "LOCKED OUT";
             if (licenseDetailEl) licenseDetailEl.innerText = "Subscription expired. Please renew.";
+            lockTerminal();
         } else if (statusType === 'Invalid') {
             const reason = status.reason || "License invalidated / revoked";
             if (licenseBadge) {
@@ -2627,6 +2631,7 @@ async function refreshDashboard() {
             }
             if (licenseStateEl) licenseStateEl.innerText = "REVOKED";
             if (licenseDetailEl) licenseDetailEl.innerText = reason;
+            lockTerminal();
         } else {
             if (licenseBadge) {
                 licenseBadge.innerText = "UNLICENSED";
@@ -4405,161 +4410,60 @@ initApp = async function() {
     setInterval(checkForUpdatesSilent, 3600000);
 };
 
-// --- Terminal Role-Based Access Control (RBAC) & PIN Lock Screen ---
+// TERMINAL LOGIN  —  Owner email + password (same credentials as the portal)
+// The terminal stays authenticated indefinitely. The only automatic lockout
+// is a license expiry detected during the periodic background license check.
+// ══════════════════════════════════════════════════════════════════════════
 
-let currentTerminalSession = null;
-let currentEnteredPin = "";
-
-function updatePinDots() {
-    // PINs are 4–8 digits (owner-issued): render as many dots as needed,
-    // minimum 4 slots so the pad never looks broken when empty.
-    const box = document.getElementById('pin-dots-box');
-    if (!box) return;
-    const slots = Math.max(4, Math.min(8, currentEnteredPin.length));
-    while (box.children.length < slots) {
-        const d = document.createElement('div');
-        box.appendChild(d);
-    }
-    while (box.children.length > slots && box.children.length > 4) {
-        const last = box.lastElementChild;
-        if (last) last.remove();
-    }
-    for (let i = 0; i < box.children.length; i++) {
-        const dot = box.children[i];
-        if (i < currentEnteredPin.length) {
-            dot.className = "w-4 h-4 rounded-full bg-purple-400 border-2 border-purple-300 shadow-md shadow-purple-500/50 transition-all scale-110";
-        } else {
-            dot.className = "w-4 h-4 rounded-full border-2 border-purple-400/60 transition-all";
-        }
-    }
-}
-
-function pressPinKey(digit) {
-    const err = document.getElementById('pin-error-text');
-    if (err) err.innerText = "";
-    // Owner-issued PINs run 4–8 digits: accept up to 8 and submit explicitly
-    // (arrow button / Enter). Auto-submitting at 4 would truncate longer PINs
-    // into a guaranteed "Invalid PIN".
-    if (currentEnteredPin.length < 8) {
-        currentEnteredPin += digit;
-        updatePinDots();
-    }
-}
-
-function clearPin() {
-    currentEnteredPin = "";
-    updatePinDots();
-    const err = document.getElementById('pin-error-text');
-    if (err) err.innerText = "";
-}
-
-// Physical keyboard / Numpad listener for staff PIN pad
-document.addEventListener('keydown', (e) => {
-    const lockScreen = document.getElementById('terminal-lock-screen');
-    if (!lockScreen || lockScreen.classList.contains('hidden')) return;
-
-    // Do not intercept if owner login modal is active (staff typing owner password)
-    const ownerModal = document.getElementById('modal-owner-login');
-    if (ownerModal && !ownerModal.classList.contains('hidden')) return;
-
-    if (/^[0-9]$/.test(e.key)) {
-        e.preventDefault();
-        pressPinKey(e.key);
-    } else if (e.key === 'Backspace') {
-        e.preventDefault();
-        if (currentEnteredPin.length > 0) {
-            currentEnteredPin = currentEnteredPin.slice(0, -1);
-            updatePinDots();
-            const err = document.getElementById('pin-error-text');
-            if (err) err.innerText = "";
-        }
-    } else if (e.key === 'Escape') {
-        e.preventDefault();
-        clearPin();
-    } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (currentEnteredPin.length >= 4) {
-            submitPinLogin();
-        }
-    }
-});
-
-async function submitPinLogin() {
-    if (currentEnteredPin.length < 4) return;
-    const pin = currentEnteredPin;
-    const err = document.getElementById('pin-error-text');
-
-    try {
-        const res = await invokeTauri('authenticate_staff_pin', { pin });
-        if (res && res.authenticated) {
-            currentTerminalSession = {
-                is_authenticated: true,
-                user_id: res.staff_id,
-                display_name: res.full_name,
-                role: res.role,
-                gym_id: res.gym_id,
-                gym_name: res.gym_name
-            };
-            unlockTerminalUI();
-        } else {
-            if (err) err.innerText = "Invalid PIN. Access Denied.";
-            clearPin();
-        }
-    } catch (e) {
-        if (err) err.innerText = e || "Invalid PIN. Access Denied.";
-        clearPin();
-    }
-}
-
-function openOwnerLoginModal() {
-    const modal = document.getElementById('modal-owner-login');
-    if (modal) modal.classList.remove('hidden');
-    const err = document.getElementById('owner-login-error');
-    if (err) err.classList.add('hidden');
-}
-
-function closeOwnerLoginModal() {
-    const modal = document.getElementById('modal-owner-login');
-    if (modal) modal.classList.add('hidden');
-}
-
-async function submitOwnerLogin(e) {
+async function submitTerminalLogin(e) {
     if (e) e.preventDefault();
-    const email = document.getElementById('owner-login-email').value.trim();
-    const password = document.getElementById('owner-login-pass').value.trim();
-    const err = document.getElementById('owner-login-error');
+
+    const email   = (document.getElementById('terminal-login-email')?.value || '').trim();
+    const password = document.getElementById('terminal-login-pass')?.value || '';
+    const errEl   = document.getElementById('terminal-login-error');
+    const btn     = document.getElementById('terminal-login-btn');
+
+    if (!email || !password) return;
+
+    // Show loading state
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+    if (errEl) errEl.classList.add('hidden');
 
     try {
         const res = await invokeTauri('authenticate_owner', { email, password });
+
         if (res && res.authenticated) {
             currentTerminalSession = {
                 is_authenticated: true,
-                user_id: res.staff_id,
-                display_name: res.full_name,
-                role: 'owner',
-                gym_id: null,
-                gym_name: null
+                user_id:          res.staff_id,
+                display_name:     res.full_name,
+                role:             'owner',
+                gym_id:           res.gym_id   ?? null,
+                gym_name:         res.gym_name ?? null,
             };
-            closeOwnerLoginModal();
+
             unlockTerminalUI();
+            try { await refreshDashboard(); } catch (_) {}
         } else {
-            if (err) {
-                err.innerText = "Invalid Owner Credentials.";
-                err.classList.remove('hidden');
-            }
+            showTerminalLoginError('Invalid email or password. Use your GymPOS dashboard credentials.');
         }
-    } catch (e) {
-        if (err) {
-            err.innerText = e || "Authentication failed.";
-            err.classList.remove('hidden');
+    } catch (err) {
+        const msg = typeof err === 'string' ? err : (err?.message ?? 'Authentication failed.');
+        showTerminalLoginError(msg);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate Terminal`;
         }
     }
 }
 
-function lockTerminal() {
-    currentTerminalSession = null;
-    clearPin();
-    showLockScreen();
+function showTerminalLoginError(msg) {
+    const errEl = document.getElementById('terminal-login-error');
+    if (errEl) {
+        errEl.textContent = msg;
+        errEl.classList.remove('hidden');
+    }
 }
 
 function showLockScreen() {
@@ -4568,13 +4472,20 @@ function showLockScreen() {
         lockScreen.classList.remove('hidden');
         lockScreen.classList.add('flex');
     }
-    // Header must never claim a session that doesn't exist (the static
-    // markup used to read "Staff Active / Cashier Mode" while locked).
+    // Clear previous credentials from the form
+    const emailEl = document.getElementById('terminal-login-email');
+    const passEl  = document.getElementById('terminal-login-pass');
+    const errEl   = document.getElementById('terminal-login-error');
+    if (emailEl) emailEl.value = '';
+    if (passEl)  passEl.value  = '';
+    if (errEl)   errEl.classList.add('hidden');
+
+    // Update header to show locked state
     const nameEl = document.getElementById('session-user-name');
-    if (nameEl) nameEl.innerText = 'Locked';
     const roleEl = document.getElementById('session-user-role');
+    if (nameEl) nameEl.innerText = 'Not Activated';
     if (roleEl) {
-        roleEl.innerText = 'Locked Out';
+        roleEl.innerText = 'Sign In Required';
         roleEl.className = 'text-[10px] uppercase font-mono font-bold text-slate-500';
     }
 }
@@ -4586,73 +4497,33 @@ function unlockTerminalUI() {
         lockScreen.classList.remove('flex');
     }
 
+    // Update header identity badge
     const nameEl = document.getElementById('session-user-name');
     const roleEl = document.getElementById('session-user-role');
-
     if (currentTerminalSession) {
         if (nameEl) nameEl.innerText = currentTerminalSession.display_name;
         if (roleEl) {
-            if (currentTerminalSession.role === 'owner') {
-                roleEl.innerText = "Master Owner";
-                roleEl.className = "text-[10px] uppercase font-mono font-bold text-amber-400";
-            } else if (currentTerminalSession.role === 'manager') {
-                roleEl.innerText = "Branch Manager";
-                roleEl.className = "text-[10px] uppercase font-mono font-bold text-blue-400";
-            } else {
-                roleEl.innerText = "Cashier Mode";
-                roleEl.className = "text-[10px] uppercase font-mono font-bold text-purple-400";
-            }
+            roleEl.innerText  = 'GymPOS Owner';
+            roleEl.className  = 'text-[10px] uppercase font-mono font-bold text-amber-400';
         }
+        // All nav items visible — no role restrictions on the owner terminal
+        document.querySelectorAll('.nav-item').forEach(el => el.style.display = '');
 
-        applyRolePermissions(currentTerminalSession.role);
-
-        // Always navigate to a visible view after unlocking.
-        // Staff (cashier) lands on POS; everyone else on Dashboard.
-        const landingView = (currentTerminalSession.role === 'staff') ? 'pos' : 'dashboard';
-        switchView(landingView);
+        // Always land on Dashboard after login
+        switchView('dashboard');
     }
 }
 
-
-function applyRolePermissions(role) {
-    const isStaff = (role === 'staff');
-
-    // Hide or restrict views for front-desk staff
-    document.querySelectorAll('.nav-item').forEach(item => {
-        const text = item.innerText.toLowerCase();
-        // Staff should not see settings, hardware, or license
-        if (isStaff && (text.includes('hardware') || text.includes('branding') || text.includes('settings'))) {
-            item.style.display = 'none';
-        } else {
-            item.style.display = '';
-        }
-    });
-
-    // License button in header
-    const licenseBtn = document.querySelector('button[onclick*="openLicenseModal"]');
-    if (licenseBtn) {
-        licenseBtn.style.display = isStaff ? 'none' : '';
-    }
-
-    // POS catalog definition is owner-only (portal → sync). Cashiers sell and
-    // restock; managers restock; only the owner sees Add/Edit/Delete.
-    const isOwner = (role === 'owner');
-    const addBtn = document.getElementById('btn-add-product');
-    if (addBtn) addBtn.style.display = isOwner ? '' : 'none';
-    if (typeof renderProductsGrid === 'function') renderProductsGrid();
-
-    // If staff was on a restricted screen, switch to POS or Gate
-    if (isStaff && (currentView === 'hardware' || currentView === 'branding')) {
-        switchView('pos');
-    }
+// lockTerminal() — called only when license expires or is revoked
+function lockTerminal() {
+    currentTerminalSession = null;
+    try { invokeTauri('logout_terminal_session'); } catch (_) {}
+    showLockScreen();
 }
 
+// On app start: if Rust already has a valid session (app reopened without closing),
+// skip the login screen and restore the terminal directly.
 async function checkExistingTerminalSession() {
-    // Rust-side session is the single source of truth. There is deliberately
-    // NO localStorage fallback: a persisted browser copy cannot recreate the
-    // in-memory Rust session, so trusting it unlocked the UI while every
-    // gated command still failed — the "logged in but nothing works" ghost.
-    // Fresh start (or expired session) = lock screen, PIN required.
     try {
         const session = await invokeTauri('get_terminal_session');
         if (session && session.is_authenticated) {
@@ -4660,14 +4531,10 @@ async function checkExistingTerminalSession() {
             unlockTerminalUI();
             return;
         }
-    } catch (e) {
-        // Backend unreachable in preview — stay locked.
+    } catch (_) {
+        // Backend not reachable — show login
     }
-
-    // Default: Show Lock Screen
     showLockScreen();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
-
-
