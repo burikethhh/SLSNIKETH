@@ -74,10 +74,10 @@
 // ───────────── Pin Configuration ─────────────
 // Standard 4-pin I2C LCD backpack: SDA, SCL, GND, 5V
 #ifndef LCD_SDA_PIN
-static const int LCD_SDA_PIN    = 18;  // I2C SDA (Wire.begin(18, 19))
+static const int LCD_SDA_PIN    = 4;   // I2C SDA (Wire.begin(4, 5))
 #endif
 #ifndef LCD_SCL_PIN
-static const int LCD_SCL_PIN    = 19;  // I2C SCL
+static const int LCD_SCL_PIN    = 5;   // I2C SCL
 #endif
 #ifndef BUZZER_PIN
 static const int BUZZER_PIN     = 10;  // 5V active buzzer on safe GPIO10 (NOT GPIO9 strapping pin)
@@ -97,11 +97,11 @@ static I2cResult scanAllPinsForLcd() {
   Serial.println("Auto-scanning board pins for I2C LCD backpack...");
   const uint8_t candidateAddrs[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
 
-  // Priority pin pairs (18/19, reversed, common C3 alternate pins)
+  // Priority pin pairs (ESP32-C3 hardware default 4/5 first, then 6/7, 18/19)
   const int priorityPairs[][2] = {
-    {18, 19}, {19, 18},
-    {6, 7},   {7, 6},
     {4, 5},   {5, 4},
+    {6, 7},   {7, 6},
+    {18, 19}, {19, 18},
     {8, 9},   {9, 8},
     {0, 1},   {1, 0},
     {2, 3},   {3, 2},
@@ -126,7 +126,7 @@ static I2cResult scanAllPinsForLcd() {
   }
 
   // Full sweep across all GPIO header pins
-  const int allHeaderPins[] = {18, 19, 6, 7, 4, 5, 8, 9, 0, 1, 2, 3, 10};
+  const int allHeaderPins[] = {4, 5, 6, 7, 18, 19, 8, 9, 0, 1, 2, 3, 10};
   const int count = sizeof(allHeaderPins) / sizeof(allHeaderPins[0]);
   for (int i = 0; i < count; i++) {
     for (int j = 0; j < count; j++) {
@@ -148,8 +148,8 @@ static I2cResult scanAllPinsForLcd() {
     }
   }
 
-  Serial.println("  No I2C device ACKed on any pin pair. Defaulting to SDA=18, SCL=19, Addr=0x27");
-  return {18, 19, 0x27};
+  Serial.println("  No I2C device ACKed on any pin pair. Defaulting to SDA=4, SCL=5, Addr=0x27");
+  return {4, 5, 0x27};
 }
 
 // ───────────── Peripherals ───────────────────
