@@ -31,6 +31,23 @@ services:
       # (Render dashboard -> Environment -> Add Secret File/Env Var).
       - key: RSA_PRIVATE_KEY_PEM
         sync: false
+      # HMAC secret for CEO/owner session tokens. Without it the secret is
+      # derived from the RSA private key (stable while that key is stable) —
+      # set this to rotate session tokens independently of license keys.
+      # Generate with: openssl rand -hex 32
+      - key: CEO_TOKEN_SECRET
+        sync: false
+      # When set, even the FIRST CEO registration requires this secret
+      # (Command Center "First-Time Setup" tab asks for it). Prevents a
+      # first-come-first-served CEO takeover on a fresh/empty database.
+      - key: CEO_BOOTSTRAP_SECRET
+        sync: false
+      # OPTIONAL: only needed if an external site must call the API
+      # cross-origin. The dashboards are same-origin and desktop terminals
+      # don't enforce CORS, so leave unset for the default (no CORS headers,
+      # browsers enforce same-origin). Example value: https://example.com
+      - key: ALLOWED_CORS_ORIGIN
+        sync: false
 
 databases:
   - name: gympos-db

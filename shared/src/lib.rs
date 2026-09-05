@@ -1025,3 +1025,4 @@ mod sync_compat_tests {
         assert!(p.siren_cooldown_secs > 0);
     }
 }
+

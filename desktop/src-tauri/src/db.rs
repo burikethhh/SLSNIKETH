@@ -205,6 +205,21 @@ impl Database {
         // License-bound activation (single-activation kiosk): session rows
         // written before these columns existed read back unbound (None) and
         // are treated as expired at the next gate until re-activation.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS terminal_session (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                user_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                gym_id TEXT,
+                gym_name TEXT,
+                logged_in_at TEXT NOT NULL,
+                bound_gym_id TEXT,
+                bound_license_id TEXT,
+                bound_expires_at TEXT
+            )",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_gym_id TEXT", []);
         let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_license_id TEXT", []);
         let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_expires_at TEXT", []);

@@ -1260,6 +1260,7 @@ pub async fn owner_login_preview(
 
     Ok(serde_json::json!({
         "authenticated": true,
+        "token": token,
         "company_name": company_name,
         "owner_email": email,
         "branches": branches,
@@ -1267,26 +1268,69 @@ pub async fn owner_login_preview(
 }
 
 #[tauri::command]
-pub async fn authenticate_owner(
+pub async fn activate_terminal_owner(
     email: String,
-    password: String,
-    gym_id: String,
+    password: Option<String>,
+    license_key: String,
     state: State<'_, AppContext>,
 ) -> Result<StaffLoginResponse, String> {
     let email = email.trim().to_lowercase();
-    let password = password.trim();
+    let password = password.unwrap_or_default().trim().to_string();
+    let clean_key = license_key.trim();
 
-    if email.is_empty() || password.is_empty() {
-        return Err("Email and password are required".to_string());
+    if email.is_empty() {
+        return Err("Owner email is required.".to_string());
+    }
+    if password.is_empty() {
+        return Err("Password is required.".to_string());
+    }
+    if clean_key.is_empty() {
+        return Err("License key is required. Paste your branch license key from your cloud dashboard.".to_string());
     }
 
+    // Step 1: Verify the pasted license key cryptographically
+    let status = state.license.verify_and_apply(clean_key).map_err(|e| {
+        format!("License verification failed: {}. Ensure you copy the entire key (starts with GPOS-) from your cloud dashboard.", e)
+    })?;
+
+    // Step 1b: the evaluated status must be usable. verify_and_apply refuses
+    // to STORE expired/invalid claims, so without this check an expired key
+    // would cryptographically verify yet leave the terminal unlocked with an
+    // empty license state (dashboard stuck on UNLICENSED). Nothing has been
+    // persisted yet at this point, so a rejection touches no cached state.
+    if let LicenseStatus::Expired { expired_at } = &status {
+        return Err(format!(
+            "This license EXPIRED on {}. Ask the platform administrator to re-issue a key (CEO dashboard → Issue Key), then paste the new one.",
+            expired_at.format("%Y-%m-%d")
+        ));
+    }
+    if let LicenseStatus::Invalid { reason } = &status {
+        return Err(format!(
+            "This license is not usable: {}. Contact the platform administrator.",
+            reason
+        ));
+    }
+
+    let claims = state.license.current_claims().ok_or_else(|| {
+        "License key was verified but contained no claims.".to_string()
+    })?;
+
+    // Step 2: Validate that the license belongs to the entered owner email
+    if !claims.owner_email.is_empty() && claims.owner_email.trim().to_lowercase() != email {
+        return Err(format!(
+            "This license key is issued to '{}', but you entered '{}'. Please check your credentials.",
+            claims.owner_email, email
+        ));
+    }
+
+    // Step 3: Verify cloud credentials if reachable
     let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(12))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let resp = client.post(format!("{}/api/v1/owner/auth/login", cloud_url))
+    let cloud_login = client.post(format!("{}/api/v1/owner/auth/login", cloud_url))
         .json(&serde_json::json!({
             "email": email,
             "password": password
@@ -1294,48 +1338,129 @@ pub async fn authenticate_owner(
         .send()
         .await;
 
-    let mut authenticated = false;
-    let mut company_name = "Franchise Owner".to_string();
-    let mut token_opt: Option<String> = None;
+    let mut company_name = claims.gym_name.clone();
 
-    match resp {
+    match cloud_login {
         Ok(r) if r.status().is_success() => {
-            if let Ok(data) = r.json::<serde_json::Value>().await {
-                if data["authenticated"].as_bool().unwrap_or(false) {
-                    authenticated = true;
-                    if let Some(comp) = data["company_name"].as_str() {
-                        company_name = comp.to_string();
-                    }
-                    if let Some(tok) = data["token"].as_str() {
-                        token_opt = Some(tok.to_string());
-                    }
-                }
+            let data: serde_json::Value = r.json().await.unwrap_or_default();
+            if let Some(comp) = data["company_name"].as_str() {
+                company_name = comp.to_string();
             }
         }
+        Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED || r.status() == reqwest::StatusCode::FORBIDDEN => {
+            tracing::warn!("Cloud credentials mismatch (HTTP {}), proceeding with cryptographically verified RSA license.", r.status());
+        }
         Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            let wait = body["retry_after_seconds"].as_i64().unwrap_or(60);
-            return Err(format!("Too many login attempts. Please wait {} seconds before trying again.", wait));
+            tracing::warn!("Cloud login rate limited (429), proceeding with cryptographically verified RSA license.");
         }
         Ok(r) => {
-            let status = r.status();
-            let body: serde_json::Value = r.json().await.unwrap_or_default();
-            let err_msg = body["error"].as_str().unwrap_or("Invalid email or password.");
-            return Err(format!("Owner verification failed: {} (HTTP {})", err_msg, status));
+            tracing::warn!("Cloud returned HTTP {}, proceeding with cryptographically verified RSA license.", r.status());
         }
-        Err(e) if e.is_timeout() => {
-            return Err("Cloud server timed out (Render may be starting up). Please wait a moment and try again.".to_string());
-        }
-        Err(_) => {
-            return Err(
-                "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string(),
-            );
+        Err(e) => {
+            tracing::warn!("Cloud unreachable ({}), proceeding with cryptographically verified RSA license.", e);
         }
     }
 
-    if !authenticated {
-        return Err("Invalid owner email or password.".to_string());
-    }
+    // Step 4: Persist license in SQLite cache & refresh heartbeat
+    let _ = state.db.set_cached_license(clean_key);
+    let _ = state.db.heartbeat_ok();
+    let _ = status;
+
+    // Step 5: Save active session bound to this license
+    let session = TerminalSession {
+        is_authenticated: true,
+        user_id: email.clone(),
+        display_name: format!("{} (Owner)", company_name),
+        role: StaffRole::Owner,
+        gym_id: Some(claims.gym_id),
+        gym_name: Some(claims.gym_name.clone()),
+        logged_in_at: chrono::Utc::now(),
+        last_activity_at: chrono::Utc::now(),
+        bound_gym_id: Some(claims.gym_id),
+        bound_license_id: Some(claims.license_id),
+        bound_expires_at: Some(claims.expires_at),
+    };
+
+    let _ = state.db.save_terminal_session(&session);
+    *state.session.write() = Some(session);
+
+    Ok(StaffLoginResponse {
+        authenticated: true,
+        staff_id: format!("owner:{}", email),
+        full_name: format!("{} (Owner)", company_name),
+        username: email,
+        role: StaffRole::Owner,
+        gym_id: Some(claims.gym_id),
+        gym_name: Some(claims.gym_name),
+    })
+}
+
+#[tauri::command]
+pub async fn authenticate_owner(
+    email: String,
+    password: Option<String>,
+    token: Option<String>,
+    gym_id: String,
+    state: State<'_, AppContext>,
+) -> Result<StaffLoginResponse, String> {
+    let email = email.trim().to_lowercase();
+    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(25))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let (token, company_name) = if let Some(tok) = token.filter(|t| !t.trim().is_empty()) {
+        (tok.trim().to_string(), "GymPOS Owner".to_string())
+    } else {
+        let password = password.unwrap_or_default().trim().to_string();
+        if email.is_empty() || password.is_empty() {
+            return Err("Email and password are required".to_string());
+        }
+
+        let resp = client.post(format!("{}/api/v1/owner/auth/login", cloud_url))
+            .json(&serde_json::json!({
+                "email": email,
+                "password": password
+            }))
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) if r.status().is_success() => {
+                let data: serde_json::Value = r.json().await.unwrap_or_default();
+                if data["authenticated"].as_bool().unwrap_or(false) {
+                    let comp = data["company_name"].as_str().unwrap_or("GymPOS Owner").to_string();
+                    let tok = data["token"]
+                        .as_str()
+                        .ok_or_else(|| "Owner verification failed: cloud issued no session token.".to_string())?
+                        .to_string();
+                    (tok, comp)
+                } else {
+                    return Err("Invalid owner email or password.".to_string());
+                }
+            }
+            Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                let body: serde_json::Value = r.json().await.unwrap_or_default();
+                let wait = body["retry_after_seconds"].as_i64().unwrap_or(60);
+                return Err(format!("Too many login attempts. Please wait {} seconds before trying again.", wait));
+            }
+            Ok(r) => {
+                let status = r.status();
+                let body: serde_json::Value = r.json().await.unwrap_or_default();
+                let err_msg = body["error"].as_str().unwrap_or("Invalid email or password.");
+                return Err(format!("Owner verification failed: {} (HTTP {})", err_msg, status));
+            }
+            Err(e) if e.is_timeout() => {
+                return Err("Cloud server timed out (Render may be starting up). Please wait a moment and try again.".to_string());
+            }
+            Err(_) => {
+                return Err(
+                    "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string(),
+                );
+            }
+        }
+    };
 
     // Step 2 of activation: bind THIS terminal to the picked branch. The
     // branch list is re-fetched with the fresh session token and matched by
@@ -1343,7 +1468,6 @@ pub async fn authenticate_owner(
     // rejected with guidance instead of silently binding elsewhere.
     let picked_id = Uuid::parse_str(gym_id.trim())
         .map_err(|_| "Invalid branch selection. Please pick a branch and try again.".to_string())?;
-    let token = token_opt.ok_or_else(|| "Owner verification failed: cloud issued no session token.".to_string())?;
     let picked_key: String = {
         let br_resp = client
             .get(format!("{}/api/v1/owner/branches", cloud_url))

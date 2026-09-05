@@ -1480,7 +1480,7 @@
                     </td>
                     <td class="py-3 text-[11px] text-purple-300">${new Date(r.created_at).toLocaleDateString()}</td>
                     <td class="py-3 text-right">
-                        <a href="${r.download_url}" target="_blank" class="px-2 py-1 rounded text-[11px] font-bold bg-purple-900/40 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Download Asset</a>
+                        <a href="${/^https?:\/\//i.test(r.download_url) ? ceoEscape(r.download_url) : '#'}" target="_blank" rel="noopener noreferrer" class="px-2 py-1 rounded text-[11px] font-bold bg-purple-900/40 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Download Asset</a>
                     </td>
                 </tr>
             `).join('');

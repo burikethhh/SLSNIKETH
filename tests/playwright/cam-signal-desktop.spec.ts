@@ -77,7 +77,7 @@ test.describe('camera signal hardening', () => {
     await expect(page.locator('#session-user-name')).not.toContainText('Staff Active');
   });
 
-  test('activation: branch picker lists branches, pending unselectable, activate works', async ({ page }) => {
+  test('activation: owner credentials + valid license paste unlocks terminal', async ({ page }) => {
     // Mock sign-in UI state (login form visible, as on a fresh terminal).
     await page.evaluate(() => {
       (window as any).currentTerminalSession = null;
@@ -85,28 +85,20 @@ test.describe('camera signal hardening', () => {
     });
     await page.locator('#terminal-login-email').fill('owner@titan.fitness');
     await page.locator('#terminal-login-pass').fill('longenoughpassword');
+    await page.locator('#terminal-license-key').fill('GPOS-mockvalidtoken.mocksignature');
     await page.locator('#terminal-login-form button[type="submit"]').click();
-    // Step 2 appears with both branches; pending branch is disabled.
-    await expect(page.locator('#terminal-branch-step')).not.toHaveClass(/hidden/);
-    await expect(page.locator('#terminal-branch-list')).toContainText('Makati');
-    await expect(page.locator('#terminal-branch-list')).toContainText('pending');
-    const pendingBtn = page.locator('#terminal-branch-list button[disabled]');
-    expect(await pendingBtn.count()).toBe(1);
-    // Activate the licensed branch → lock screen hides, header shows gym.
-    // (currentTerminalSession is a lexical `let`, invisible to evaluate —
-    // assert the observable UI instead.)
-    await page.locator('#terminal-branch-list button:not([disabled])').first().click();
+    // Terminal unlocks, lock screen hides, header shows gym.
     await expect.poll(async () => page.evaluate(() => document.querySelector('#terminal-lock-screen')?.classList.contains('hidden')), { timeout: 8000 }).toBe(true);
     await expect(page.locator('#session-user-name')).toContainText('Titan Fitness Franchise HQ');
   });
 
-  test('activation: bad password stays on step 1 with error', async ({ page }) => {
+  test('activation: invalid license key shows error and keeps lock screen', async ({ page }) => {
     await page.evaluate(() => { (window as any).showLockScreen?.(); });
     await page.locator('#terminal-login-email').fill('owner@titan.fitness');
-    await page.locator('#terminal-login-pass').fill('bad');
+    await page.locator('#terminal-login-pass').fill('longenoughpassword');
+    await page.locator('#terminal-license-key').fill('INVALID-KEY-NOT-GPOS');
     await page.locator('#terminal-login-form button[type="submit"]').click();
-    await expect(page.locator('#terminal-login-error')).toContainText('Invalid', { timeout: 5000 });
-    // Picker never appears.
-    expect(await page.evaluate(() => document.querySelector('#terminal-branch-step')?.classList.contains('hidden'))).toBe(true);
+    await expect(page.locator('#terminal-login-error')).toContainText('Invalid license key format', { timeout: 5000 });
+    expect(await page.evaluate(() => document.querySelector('#terminal-lock-screen')?.classList.contains('hidden'))).toBe(false);
   });
 });

@@ -16,7 +16,15 @@ use std::sync::Arc;
 use sync::CloudSyncWorker;
 
 pub fn run() {
-    // Resolve DB path relative to the running executable so the app works
+    // Logging: the crate emits tracing::info/warn everywhere (sync worker,
+    // license verification, activation) but never initialized a subscriber,
+    // so every log was a silent no-op. Init a simple fmt subscriber writing
+    // to stdout — when launched with `GymPOS.exe > out.log 2>&1` this gives a
+    // real diagnostic trail; INFO covers all operational paths.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+
     // Resolve SQLite database path: in development or user mode, use exe directory;
     // if exe directory is read-only (e.g. Program Files), fall back to %LOCALAPPDATA%\GymPOS.
     let db_path = {
@@ -216,6 +224,7 @@ pub fn run() {
             commands::download_and_install_update,
             commands::get_app_version,
             commands::authenticate_staff_pin,
+            commands::activate_terminal_owner,
             commands::authenticate_owner,
             commands::owner_login_preview,
             commands::poll_hardware_buttons,

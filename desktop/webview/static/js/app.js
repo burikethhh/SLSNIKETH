@@ -40,9 +40,18 @@ async function invokeTauri(command, args = {}) {
                 ] };
             }
             throw new Error("Invalid owner credentials.");
+        } else if (command === 'activate_terminal_owner') {
+            const key = args.licenseKey || args.license_key || '';
+            if (args.password && args.password.length >= 6 && key.startsWith('GPOS-')) {
+                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: '11111111-1111-1111-1111-111111111111', gym_name: 'Titan Fitness - Makati' };
+            }
+            if (!key.startsWith('GPOS-')) {
+                throw new Error("Invalid license key format. Must start with GPOS-.");
+            }
+            throw new Error("Invalid owner credentials or license key.");
         } else if (command === 'authenticate_owner') {
-            if (args.password && args.password.length >= 6 && args.gymId) {
-                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: args.gymId, gym_name: 'Titan Fitness - Makati' };
+            if ((args.token || (args.password && args.password.length >= 6)) && (args.gymId || args.gym_id)) {
+                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: args.gymId || args.gym_id, gym_name: 'Titan Fitness - Makati' };
             }
             throw new Error("Invalid owner credentials or branch selection.");
         } else if (command === 'get_terminal_session') {
@@ -1822,7 +1831,7 @@ async function startAutonomousBiometricEngine() {
 let camerasStarted = false;
 
 async function initApp() {
-    await checkExistingTerminalSession();
+    // Session check is handled upfront by the outer initApp entry point
     await loadAppSettings();
     await refreshDashboard();
     await loadMembers();
@@ -4429,114 +4438,81 @@ initApp = async function() {
 // is a license expiry detected during the periodic background license check.
 // ══════════════════════════════════════════════════════════════════════════
 
+async function pasteLicenseFromClipboard() {
+    const keyInput = document.getElementById('terminal-license-key');
+    if (!keyInput) return;
+    try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+            keyInput.value = text.trim();
+            keyInput.focus();
+            showHudToast('Clipboard', 'License key pasted successfully.', 'info');
+        }
+    } catch (err) {
+        showHudToast('Clipboard', 'Please paste the license key using Ctrl+V.', 'warn');
+    }
+}
+
 async function submitTerminalLogin(e) {
     if (e) e.preventDefault();
 
-    const email   = (document.getElementById('terminal-login-email')?.value || '').trim();
-    const password = document.getElementById('terminal-login-pass')?.value || '';
-    const errEl   = document.getElementById('terminal-login-error');
-    const btn     = document.getElementById('terminal-login-btn');
+    const email      = (document.getElementById('terminal-login-email')?.value || '').trim();
+    const password   = document.getElementById('terminal-login-pass')?.value || '';
+    const licenseKey = (document.getElementById('terminal-license-key')?.value || '').trim();
+    const errEl      = document.getElementById('terminal-login-error');
+    const btn        = document.getElementById('terminal-login-btn');
 
-    if (!email || !password) return;
+    if (!email) {
+        showTerminalLoginError('Please enter your owner email address.');
+        return;
+    }
+    if (!password) {
+        showTerminalLoginError('Please enter your dashboard password.');
+        return;
+    }
+    if (!licenseKey) {
+        showTerminalLoginError('Please paste your branch license key from your cloud dashboard.');
+        return;
+    }
+    if (!licenseKey.startsWith('GPOS-')) {
+        showTerminalLoginError('Invalid license key format. License keys must start with GPOS-.');
+        return;
+    }
 
-    // Show loading state
-    if (btn) { btn.disabled = true; btn.textContent = 'Connecting to cloud…'; }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin"></span> Verifying &amp; Activating…';
+    }
     if (errEl) errEl.classList.add('hidden');
 
     try {
-        // Step 1: verify credentials, fetch branch list (no keys, no session).
-        const preview = await invokeTauri('owner_login_preview', { email, password });
-        if (!preview || !preview.authenticated) {
-            showTerminalLoginError('Invalid email or password. Use your GymPOS dashboard credentials.');
-            return;
-        }
-        renderBranchPicker(preview);
-    } catch (err) {
-        const msg = typeof err === 'string' ? err : (err?.message ?? 'Authentication failed.');
-        showTerminalLoginError(msg);
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate Terminal`;
-        }
-    }
-}
-
-function renderBranchPicker(preview) {
-    const form = document.getElementById('terminal-login-form');
-    const step = document.getElementById('terminal-branch-step');
-    const list = document.getElementById('terminal-branch-list');
-    const company = document.getElementById('terminal-branch-company');
-    const errEl = document.getElementById('terminal-login-error');
-    if (!form || !step || !list) return;
-    if (errEl) errEl.classList.add('hidden');
-
-    const branches = (preview && preview.branches) || [];
-    if (company) company.innerText = preview.company_name || preview.owner_email || 'Franchise';
-    if (branches.length === 0) {
-        list.innerHTML = '<div class="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 text-center">No branches on this account yet. Create one in the Owner Portal first.</div>';
-    } else {
-        list.innerHTML = branches.map(b => {
-            const usable = b.has_key && b.is_active && !b.is_disabled;
-            const sub = !b.has_key ? 'Pending CEO license key' : (!b.is_active || b.is_disabled ? 'Branch Disabled' : `${(b.tier || 'basic').toUpperCase()} Tier · License Active`);
-            return `<button type="button" ${usable ? '' : 'disabled'} onclick="activateTerminalBranch('${b.gym_id}')"
-                class="w-full text-left px-3.5 py-3 rounded-xl border text-xs transition ${usable
-                    ? 'bg-purple-950/50 hover:bg-purple-900/70 border-purple-500/50 text-slate-100 hover:scale-[1.01]'
-                    : 'bg-slate-900/60 border-slate-800 text-slate-500 cursor-not-allowed'}">
-                <div class="font-bold text-sm flex items-center justify-between">
-                    <span>${escapeHtml(b.name || 'Branch')}</span>
-                    ${usable ? '<span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-950 text-emerald-300 border border-emerald-800 font-mono">Activate →</span>' : '<span class="text-[10px] text-slate-500">Locked</span>'}
-                </div>
-                <div class="text-[11px] ${usable ? 'text-purple-300' : 'text-slate-500'} mt-1">${escapeHtml(String(sub))}</div>
-            </button>`;
-        }).join('');
-    }
-    form.classList.add('hidden');
-    step.classList.remove('hidden');
-}
-
-function backToTerminalLogin() {
-    document.getElementById('terminal-branch-step')?.classList.add('hidden');
-    document.getElementById('terminal-login-form')?.classList.remove('hidden');
-    const errEl = document.getElementById('terminal-login-error');
-    if (errEl) errEl.classList.add('hidden');
-}
-
-async function activateTerminalBranch(gymId) {
-    const email = (document.getElementById('terminal-login-email')?.value || '').trim();
-    const password = document.getElementById('terminal-login-pass')?.value || '';
-    const errEl = document.getElementById('terminal-login-error');
-    const list = document.getElementById('terminal-branch-list');
-
-    if (errEl) errEl.classList.add('hidden');
-    if (list) {
-        list.innerHTML = '<div class="py-6 text-center text-xs text-purple-300 flex items-center justify-center gap-2 font-semibold"><span class="w-2.5 h-2.5 rounded-full bg-purple-400 animate-ping"></span> Activating terminal & validating license…</div>';
-    }
-
-    try {
-        // Step 2: re-authenticates, verifies ONLY this branch's key, binds it.
-        const res = await invokeTauri('authenticate_owner', { email, password, gymId });
+        const res = await invokeTauri('activate_terminal_owner', { email, password, licenseKey, license_key: licenseKey });
         if (res && res.authenticated) {
             currentTerminalSession = {
                 is_authenticated: true,
-                user_id:          res.staff_id,
-                display_name:     res.full_name,
+                user_id:          res.staff_id || ('owner:' + email),
+                display_name:     res.full_name || 'Franchise Owner',
                 role:             'owner',
                 gym_id:           res.gym_id   ?? null,
                 gym_name:         res.gym_name ?? null,
             };
-            backToTerminalLogin();
+
+            licenseWasLockedOut = false;
             unlockTerminalUI();
             try { await refreshDashboard(); } catch (_) {}
-            showHudToast('Terminal Activated', `Welcome! Terminal linked to ${res.gym_name || 'branch'}.`, 'success');
+            showHudToast('Terminal Activated', `Welcome! Terminal unlocked for ${res.gym_name || 'branch'}.`, 'success');
         } else {
-            showTerminalLoginError('Activation failed. Please try again.');
-            backToTerminalLogin();
+            showTerminalLoginError('Activation failed. Please check your credentials and license key.');
         }
     } catch (err) {
         const msg = typeof err === 'string' ? err : (err?.message ?? 'Activation failed.');
+        console.error("Terminal activation error:", msg);
         showTerminalLoginError(msg);
-        backToTerminalLogin();
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate &amp; Unlock Terminal`;
+        }
     }
 }
 
@@ -4554,15 +4530,6 @@ function showLockScreen() {
         lockScreen.classList.remove('hidden');
         lockScreen.classList.add('flex');
     }
-    // Clear previous credentials from the form
-    const emailEl = document.getElementById('terminal-login-email');
-    const passEl  = document.getElementById('terminal-login-pass');
-    const errEl   = document.getElementById('terminal-login-error');
-    if (emailEl) emailEl.value = '';
-    if (passEl)  passEl.value  = '';
-    if (errEl)   errEl.classList.add('hidden');
-    // Reset two-step activation to step 1 (credentials)
-    document.getElementById('terminal-branch-step')?.classList.add('hidden');
     document.getElementById('terminal-login-form')?.classList.remove('hidden');
 
     // Update header to show locked state
