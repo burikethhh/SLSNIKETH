@@ -5,6 +5,7 @@ import sys
 def test_hardware(port='COM8', baud=115200):
     print("=" * 60)
     print("  GymPOS Hardware & Controller Diagnostic Suite")
+    print("  Mode: Buttonless Always-On Face Scan Architecture")
     print(f"  Target Port: {port} @ {baud} baud")
     print("=" * 60)
     
@@ -82,11 +83,11 @@ def test_hardware(port='COM8', baud=115200):
     # Test 7: DENY reason text
     results['DENY'] = send_and_expect("DENY:EXPIRED", "ACK:DENY")
 
-    # Test 8: Button Monitor (5 seconds)
+    # Test 8: Monitor idle stability (2 seconds)
     print("\n" + "-" * 60)
-    print(">> Listening for Hardware Buttons (Entry=IO4, Exit=IO8) for 4s...")
+    print(">> Listening for background controller events (buttonless idle) for 2s...")
     start = time.time()
-    while time.time() - start < 4.0:
+    while time.time() - start < 2.0:
         if ser.in_waiting:
             line = ser.readline().decode("utf-8", errors="replace").strip()
             if line:

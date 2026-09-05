@@ -1,39 +1,47 @@
 /*
   GymPOS Access Controller — ESP32 Firmware
   ──────────────────────────────────────────
-  Receives commands via USB Serial from the GymPOS PC application.
-  Controls door solenoid, buzzer, and 16x2 I2C LCD.
+  Receives commands via USB Serial from the GymPOS Desktop application.
+  Controls door solenoid/relay, buzzer, and 16x2 I2C LCD.
   RFID is handled by external USB reader on the PC side.
 
-  Pin Wiring (relay direct COM/NC — no ESP relay pin):
+  Pin Wiring (Relay direct COM/NC — no ESP relay pin):
     GPIO18  → LCD SDA           (software I2C, Wire.begin(18, 19))
     GPIO19  → LCD SCL           (software I2C)
     GPIO9   → 5V Buzzer         (active HIGH)
     GPIO2   → Built-in LED      (status indicator)
 
-  No push-buttons — cameras run continuously; face scan is always-on.
-  Tailgate arms automatically on every verified entry/exit.
+  Buttonless Architecture:
+    - No physical push-buttons required.
+    - Continuous camera feeds with automated face detection & anti-tailgate
+      verification handled upstream by the GymPOS PC host application.
+    - Tailgate alarm arms automatically on every verified entry/exit.
 
-  Relay Control (5V relay + 3.3V GPIO workaround):
-    relay OFF = pinMode(INPUT)  → high impedance → solenoid OUT (locked)
-    relay ON  = OUTPUT + LOW    → pulls IN to GND → solenoid IN (unlocked)
+  Relay Control:
+    - By default, LOCK_PIN is -1 for direct-wired relay power paths.
+    - If a GPIO pin is defined (LOCK_PIN >= 0):
+        relay OFF = pinMode(INPUT)  → high impedance → locked
+        relay ON  = OUTPUT + LOW    → pulls IN to GND → unlocked
 
-  Serial commands (case-insensitive, \n terminated):
+  Serial Commands (case-insensitive, \n terminated):
     UNLOCK             → open solenoid 5s + success beep + LCD "Access Granted"
-    UNLOCK:<seconds>   → open solenoid for custom duration
+    UNLOCK:<seconds>   → open solenoid for custom duration (in seconds or ms)
     LOCK               → force-lock immediately
     DENY               → triple beep + LCD "Access Denied"
     DENY:<reason>      → triple beep + LCD shows reason text
     BEEP               → single short beep
+    BEEP_LONG          → long 2-second warning beep
+    ALERT_TAILGATE     → rapid pulsing alarm (~9s) + LCD warning
+    ALARM              → alias for ALERT_TAILGATE
     LCD:<line1>|<line2> → display custom text on LCD (| separates lines)
-    LCD_CLEAR          → clear LCD and show idle screen
+    LCD_CLEAR          → clear LCD and return to idle screen
     PING               → reply ACK:PONG (health check)
-    STATUS             → reply with current lock state
+    STATUS             → reply with current lock state (ACK:STATUS:LOCKED|UNLOCKED)
 
-  Messages sent TO the PC:
+  Messages Sent TO PC:
     READY              → sent once on boot
     ACK:<cmd>          → acknowledgement for every command
-    ACK:RELOCK         → auto-lock after unlock timer expires
+    ACK:RELOCK         → auto-lock notification after unlock timer expires
 */
 
 #include <Arduino.h>
@@ -41,15 +49,13 @@
 #include <LiquidCrystal_I2C.h>
 
 // ───────────── Lock Configuration ─────────────
-// All locks are direct-wired to board relay COM/NC (no ESP GPIO pin).
-// Physical release is handled via direct relay power path.
-// The ESP handles logical state tracking, status LED, buzzer, and LCD.
+// All locks are direct-wired to board relay COM/NC (no ESP GPIO pin needed).
+// If an active GPIO pin is wired to a relay module, define LOCK_PIN >= 0.
 #ifndef LOCK_PIN
-#define LOCK_PIN -1  // Direct-wired relay (no GPIO pin drive)
+#define LOCK_PIN -1  // -1 = Direct-wired relay / logical tracking only
 #endif
 
 // ───────────── Pin Configuration ─────────────
-// No buttons — cameras are always-on; tailgate logic is PC-side.
 #ifndef LCD_SDA_PIN
 static const int LCD_SDA_PIN    = 18;  // I2C SDA (Wire.begin(18, 19))
 #endif
@@ -72,9 +78,10 @@ static uint8_t scanLcdAddress() {
     if (Wire.endTransmission() == 0) {
       Serial.print("  I2C device found at 0x");
       Serial.println(addr, HEX);
-      // Prefer addresses in common LCD backpack range
-      if (!found && ((addr >= 0x20 && addr <= 0x2F) || (addr >= 0x38 && addr <= 0x3F)))
+      // Prefer addresses in common LCD backpack range (0x20..0x27 or 0x38..0x3F)
+      if (!found && ((addr >= 0x20 && addr <= 0x2F) || (addr >= 0x38 && addr <= 0x3F))) {
         found = addr;
+      }
     }
   }
   if (found) {
@@ -105,14 +112,15 @@ byte unlockChar[8] = {0b01110,0b10000,0b10000,0b11111,0b11011,0b11011,0b11111,0b
 byte alertChar[8] = {0b00100,0b00100,0b01110,0b01110,0b11111,0b11111,0b00100,0b00000};
 
 // ───────────── Non-blocking Buzzer ───────────
-// Plays patterns without delay() so the main loop keeps running.
-// Pattern = array of durations: positive = buzzer ON, negative = silence.
-static const int PAT_SUCCESS[]  = {120, -100, 120, 0};          // 2 equal short beeps (face scan granted)
-static const int PAT_DENY[]     = {100, -80, 100, -80, 100, 0}; // triple beep (denied)
-static const int PAT_EXIT[]     = {80, -60, 80, 0};             // two short beeps (exit)
-static const int PAT_STARTUP[]  = {60, -40, 80, -40, 100, 0};  // ascending chirp (boot)
-static const int PAT_BEEP[]     = {150, 0};                     // single beep
-static const int PAT_HEAVY_ALERT[] = {                           // ~10s rapid pulsing (tailgate alarm)
+// Plays patterns without delay() so the main loop keeps running smoothly.
+// Pattern = array of durations: positive = buzzer ON, negative = silence, 0 = end.
+static const int PAT_SUCCESS[]     = {120, -100, 120, 0};          // 2 equal short beeps (granted)
+static const int PAT_DENY[]        = {100, -80, 100, -80, 100, 0}; // triple beep (denied)
+static const int PAT_EXIT[]        = {80, -60, 80, 0};             // two short beeps (exit)
+static const int PAT_STARTUP[]     = {60, -40, 80, -40, 100, 0};   // ascending chirp (boot)
+static const int PAT_BEEP[]        = {150, 0};                     // single short beep
+static const int PAT_BEEP_LONG[]   = {2000, 0};                    // single long 2-sec warning beep
+static const int PAT_HEAVY_ALERT[] = {                             // ~9s rapid pulsing (tailgate alarm)
   200,-100,200,-100,200,-100,200,-100,200,-100,
   200,-100,200,-100,200,-100,200,-100,200,-100,
   200,-100,200,-100,200,-100,200,-100,200,-100,
@@ -140,13 +148,12 @@ void buzzerStart(const int* pattern) {
 
 void buzzerTick() {
   if (!buzzerPattern) return;
-  if ((long)(millis() - buzzerUntil) < 0) return;  // overflow-safe compare
+  if ((long)(millis() - buzzerUntil) < 0) return;  // overflow-safe check
 
-  // Advance to next step
   buzzerStep++;
   int dur = buzzerPattern[buzzerStep];
   if (dur == 0) {
-    // Pattern done
+    // Pattern complete
     digitalWrite(BUZZER_PIN, LOW);
     buzzerPattern = nullptr;
     return;
@@ -162,6 +169,7 @@ void buzzerTick() {
 
 // ───────────── LCD Helpers ───────────────────
 void lcdShowIdle() {
+  if (!lcd) return;
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->write(0);  // lock icon
@@ -170,7 +178,8 @@ void lcdShowIdle() {
   lcd->print("Scan face");
 }
 
-void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs) {
+void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000) {
+  if (!lcd) return;
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->print(line1.substring(0, 16));
@@ -186,10 +195,16 @@ void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs)
 }
 
 // ───────────── Lock / Unlock ─────────────────
-// All locks are direct-wired to the board relay COM/NC path.
-// The ESP maintains logical lock tracking, LED indicator, buzzer, and LCD feedback.
 void setLocked(bool locked) {
   isLocked = locked;
+#if defined(LOCK_PIN) && (LOCK_PIN >= 0)
+  if (locked) {
+    pinMode(LOCK_PIN, INPUT);      // high impedance → relay OFF (locked)
+  } else {
+    pinMode(LOCK_PIN, OUTPUT);
+    digitalWrite(LOCK_PIN, LOW);   // active LOW pulls relay IN to GND (unlocked)
+  }
+#endif
   digitalWrite(STATUS_LED_PIN, locked ? LOW : HIGH);
 }
 
@@ -197,29 +212,21 @@ void unlockDoor(unsigned long ms) {
   unlockUntil = millis() + ms;
   setLocked(false);
   buzzerStart(PAT_SUCCESS);
-  lcd->clear();
-  lcd->setCursor(0, 0);
-  lcd->write(1);  // unlock icon
-  lcd->print(" ACCESS GRANTED");
-  lcd->setCursor(0, 1);
-  lcd->print("Door open ");
-  lcd->print(ms / 1000);
-  lcd->print("s");
+  if (lcd) {
+    lcd->clear();
+    lcd->setCursor(0, 0);
+    lcd->write(1);  // unlock icon
+    lcd->print(" ACCESS GRANTED");
+    lcd->setCursor(0, 1);
+    lcd->print("Door open ");
+    lcd->print(ms / 1000);
+    lcd->print("s");
+  }
   lcdIdleAfter = millis() + ms + 1000;
   Serial.println("ACK:UNLOCK");
 }
 
 // ───────────── Helpers ───────────────────────
-String bytesToHexString(byte* buffer, byte bufferSize) {
-  String out = "";
-  for (byte i = 0; i < bufferSize; i++) {
-    if (buffer[i] < 0x10) out += "0";
-    out += String(buffer[i], HEX);
-  }
-  out.toUpperCase();
-  return out;
-}
-
 unsigned long parseSeconds(const String& arg, unsigned long defaultMs) {
   // Parse "UNLOCK:10" → 10000ms, "UNLOCK:3000" → 3000ms, fallback to defaultMs
   if (arg.length() == 0) return defaultMs;
@@ -238,6 +245,8 @@ void processSerialCommand(const String& cmdRaw) {
   String cmd = cmdRaw;
   cmd.trim();
   cmd.toUpperCase();
+
+  if (cmd.length() == 0) return;
 
   // Split on first ':' for parameterized commands
   String base = cmd;
@@ -259,7 +268,7 @@ void processSerialCommand(const String& cmdRaw) {
   if (base == "LOCK") {
     unlockUntil = 0;
     setLocked(true);
-    lcdShow("\x00 DOOR LOCKED", "");
+    lcdShow("\x00 DOOR LOCKED", "", 3000);
     Serial.println("ACK:LOCK");
     return;
   }
@@ -267,45 +276,54 @@ void processSerialCommand(const String& cmdRaw) {
   // ── DENY ──
   if (base == "DENY") {
     buzzerStart(PAT_DENY);
-    lcd->clear();
-    lcd->setCursor(0, 0);
-    lcd->print("  ACCESS DENIED");
-    lcd->setCursor(0, 1);
-    if (arg.length() > 0) {
-      // Show reason from PC: DENY:Expired, DENY:Not a member, etc.
-      String reason = cmdRaw.substring(colonIdx + 1);
-      reason.trim();
-      lcd->print(reason.substring(0, 16));
-    } else {
-      lcd->print("  Unauthorized");
+    if (lcd) {
+      lcd->clear();
+      lcd->setCursor(0, 0);
+      lcd->print("  ACCESS DENIED");
+      lcd->setCursor(0, 1);
+      if (arg.length() > 0) {
+        // Show reason from PC: DENY:Expired, DENY:Not a member, etc.
+        String reason = cmdRaw.substring(colonIdx + 1);
+        reason.trim();
+        lcd->print(reason.substring(0, 16));
+      } else {
+        lcd->print("  Unauthorized");
+      }
     }
     lcdIdleAfter = millis() + 3000;
     Serial.println("ACK:DENY");
     return;
   }
 
-  // ── BEEP ──
+  // ── BEEP / BEEP_LONG ──
+  if (base == "BEEP_LONG") {
+    buzzerStart(PAT_BEEP_LONG);
+    Serial.println("ACK:BEEP_LONG");
+    return;
+  }
   if (base == "BEEP") {
     buzzerStart(PAT_BEEP);
     Serial.println("ACK:BEEP");
     return;
   }
 
-  // ── ALERT_TAILGATE / ALARM ──  heavy rapid buzz ~5 seconds
+  // ── ALERT_TAILGATE / ALARM ── (~9s rapid buzzer alert)
   if (base == "ALERT_TAILGATE" || base == "ALARM") {
     buzzerStart(PAT_HEAVY_ALERT);
-    lcd->clear();
-    lcd->setCursor(0, 0);
-    lcd->write(2);  // alert icon
-    lcd->print(" TAILGATE ALERT");
-    lcd->setCursor(0, 1);
-    lcd->print("Multiple entries!");
-    lcdIdleAfter = millis() + 6000;
+    if (lcd) {
+      lcd->clear();
+      lcd->setCursor(0, 0);
+      lcd->write(2);  // alert icon
+      lcd->print(" TAILGATE ALERT");
+      lcd->setCursor(0, 1);
+      lcd->print("Multiple entries!");
+    }
+    lcdIdleAfter = millis() + 9000;
     Serial.println("ACK:ALERT_TAILGATE");
     return;
   }
 
-  // ── LCD ──  (LCD:Hello World|Line 2)
+  // ── LCD ── (LCD:Hello World|Line 2)
   if (base == "LCD") {
     String raw = cmdRaw.substring(colonIdx + 1);
     raw.trim();
@@ -346,26 +364,27 @@ void setup() {
   // Pin modes
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(STATUS_LED_PIN, OUTPUT);
-  buttonsInit();
 
-  // Default states — everything off, door locked
+  // Default states — buzzer silent, door locked
   digitalWrite(BUZZER_PIN, LOW);
-  setLocked(true);  // uses INPUT mode trick to turn relay OFF
+  setLocked(true);
 
-  // Serial
+  // Serial interface
   Serial.begin(115200);
   while (!Serial) { delay(5); }
+  Serial.setTimeout(50);
 
-  // I2C LCD — slower clock helps with longer wires/noise
+  // I2C LCD initialization
   Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
-  Wire.setClock(50000);
+  Wire.setClock(50000);  // Slower clock handles longer wire runs and noise
 
   uint8_t lcdAddr = scanLcdAddress();
   if (!lcdAddr) {
     lcdAddr = 0x27;
-    Serial.println("Defaulting to 0x27");
+    Serial.println("Defaulting to LCD address 0x27");
   }
-  delay(250);  // extra settling time for LCD power-up
+  delay(250);  // Power-up settling time
+
   lcd = new LiquidCrystal_I2C(lcdAddr, 16, 2);
   lcd->begin(16, 2);
   lcd->backlight();
@@ -373,10 +392,7 @@ void setup() {
   lcd->createChar(1, unlockChar);
   lcd->createChar(2, alertChar);
 
-  // Serial timeout — prevent readStringUntil from blocking >50ms
-  Serial.setTimeout(50);
-
-  // Startup feedback
+  // Startup chirp and idle screen
   buzzerStart(PAT_STARTUP);
   lcdShowIdle();
 
@@ -389,9 +405,6 @@ void loop() {
 
   // ── Non-blocking buzzer tick ──
   buzzerTick();
-
-  // ── Push-button camera triggers (ENTRY / EXIT) ──
-  pollButtons();
 
   // ── Auto-relock after unlock timer ──
   if (unlockUntil > 0 && (long)(now - unlockUntil) >= 0) {
@@ -406,10 +419,9 @@ void loop() {
     lcdShowIdle();
   }
 
-  // ── Serial command handling ──
+  // ── Serial command processing ──
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
     processSerialCommand(line);
   }
-
 }
