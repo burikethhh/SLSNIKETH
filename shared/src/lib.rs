@@ -857,6 +857,15 @@ pub struct TerminalSession {
     /// before this field existed.
     #[serde(default = "Utc::now")]
     pub last_activity_at: DateTime<Utc>,
+    /// License binding (single-activation kiosk): the session is valid only
+    /// while the cached license still verifies AND belongs to this license.
+    /// A revoked/expired/swapped key drops the session at the next gate.
+    #[serde(default)]
+    pub bound_gym_id: Option<Uuid>,
+    #[serde(default)]
+    pub bound_license_id: Option<Uuid>,
+    #[serde(default)]
+    pub bound_expires_at: Option<DateTime<Utc>>,
 }
 
 /// A terminal session idle longer than this is treated as logged out by the

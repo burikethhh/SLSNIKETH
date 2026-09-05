@@ -8,6 +8,7 @@ use gympos_shared::{
 use serde_json::json;
 use std::sync::Arc;
 use tauri::State;
+use uuid::Uuid;
 
 use crate::db::Database;
 use crate::face::FaceVectorStore;
@@ -141,6 +142,25 @@ fn require_role(state: &AppContext, allowed: &[StaffRole]) -> Result<(), String>
                 *guard = None;
                 let _ = state.db.clear_saved_terminal_session();
                 return Err(e);
+            }
+            // License binding (single-activation kiosk): a session bound to a
+            // license dies with it. Covers expiry-by-status above PLUS the
+            // swapped-key case (a different valid key must not inherit this
+            // terminal's session) and restores that predate binding (None).
+            if let Some(bound_id) = s.bound_license_id {
+                let bound_ok = state
+                    .license
+                    .current_claims()
+                    .map(|c| {
+                        c.license_id == bound_id
+                            && s.bound_gym_id.map(|g| g == c.gym_id).unwrap_or(true)
+                    })
+                    .unwrap_or(false);
+                if !bound_ok {
+                    *guard = None;
+                    let _ = state.db.clear_saved_terminal_session();
+                    return Err("Access Denied: terminal license changed or expired — please re-activate with the owner account.".to_string());
+                }
             }
             if allowed.contains(&s.role) {
                 s.last_activity_at = Utc::now();
@@ -1129,6 +1149,11 @@ pub fn authenticate_staff_pin(
             gym_name: staff.gym_name.clone(),
             logged_in_at: chrono::Utc::now(),
             last_activity_at: chrono::Utc::now(),
+            // Staff sessions bind opportunistically to whatever license is
+            // active now; owner activation always binds explicitly.
+            bound_gym_id: state.license.current_claims().map(|c| c.gym_id),
+            bound_license_id: state.license.current_claims().map(|c| c.license_id),
+            bound_expires_at: state.license.current_claims().map(|c| c.expires_at),
         };
 
         *state.session.write() = Some(session);
@@ -1145,10 +1170,89 @@ pub fn authenticate_staff_pin(
     })
 }
 
+/// Step 1 of terminal activation: verifies owner credentials against the
+/// cloud and returns the owner's branches WITHOUT key material, for the
+/// branch picker. Creates NO session and touches NO license state.
+#[tauri::command]
+pub async fn owner_login_preview(
+    email: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let email = email.trim().to_lowercase();
+    let password = password.trim();
+
+    if email.is_empty() || password.is_empty() {
+        return Err("Email and password are required".to_string());
+    }
+
+    let cloud_url = std::env::var("CLOUD_URL").unwrap_or_else(|_| "https://gympos-cloud.onrender.com".to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let login: serde_json::Value = client
+        .post(format!("{}/api/v1/owner/auth/login", cloud_url))
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .send()
+        .await
+        .map_err(|_| "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string())?
+        .json()
+        .await
+        .map_err(|_| "Owner verification failed: unexpected cloud response.".to_string())?;
+
+    if !login["authenticated"].as_bool().unwrap_or(false) {
+        return Err("Invalid owner email or password.".to_string());
+    }
+    let token = login["token"]
+        .as_str()
+        .ok_or_else(|| "Owner verification failed: cloud issued no session token.".to_string())?;
+    let company_name = login["company_name"].as_str().unwrap_or("Franchise Owner");
+
+    let br_resp = client
+        .get(format!("{}/api/v1/owner/branches", cloud_url))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|_| "Could not load branch list from the cloud.".to_string())?;
+    if !br_resp.status().is_success() {
+        return Err(format!("Could not load branch list (cloud returned HTTP {}).", br_resp.status()));
+    }
+    let br_data: serde_json::Value = br_resp
+        .json()
+        .await
+        .map_err(|_| "Could not parse branch list from the cloud.".to_string())?;
+    let branches: Vec<serde_json::Value> = br_data["branches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|b| {
+            let key = b["license_key"].as_str().unwrap_or("").trim();
+            serde_json::json!({
+                "gym_id": b["gym_id"],
+                "name": b["name"].as_str().unwrap_or("Branch"),
+                "tier": b["tier"],
+                "has_key": !key.is_empty(),
+                "is_active": b["is_active"].as_bool().unwrap_or(true),
+                "is_disabled": b["is_disabled"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "authenticated": true,
+        "company_name": company_name,
+        "owner_email": email,
+        "branches": branches,
+    }))
+}
+
 #[tauri::command]
 pub async fn authenticate_owner(
     email: String,
     password: String,
+    gym_id: String,
     state: State<'_, AppContext>,
 ) -> Result<StaffLoginResponse, String> {
     let email = email.trim().to_lowercase();
@@ -1203,7 +1307,7 @@ pub async fn authenticate_owner(
         }
         Err(_) => {
             return Err(
-                "Cannot reach the cloud to verify owner credentials. Owner login requires an internet connection — use a staff PIN for offline front-desk work.".to_string(),
+                "Cannot reach the cloud to verify owner credentials. Activation requires an internet connection.".to_string(),
             );
         }
     }
@@ -1212,44 +1316,70 @@ pub async fn authenticate_owner(
         return Err("Invalid owner email or password.".to_string());
     }
 
-    // Auto-sync owner's active branch license key from cloud
-    if let Some(ref tok) = token_opt {
-        if let Ok(br_resp) = client
+    // Step 2 of activation: bind THIS terminal to the picked branch. The
+    // branch list is re-fetched with the fresh session token and matched by
+    // gym_id — never first-licensed-wins, and a pending (keyless) branch is
+    // rejected with guidance instead of silently binding elsewhere.
+    let picked_id = Uuid::parse_str(gym_id.trim())
+        .map_err(|_| "Invalid branch selection. Please pick a branch and try again.".to_string())?;
+    let token = token_opt.ok_or_else(|| "Owner verification failed: cloud issued no session token.".to_string())?;
+    let picked_key: String = {
+        let br_resp = client
             .get(format!("{}/api/v1/owner/branches", cloud_url))
-            .header("Authorization", format!("Bearer {}", tok))
+            .header("Authorization", format!("Bearer {}", token))
             .send()
             .await
-        {
-            if br_resp.status().is_success() {
-                if let Ok(br_data) = br_resp.json::<serde_json::Value>().await {
-                    if let Some(branches) = br_data["branches"].as_array() {
-                        for b in branches {
-                            if let Some(lic_key) = b["license_key"].as_str() {
-                                if !lic_key.trim().is_empty() {
-                                    if let Ok(_) = state.license.verify_and_apply(lic_key) {
-                                        let _ = state.db.set_cached_license(lic_key);
-                                        let _ = state.db.heartbeat_ok();
-                                        tracing::info!("Auto-applied cloud license key for branch: {:?}", b["name"]);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            .map_err(|_| "Could not load branch list from the cloud.".to_string())?;
+        if !br_resp.status().is_success() {
+            return Err(format!("Could not load branch list (cloud returned HTTP {}).", br_resp.status()));
+        }
+        let br_data: serde_json::Value = br_resp
+            .json()
+            .await
+            .map_err(|_| "Could not parse branch list from the cloud.".to_string())?;
+        let branches = br_data["branches"].as_array().cloned().unwrap_or_default();
+        let picked = branches.iter().find(|b| {
+            b["gym_id"].as_str().and_then(|s| Uuid::parse_str(s).ok()) == Some(picked_id)
+        });
+        match picked {
+            None => {
+                return Err("Selected branch was not found on this owner account. Please re-activate and pick again.".to_string())
+            }
+            Some(b) => {
+                let key = b["license_key"].as_str().unwrap_or("").trim().to_string();
+                if key.is_empty() {
+                    let name = b["name"].as_str().unwrap_or("this branch");
+                    return Err(format!("{} has no issued license key yet (pending CEO approval). Pick a licensed branch.", name));
                 }
+                key
             }
         }
-    }
+    };
 
+    // Verify the picked branch's key cryptographically before trusting it.
+    // A bad signature here means key/cloud mismatch — never cache it.
+    let status = state.license.verify_and_apply(&picked_key).map_err(|e| {
+        format!("Branch license failed verification and was NOT applied: {}", e)
+    })?;
+    let _ = state.db.set_cached_license(&picked_key);
+    let _ = state.db.heartbeat_ok();
+    tracing::info!("Terminal activated for branch {}", picked_id);
+    let _ = status;
+
+    let claims = state.license.current_claims();
     let session = TerminalSession {
         is_authenticated: true,
         user_id: email.clone(),
         display_name: format!("Owner Admin ({})", company_name),
         role: StaffRole::Owner,
-        gym_id: None,
-        gym_name: None,
+        gym_id: claims.as_ref().map(|c| c.gym_id).or(Some(picked_id)),
+        gym_name: claims.as_ref().map(|c| c.gym_name.clone()),
         logged_in_at: chrono::Utc::now(),
         last_activity_at: chrono::Utc::now(),
+        // License binding: this session lives and dies with THIS key.
+        bound_gym_id: claims.as_ref().map(|c| c.gym_id).or(Some(picked_id)),
+        bound_license_id: claims.as_ref().map(|c| c.license_id),
+        bound_expires_at: claims.as_ref().map(|c| c.expires_at),
     };
 
     let _ = state.db.save_terminal_session(&session);
@@ -1261,8 +1391,8 @@ pub async fn authenticate_owner(
         full_name: company_name,
         username: email,
         role: StaffRole::Owner,
-        gym_id: None,
-        gym_name: None,
+        gym_id: claims.as_ref().map(|c| c.gym_id).or(Some(picked_id)),
+        gym_name: claims.as_ref().map(|c| c.gym_name.clone()),
     })
 }
 

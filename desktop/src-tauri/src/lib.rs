@@ -200,6 +200,7 @@ pub fn run() {
             commands::get_app_version,
             commands::authenticate_staff_pin,
             commands::authenticate_owner,
+            commands::owner_login_preview,
             commands::poll_hardware_buttons,
             commands::list_remote_plans,
             commands::list_remote_promos,

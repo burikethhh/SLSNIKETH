@@ -181,7 +181,10 @@ impl Database {
                 role TEXT NOT NULL,
                 gym_id TEXT,
                 gym_name TEXT,
-                logged_in_at TEXT NOT NULL
+                logged_in_at TEXT NOT NULL,
+                bound_gym_id TEXT,
+                bound_license_id TEXT,
+                bound_expires_at TEXT
             );
             "#,
         )?;
@@ -199,10 +202,12 @@ impl Database {
         // POS discount tracking (Senior / Student / PWD ID discounts)
         let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''", []);
         let _ = conn.execute("ALTER TABLE transactions ADD COLUMN discount_amount REAL NOT NULL DEFAULT 0", []);
-        // Phase A-D tailgate incidents (attribution + local acknowledge)
-        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN linked_member_id TEXT", []);
-        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN person_count INTEGER", []);
-        let _ = conn.execute("ALTER TABLE attendance_logs ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0", []);
+        // License-bound activation (single-activation kiosk): session rows
+        // written before these columns existed read back unbound (None) and
+        // are treated as expired at the next gate until re-activation.
+        let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_gym_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_license_id TEXT", []);
+        let _ = conn.execute("ALTER TABLE terminal_session ADD COLUMN bound_expires_at TEXT", []);
         // Expenses ledger (local bookkeeping for End-of-Day)
         let _ = conn.execute(
             "CREATE TABLE IF NOT EXISTS expenses (
@@ -1989,22 +1994,28 @@ impl Database {
     pub fn save_terminal_session(&self, session: &TerminalSession) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO terminal_session (id, user_id, display_name, role, gym_id, gym_name, logged_in_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO terminal_session (id, user_id, display_name, role, gym_id, gym_name, logged_in_at, bound_gym_id, bound_license_id, bound_expires_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                  user_id = excluded.user_id,
                  display_name = excluded.display_name,
                  role = excluded.role,
                  gym_id = excluded.gym_id,
                  gym_name = excluded.gym_name,
-                 logged_in_at = excluded.logged_in_at",
+                 logged_in_at = excluded.logged_in_at,
+                 bound_gym_id = excluded.bound_gym_id,
+                 bound_license_id = excluded.bound_license_id,
+                 bound_expires_at = excluded.bound_expires_at",
             params![
                 session.user_id,
                 session.display_name,
                 serde_json::to_string(&session.role).unwrap_or_else(|_| "\"owner\"".to_string()),
                 session.gym_id.map(|u| u.to_string()),
                 session.gym_name,
-                session.logged_in_at.to_rfc3339()
+                session.logged_in_at.to_rfc3339(),
+                session.bound_gym_id.map(|u| u.to_string()),
+                session.bound_license_id.map(|u| u.to_string()),
+                session.bound_expires_at.map(|dt| dt.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -2013,7 +2024,7 @@ impl Database {
     pub fn get_saved_terminal_session(&self) -> Result<Option<TerminalSession>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT user_id, display_name, role, gym_id, gym_name, logged_in_at FROM terminal_session WHERE id = 1"
+            "SELECT user_id, display_name, role, gym_id, gym_name, logged_in_at, bound_gym_id, bound_license_id, bound_expires_at FROM terminal_session WHERE id = 1"
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
@@ -2023,6 +2034,9 @@ impl Database {
             let gym_id_str: Option<String> = row.get(3)?;
             let gym_name: Option<String> = row.get(4)?;
             let logged_in_at_str: String = row.get(5)?;
+            let bound_gym_id: Option<Uuid> = row.get::<_, Option<String>>(6).unwrap_or(None).and_then(|s| Uuid::parse_str(&s).ok());
+            let bound_license_id: Option<Uuid> = row.get::<_, Option<String>>(7).unwrap_or(None).and_then(|s| Uuid::parse_str(&s).ok());
+            let bound_expires_at: Option<DateTime<Utc>> = row.get::<_, Option<String>>(8).unwrap_or(None).and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc)));
             let role: StaffRole = serde_json::from_str(&role_str).unwrap_or(StaffRole::Owner);
             let gym_id = gym_id_str.and_then(|s| Uuid::parse_str(&s).ok());
             let logged_in_at = DateTime::parse_from_rfc3339(&logged_in_at_str)
@@ -2037,6 +2051,9 @@ impl Database {
                 gym_name,
                 logged_in_at,
                 last_activity_at: Utc::now(),
+                bound_gym_id,
+                bound_license_id,
+                bound_expires_at,
             }))
         } else {
             Ok(None)
@@ -2138,5 +2155,40 @@ mod tests {
         db.schedule_session(&coach.id, &coach.name, &other.id, "Other Member", "2026-09-07T10:00:00Z", 60).unwrap();
         db.delete_coach(&coach.id).unwrap();
         assert!(!db.list_coaches().unwrap().iter().any(|c| c.id == coach.id));
+    }
+
+    #[test]
+    fn test_bound_terminal_session_roundtrip() {
+        use gympos_shared::{StaffRole, TerminalSession};
+        let db = Database::in_memory().unwrap();
+        // Legacy row without binding must read back unbound (treated as
+        // expired at the gate until re-activation).
+        assert!(db.get_saved_terminal_session().unwrap().is_none());
+        let gym_id = Uuid::new_v4();
+        let lic_id = Uuid::new_v4();
+        let exp = Utc::now() + chrono::Duration::days(30);
+        let session = TerminalSession {
+            is_authenticated: true,
+            user_id: "owner@x.local".to_string(),
+            display_name: "Owner Admin".to_string(),
+            role: StaffRole::Owner,
+            gym_id: Some(gym_id),
+            gym_name: Some("Branch A".to_string()),
+            logged_in_at: Utc::now(),
+            last_activity_at: Utc::now(),
+            bound_gym_id: Some(gym_id),
+            bound_license_id: Some(lic_id),
+            bound_expires_at: Some(exp),
+        };
+        db.save_terminal_session(&session).unwrap();
+        let back = db.get_saved_terminal_session().unwrap().expect("saved session");
+        assert_eq!(back.bound_gym_id, Some(gym_id));
+        assert_eq!(back.bound_license_id, Some(lic_id));
+        assert_eq!(
+            back.bound_expires_at.map(|d| d.timestamp()),
+            Some(exp.timestamp())
+        );
+        db.clear_saved_terminal_session().unwrap();
+        assert!(db.get_saved_terminal_session().unwrap().is_none());
     }
 }

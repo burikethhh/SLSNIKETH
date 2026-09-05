@@ -2084,6 +2084,15 @@
                 </button>
             </form>
 
+            <!-- Step 2: branch picker (populated by owner_login_preview) -->
+            <div id="terminal-branch-step" class="w-full hidden">
+                <p id="terminal-branch-company" class="text-xs text-slate-300 font-semibold mb-2 text-center"></p>
+                <p class="text-[11px] text-slate-500 mb-3 text-center">Select which branch this terminal belongs to. Its license key is verified before activation.</p>
+                <div id="terminal-branch-list" class="w-full space-y-2 max-h-56 overflow-y-auto mb-3"></div>
+                <button type="button" onclick="backToTerminalLogin()"
+                    class="w-full py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">← Back to sign-in</button>
+            </div>
+
             <p class="text-[10px] text-slate-600 mt-5 text-center">
                 Use the same credentials as your GymPOS cloud dashboard.<br>
                 License &amp; settings will sync automatically on login.

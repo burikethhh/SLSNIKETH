@@ -31,11 +31,20 @@ async function invokeTauri(command, args = {}) {
                 return { authenticated: true, staff_id: 'staff-default-2', full_name: 'Duty Manager', username: 'manager1', role: 'manager', gym_id: null, gym_name: 'Default Branch' };
             }
             throw new Error("Invalid PIN. Access Denied.");
-        } else if (command === 'authenticate_owner') {
+        } else if (command === 'owner_login_preview') {
+            // Preview-only two-branch fixture (mirrors /owner/branches shape).
             if (args.password && args.password.length >= 6) {
-                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: null, gym_name: null };
+                return { authenticated: true, company_name: 'Titan Fitness Franchise HQ', owner_email: args.email, branches: [
+                    { gym_id: '11111111-1111-1111-1111-111111111111', name: 'Titan Fitness - Makati', tier: 'pro', has_key: true, is_active: true, is_disabled: false },
+                    { gym_id: '22222222-2222-2222-2222-222222222222', name: 'Titan Fitness - Cebu (pending key)', tier: 'basic', has_key: false, is_active: true, is_disabled: false },
+                ] };
             }
             throw new Error("Invalid owner credentials.");
+        } else if (command === 'authenticate_owner') {
+            if (args.password && args.password.length >= 6 && args.gymId) {
+                return { authenticated: true, staff_id: 'owner:' + args.email, full_name: 'Titan Fitness Franchise HQ', username: args.email, role: 'owner', gym_id: args.gymId, gym_name: 'Titan Fitness - Makati' };
+            }
+            throw new Error("Invalid owner credentials or branch selection.");
         } else if (command === 'get_terminal_session') {
             return currentTerminalSession;
         } else if (command === 'logout_terminal_session') {
@@ -2622,7 +2631,7 @@ async function refreshDashboard() {
             }
             if (licenseStateEl) licenseStateEl.innerText = "LOCKED OUT";
             if (licenseDetailEl) licenseDetailEl.innerText = "Subscription expired. Please renew.";
-            lockTerminal();
+            lockTerminalOnLicenseLoss('expired');
         } else if (statusType === 'Invalid') {
             const reason = status.reason || "License invalidated / revoked";
             if (licenseBadge) {
@@ -2631,7 +2640,7 @@ async function refreshDashboard() {
             }
             if (licenseStateEl) licenseStateEl.innerText = "REVOKED";
             if (licenseDetailEl) licenseDetailEl.innerText = reason;
-            lockTerminal();
+            lockTerminalOnLicenseLoss('revoked');
         } else {
             if (licenseBadge) {
                 licenseBadge.innerText = "UNLICENSED";
@@ -4430,8 +4439,64 @@ async function submitTerminalLogin(e) {
     if (errEl) errEl.classList.add('hidden');
 
     try {
-        const res = await invokeTauri('authenticate_owner', { email, password });
+        // Step 1: verify credentials, fetch branch list (no keys, no session).
+        const preview = await invokeTauri('owner_login_preview', { email, password });
+        if (!preview || !preview.authenticated) {
+            showTerminalLoginError('Invalid email or password. Use your GymPOS dashboard credentials.');
+            return;
+        }
+        renderBranchPicker(preview);
+    } catch (err) {
+        const msg = typeof err === 'string' ? err : (err?.message ?? 'Authentication failed.');
+        showTerminalLoginError(msg);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate Terminal`;
+        }
+    }
+}
 
+function renderBranchPicker(preview) {
+    const form = document.getElementById('terminal-login-form');
+    const step = document.getElementById('terminal-branch-step');
+    const list = document.getElementById('terminal-branch-list');
+    const company = document.getElementById('terminal-branch-company');
+    if (!form || !step || !list) return;
+    const branches = (preview && preview.branches) || [];
+    if (company) company.innerText = preview.company_name || preview.owner_email || '';
+    if (branches.length === 0) {
+        list.innerHTML = '<div class="text-xs text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2 text-center">No branches on this account yet. Create one in the Owner Portal first.</div>';
+    } else {
+        list.innerHTML = branches.map(b => {
+            const usable = b.has_key && b.is_active && !b.is_disabled;
+            const sub = !b.has_key ? 'Pending CEO key' : (!b.is_active || b.is_disabled ? 'Disabled' : `${b.tier || ''}`);
+            return `<button type="button" ${usable ? '' : 'disabled'} onclick="activateTerminalBranch('${b.gym_id}')"
+                class="w-full text-left px-3 py-2.5 rounded-xl border text-xs transition ${usable
+                    ? 'bg-purple-950/40 hover:bg-purple-900/60 border-purple-500/40 text-slate-100'
+                    : 'bg-slate-900/60 border-slate-800 text-slate-500 cursor-not-allowed'}">
+                <div class="font-bold">${escapeHtml(b.name || 'Branch')}</div>
+                <div class="text-[10px] ${usable ? 'text-purple-300' : 'text-slate-500'}">${escapeHtml(String(sub))}</div>
+            </button>`;
+        }).join('');
+    }
+    form.classList.add('hidden');
+    step.classList.remove('hidden');
+}
+
+function backToTerminalLogin() {
+    document.getElementById('terminal-branch-step')?.classList.add('hidden');
+    document.getElementById('terminal-login-form')?.classList.remove('hidden');
+    const errEl = document.getElementById('terminal-login-error');
+    if (errEl) errEl.classList.add('hidden');
+}
+
+async function activateTerminalBranch(gymId) {
+    const email = (document.getElementById('terminal-login-email')?.value || '').trim();
+    const password = document.getElementById('terminal-login-pass')?.value || '';
+    try {
+        // Step 2: re-authenticates, verifies ONLY this branch's key, binds it.
+        const res = await invokeTauri('authenticate_owner', { email, password, gymId });
         if (res && res.authenticated) {
             currentTerminalSession = {
                 is_authenticated: true,
@@ -4441,20 +4506,17 @@ async function submitTerminalLogin(e) {
                 gym_id:           res.gym_id   ?? null,
                 gym_name:         res.gym_name ?? null,
             };
-
+            backToTerminalLogin();
             unlockTerminalUI();
             try { await refreshDashboard(); } catch (_) {}
         } else {
-            showTerminalLoginError('Invalid email or password. Use your GymPOS dashboard credentials.');
+            showTerminalLoginError('Activation failed. Please try again.');
+            backToTerminalLogin();
         }
     } catch (err) {
-        const msg = typeof err === 'string' ? err : (err?.message ?? 'Authentication failed.');
+        const msg = typeof err === 'string' ? err : (err?.message ?? 'Activation failed.');
         showTerminalLoginError(msg);
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate Terminal`;
-        }
+        backToTerminalLogin();
     }
 }
 
@@ -4479,6 +4541,9 @@ function showLockScreen() {
     if (emailEl) emailEl.value = '';
     if (passEl)  passEl.value  = '';
     if (errEl)   errEl.classList.add('hidden');
+    // Reset two-step activation to step 1 (credentials)
+    document.getElementById('terminal-branch-step')?.classList.add('hidden');
+    document.getElementById('terminal-login-form')?.classList.remove('hidden');
 
     // Update header to show locked state
     const nameEl = document.getElementById('session-user-name');
@@ -4496,6 +4561,9 @@ function unlockTerminalUI() {
         lockScreen.classList.add('hidden');
         lockScreen.classList.remove('flex');
     }
+    // Fresh activation clears the license-loss latch so a future expiry
+    // toasts exactly once again.
+    licenseWasLockedOut = false;
 
     // Update header identity badge
     const nameEl = document.getElementById('session-user-name');
@@ -4517,8 +4585,34 @@ function unlockTerminalUI() {
 // lockTerminal() — called only when license expires or is revoked
 function lockTerminal() {
     currentTerminalSession = null;
+    licenseWasLockedOut = true;
     try { invokeTauri('logout_terminal_session'); } catch (_) {}
     showLockScreen();
+}
+
+// License-loss lockout, throttled to state TRANSITIONS: refreshDashboard
+// polls, so without this the terminal would re-lock + re-toast on every
+// tick while expired. First transition locks (and toasts once); steady
+// expired state only refreshes the badges above.
+let licenseWasLockedOut = false;
+function lockTerminalOnLicenseLoss(kind) {
+    if (!licenseWasLockedOut) {
+        lockTerminal();
+        try {
+            showHudToast(
+                kind === 'expired' ? 'License Expired' : 'License Revoked',
+                kind === 'expired'
+                    ? 'Subscription expired — terminal locked. Renew to reactivate.'
+                    : 'License invalidated — terminal locked. Contact the platform administrator.',
+                'danger'
+            );
+        } catch (_) {}
+    } else {
+        // Already locked: keep the lock screen up without wiping form state.
+        currentTerminalSession = null;
+        try { invokeTauri('logout_terminal_session'); } catch (_) {}
+        showLockScreen();
+    }
 }
 
 // On app start: if Rust already has a valid session (app reopened without closing),

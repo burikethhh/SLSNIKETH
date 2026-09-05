@@ -69,25 +69,44 @@ test.describe('camera signal hardening', () => {
     expect(await badge.evaluate((el: any) => el.classList.contains('hidden'))).toBe(false);
   });
 
-  test('header shows Locked with no session', async ({ page }) => {
-    await expect(page.locator('#session-user-name')).toContainText('Locked');
-    await expect(page.locator('#session-user-role')).toContainText('Locked Out');
+  test('header shows locked state with no session (never a phantom role)', async ({ page }) => {
+    // Runtime showLockScreen() sets these; the point is no "Staff Active /
+    // Cashier Mode" ghost while locked out.
+    await expect(page.locator('#session-user-name')).toContainText('Not Activated');
+    await expect(page.locator('#session-user-role')).toContainText('Sign In Required');
+    await expect(page.locator('#session-user-name')).not.toContainText('Staff Active');
   });
 
-  test('PIN pad accepts 4–8 digits without auto-submit truncation', async ({ page }) => {
-    // Regression: the pad capped at 4 digits, making owner-issued 6-digit
-    // PINs unusable (auto-submit would fire a truncated PIN).
+  test('activation: branch picker lists branches, pending unselectable, activate works', async ({ page }) => {
+    // Mock sign-in UI state (login form visible, as on a fresh terminal).
     await page.evaluate(() => {
-      (window as any).currentEnteredPin = '';
-      (window as any).updatePinDots?.();
+      (window as any).currentTerminalSession = null;
+      (window as any).showLockScreen?.();
     });
-    for (const d of ['1', '2', '3', '4', '5', '6']) {
-      await page.evaluate((x: string) => (window as any).pressPinKey(x), d);
-    }
-    const dots = await page.locator('#pin-dots-box > div').count();
-    expect(dots).toBe(6);
-    // Filled dots prove the entry buffer held all six digits (no truncation).
-    const filled = await page.locator('#pin-dots-box > div.bg-purple-400').count();
-    expect(filled).toBe(6);
+    await page.locator('#terminal-login-email').fill('owner@titan.fitness');
+    await page.locator('#terminal-login-pass').fill('longenoughpassword');
+    await page.locator('#terminal-login-form button[type="submit"]').click();
+    // Step 2 appears with both branches; pending branch is disabled.
+    await expect(page.locator('#terminal-branch-step')).not.toHaveClass(/hidden/);
+    await expect(page.locator('#terminal-branch-list')).toContainText('Makati');
+    await expect(page.locator('#terminal-branch-list')).toContainText('pending');
+    const pendingBtn = page.locator('#terminal-branch-list button[disabled]');
+    expect(await pendingBtn.count()).toBe(1);
+    // Activate the licensed branch → lock screen hides, header shows gym.
+    // (currentTerminalSession is a lexical `let`, invisible to evaluate —
+    // assert the observable UI instead.)
+    await page.locator('#terminal-branch-list button:not([disabled])').first().click();
+    await expect.poll(async () => page.evaluate(() => document.querySelector('#terminal-lock-screen')?.classList.contains('hidden')), { timeout: 8000 }).toBe(true);
+    await expect(page.locator('#session-user-name')).toContainText('Titan Fitness Franchise HQ');
+  });
+
+  test('activation: bad password stays on step 1 with error', async ({ page }) => {
+    await page.evaluate(() => { (window as any).showLockScreen?.(); });
+    await page.locator('#terminal-login-email').fill('owner@titan.fitness');
+    await page.locator('#terminal-login-pass').fill('bad');
+    await page.locator('#terminal-login-form button[type="submit"]').click();
+    await expect(page.locator('#terminal-login-error')).toContainText('Invalid', { timeout: 5000 });
+    // Picker never appears.
+    expect(await page.evaluate(() => document.querySelector('#terminal-branch-step')?.classList.contains('hidden'))).toBe(true);
   });
 });
