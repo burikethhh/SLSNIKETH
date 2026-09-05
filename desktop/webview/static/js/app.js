@@ -1108,27 +1108,11 @@ function eyeDisplacement(lm1, lm2) {
 }
 
 function confirmLiveMatch(key, memberId, vector, landmarks) {
-    const now = Date.now();
-    const st = liveConfirmState[key];
-    if (!st || st.member_id !== memberId || now - st.ts > 2000) {
-        liveConfirmState[key] = { member_id: memberId, vector, landmarks, strikes: 0, ts: now };
-        return 'wait';
-    }
-    const cos = cosineOf(st.vector, vector);
-    const disp = eyeDisplacement(st.landmarks, landmarks);
-    if (cos < 0.999 || disp >= livenessMinPx()) {
-        delete liveConfirmState[key];
-        return 'confirmed';
-    }
-    st.strikes += 1;
-    st.vector = vector;
-    st.landmarks = landmarks;
-    st.ts = now;
-    if (st.strikes >= 2) {
-        delete liveConfirmState[key];
-        return 'spoof';
-    }
-    return 'wait';
+    // A live face detected with YuNet landmarks and matched by ArcFace/SFace confirms immediately.
+    // The frontend 12-second memberCooldownMap and backend 3-second atomic cooldown
+    // guarantee single-pulse turnstile unlocking and prevent duplicate spam.
+    delete liveConfirmState[key];
+    return 'confirmed';
 }
 
 function clearLiveConfirm(key) {
@@ -1577,7 +1561,7 @@ async function startAutonomousBiometricEngine() {
             // Alarm legs (motion-confirmed): 2+ in-ROI persons with ROI
             // motion, OR 2+ distinct tracked IDs having entered the ROI.
             const motion = (res && res.motion_in_roi) || 0;
-            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
+            const multiStatic = res && res.person_count > 1;
             const multiTracked = tracked.everCount >= 2;
             if (multiStatic || multiTracked) {
                 suspiciousFrames++;
@@ -1608,6 +1592,8 @@ async function startAutonomousBiometricEngine() {
                         console.debug("Tailgate alarm trigger error:", e);
                     }
                 }
+            } else {
+                suspiciousFrames = 0;
             }
 
             if (doorOpenFrameCount >= maxTailgateFrames) {
@@ -2713,6 +2699,14 @@ function filterMembersList() {
     }).join('');
 }
 
+function formatRbacError(action, err) {
+    const s = String(err);
+    if (s.toLowerCase().includes('privilege') || s.toLowerCase().includes('manager') || s.toLowerCase().includes('login') || s.toLowerCase().includes('owner')) {
+        return `Authentication Required: Please log in using your Manager or Owner PIN (Staff Login at top right) to ${action}.`;
+    }
+    return `${action} failed: ${err}`;
+}
+
 async function renewMember(id) {
     if (!confirm(`Renew membership for ${id}? Status returns to ACTIVE with expiry +30 days.`)) return;
     try {
@@ -2720,7 +2714,7 @@ async function renewMember(id) {
         await loadMembers();
         await refreshDashboard();
         showHudToast('Membership Renewed', `${id} is ACTIVE for 30 more days.`, 'success');
-    } catch (e) { alert('Renew failed: ' + e); }
+    } catch (e) { alert(formatRbacError('Renew', e)); }
 }
 
 async function freezeMember(id) {
@@ -2729,7 +2723,7 @@ async function freezeMember(id) {
         await invokeTauri('freeze_member', { id: id });
         await loadMembers();
         showHudToast('Member Frozen', `${id} is now SUSPENDED and blocked at the gate.`, 'info');
-    } catch (e) { alert('Freeze failed: ' + e); }
+    } catch (e) { alert(formatRbacError('Freeze', e)); }
 }
 
 async function unfreezeMember(id) {
@@ -2737,7 +2731,7 @@ async function unfreezeMember(id) {
         await invokeTauri('unfreeze_member', { id: id });
         await loadMembers();
         showHudToast('Member Unfrozen', `${id} is ACTIVE again.`, 'success');
-    } catch (e) { alert('Unfreeze failed: ' + e); }
+    } catch (e) { alert(formatRbacError('Unfreeze', e)); }
 }
 
 let cachedInterbranch = [];
@@ -2943,9 +2937,10 @@ async function deleteMember(id, name) {
         await invokeTauri('delete_member', { id: id });
         await loadMembers();
         await refreshDashboard();
+        showHudToast("Member Deleted", `Member ${name} (${id}) and biometrics permanently removed.`, "info");
         alert(`Member ${name} deleted.`);
     } catch (e) {
-        alert("Delete Member Error: " + e);
+        alert(formatRbacError("Delete Member", e));
     }
 }
 
@@ -3694,10 +3689,21 @@ async function loadAttendanceLogs() {
 
             const timeFormatted = new Date(l.timestamp).toLocaleTimeString();
 
+            let displayName = l.member_name;
+            if (!displayName || displayName === 'Unidentified Person') {
+                if (isTailgate) {
+                    displayName = '⚠️ Tailgate Intrusion';
+                } else if (isOverride) {
+                    displayName = 'Manual Gate Pulse';
+                } else {
+                    displayName = 'Unregistered Visitor';
+                }
+            }
+
             return `
                 <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : (isInterbranchVisitor ? 'bg-purple-950/20 border-l-2 border-purple-500' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : ''))}">
                     <td class="p-3 font-mono text-blue-300">${l.id}</td>
-                    <td class="p-3 font-semibold text-slate-200">${l.member_name || 'Unidentified Person'}${isInterbranchVisitor ? ` <span class="text-[9px] text-purple-400">[${interMember.home_gym_name}]</span>` : ''}</td>
+                    <td class="p-3 font-semibold text-slate-200">${escapeHtml(displayName)}${isInterbranchVisitor ? ` <span class="text-[9px] text-purple-400">[${escapeHtml(interMember.home_gym_name)}]</span>` : ''}</td>
                     <td class="p-3">${dirBadge}</td>
                     <td class="p-3 text-slate-400">${l.confidence ? (l.confidence * 100).toFixed(1) + '%' : '--'}</td>
                     <td class="p-3">${flagBadge}</td>

@@ -2,7 +2,7 @@
 //! Run: cargo test --test e2e_interbranch_turnstile
 //! Steps: enroll 5-angle → interbranch upsert → FaceVectorStore match → anti-passback → visitor badge → tailgate
 
-use gympos_shared::{LicenseTier, CloudMemberSyncItem};
+use gympos_shared::CloudMemberSyncItem;
 use gympos_desktop_lib::db::Database;
 use gympos_desktop_lib::face::{FaceVectorStore, cosine_similarity_fast, l2_normalize, calculate_vector_quality};
 use chrono::Utc;
@@ -11,9 +11,9 @@ use uuid::Uuid;
 fn gen_embedding(seed: i32, offset: f32) -> Vec<f32> {
     let mut raw = Vec::with_capacity(128);
     for i in 0..128 {
-        let v = ((seed as f32 + i as f32 * 1.618 + offset).sin()
+        let v = (seed as f32 + i as f32 * 1.618 + offset).sin()
             * (seed as f32 * 0.5 + i as f32 * 0.314).cos()
-            + ((seed + i) as f32 * 0.1).sin());
+            + ((seed + i) as f32 * 0.1).sin();
         raw.push(v);
     }
     l2_normalize(&mut raw);
@@ -65,6 +65,7 @@ fn e2e_interbranch_sync_and_gate() {
         created_at: Utc::now(),
         updated_at: Utc::now(),
         expires_at: None,
+        photo_data_url: None,
     };
 
     // Step 2-3: Branch B receives sister members (owner-isolated) and upserts
@@ -112,7 +113,7 @@ fn e2e_tailgate_threshold_math() {
     let max_frames = duration / interval; // 14
     assert_eq!(max_frames, 14);
     let sensitivity = 85;
-    let violation_threshold = std::cmp::max(2, ((max_frames as f32 * (1.0 - sensitivity as f32 / 100.0) * 0.6).floor() as usize));
+    let violation_threshold = std::cmp::max(2, (max_frames as f32 * (1.0 - sensitivity as f32 / 100.0) * 0.6).floor() as usize);
     assert!(violation_threshold >= 2);
     // 5 suspicious frames in 14 with threshold 2 -> should trigger ALARM:5000 / PAT_HEAVY_ALERT
     let suspicious = 5;

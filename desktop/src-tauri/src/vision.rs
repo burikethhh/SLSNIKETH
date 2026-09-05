@@ -535,7 +535,7 @@ impl PersonCounter {
         let small = image::imageops::resize(image, MOTION_W, MOTION_H, FilterType::Triangle);
         let thresh = self.motion_thresh();
         let mut st = self.motion.lock().unwrap_or_else(|e| e.into_inner());
-        let n = (MOTION_W * MOTION_H) as usize;
+        let _n = (MOTION_W * MOTION_H) as usize;
         if !st.initialized {
             // Seed background with the first frame (no motion reported).
             for (m, px) in st.mean.iter_mut().zip(small.as_raw().chunks_exact(3)) {

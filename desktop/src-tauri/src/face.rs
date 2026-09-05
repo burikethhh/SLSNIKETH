@@ -396,7 +396,7 @@ impl FaceVectorStore {
             // Runner-up tracks the best score from a DIFFERENT member so the
             // margin measures identification separation, not the winner's
             // own angle gallery.
-            let mut note_score = |score: f32,
+            let note_score = |score: f32,
                                   member_id: &str,
                                   highest_score: &mut f32,
                                   runner_up: &mut f32,

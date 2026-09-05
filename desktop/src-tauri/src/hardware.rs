@@ -196,14 +196,15 @@ impl HardwareManager {
     }
 
     pub fn unlock_door(&self, duration_ms: u32) -> Result<String, String> {
-        let cmd = format!("UNLOCK:{}", duration_ms);
+        let secs = std::cmp::max(1, duration_ms / 1000);
+        let cmd = format!("UNLOCK:{}", secs);
         self.send_command(&cmd)?;
-        Ok(format!("Unlock command sent ({}ms)", duration_ms))
+        Ok(format!("Unlock command sent ({}s)", secs))
     }
 
     pub fn trigger_alarm(&self, duration_ms: u32) -> Result<String, String> {
-        let cmd = format!("ALARM:{}", duration_ms);
-        self.send_command(&cmd)?;
+        let cmd = "ALERT_TAILGATE";
+        self.send_command(cmd)?;
         Ok(format!("Alarm strobe & buzzer triggered ({}ms)", duration_ms))
     }
 

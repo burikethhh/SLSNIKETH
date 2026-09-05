@@ -180,7 +180,7 @@ pub fn trigger_tailgate_alarm(reason: Option<String>, state: State<'_, AppContex
     // 2. Log high-priority security violation
     let log = state
         .db
-        .log_attendance(None, None, "in", None, true)
+        .log_attendance(None, Some("⚠️ Tailgate Intrusion"), "in", None, true)
         .map_err(|e| e.to_string())?;
 
     Ok(json!({
@@ -573,7 +573,7 @@ pub fn log_tailgate_event(state: State<'_, AppContext>) -> Result<serde_json::Va
     let _ = state.hardware.trigger_alarm(4000);
     let log = state
         .db
-        .log_attendance(None, None, "in", None, true)
+        .log_attendance(None, Some("⚠️ Tailgate Intrusion"), "in", None, true)
         .map_err(|e| e.to_string())?;
 
     Ok(json!({

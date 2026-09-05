@@ -100,6 +100,19 @@ pub fn run() {
     let sync_worker = CloudSyncWorker::new(db_arc.clone(), license_arc.clone(), None);
     sync_worker.start_background_sync();
 
+    // Background 60s janitor: purge expired walk-in profiles from memory
+    let face_store_janitor = face_store.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let purged = face_store_janitor.purge_expired();
+            if purged > 0 {
+                tracing::info!("Janitor: purged {} expired walk-in profile(s) from memory", purged);
+            }
+        }
+    });
+
     let app_context = AppContext {
         db: db_arc,
         license: license_arc,
