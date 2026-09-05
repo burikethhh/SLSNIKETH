@@ -16,7 +16,16 @@ use std::sync::Arc;
 use sync::CloudSyncWorker;
 
 pub fn run() {
-    let db_path = "gympos_local.sqlite";
+    // Resolve DB path relative to the running executable so the app works
+    // correctly both after NSIS installation (Program Files\GymPOS\) and
+    // during development (cargo run from the workspace root).
+    let db_path = {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        exe_dir.join("gympos_local.sqlite")
+    };
     let db = Database::new(db_path).expect("Failed to initialize SQLite database");
     let license = LicenseManager::new(None);
     let face_store = FaceVectorStore::new();
@@ -118,6 +127,9 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        // GitHub-Releases auto-updater (signed; see updater.rs + tauri.conf
+        // plugins.updater). Registered before manage() so commands can use it.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             use tauri::Manager;
             if let Some(window) = app.get_webview_window("main") {

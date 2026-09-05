@@ -1,0 +1,128 @@
+name: GymPOS — Build & Publish Standalone Installer
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HOW TO SHIP AN UPDATE
+# ═══════════════════════════════════════════════════════════════════════════════
+#   1. Bump `version` in BOTH:
+#        desktop/src-tauri/Cargo.toml
+#        desktop/src-tauri/tauri.conf.json          ← must match exactly
+#   2. Commit all changes and push to main.
+#   3. Tag and push the tag:
+#        git tag v0.2.0
+#        git push origin v0.2.0
+#   4. This workflow runs automatically, compiles the Rust binary, packages
+#      the NSIS installer (with ONNX models + seed DB bundled inside), signs
+#      it with your Tauri private key, and creates a GitHub Release containing:
+#        • GymPOS_<version>_x64-setup.exe  — the installer
+#        • GymPOS_<version>_x64-setup.exe.sig — updater signature
+#        • latest.json                     — updater manifest
+#   5. Every installed terminal polls latest.json on next launch and
+#      auto-downloads + installs the update (signature-verified, zero-touch).
+#
+# SECRETS REQUIRED (Settings → Secrets → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY  — minisign private key (generate with tauri signer)
+#   GITHUB_TOKEN               — automatic, no setup needed
+# ═══════════════════════════════════════════════════════════════════════════════
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows-installer:
+    permissions:
+      contents: write        # needed to create GitHub Release + upload assets
+    runs-on: windows-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Rust toolchain ──────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # ── 3. Rust build cache ────────────────────────────────────────────────
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: gympos-saas/desktop/src-tauri -> target
+
+      # ── 4. Node.js (Tauri CLI bundler dependency) ─────────────────────────
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # ── 5. Verify ONNX models exist (fail fast) ───────────────────────────
+      - name: Verify ONNX models are present
+        shell: pwsh
+        run: |
+          $models = @(
+            "gympos-saas/desktop/models/face_detection_yunet_2023mar.onnx",
+            "gympos-saas/desktop/models/face_recognition_sface_2021dec.onnx",
+            "gympos-saas/desktop/models/yolov8n.onnx"
+          )
+          foreach ($m in $models) {
+            if (-not (Test-Path $m)) {
+              Write-Error "Missing model: $m — cannot build standalone installer."
+              exit 1
+            }
+            $sz = [math]::Round((Get-Item $m).Length / 1MB, 1)
+            Write-Host "  ✓ $m ($sz MB)"
+          }
+
+      # ── 6. Verify seed SQLite exists ──────────────────────────────────────
+      - name: Verify seed database
+        shell: pwsh
+        run: |
+          $db = "gympos-saas/bin/gympos_local.sqlite"
+          if (-not (Test-Path $db)) {
+            Write-Error "Missing seed DB: $db"
+            exit 1
+          }
+          $sz = [math]::Round((Get-Item $db).Length / 1KB, 0)
+          Write-Host "  ✓ Seed DB: $db (${sz} KB)"
+
+      # ── 7. Build + publish via tauri-action ──────────────────────────────
+      #    tauri-action reads tauri.conf.json, compiles the binary, runs the
+      #    NSIS bundler (with resources: ../models/* + seed DB), signs the
+      #    installer, creates the GitHub Release, and uploads all artifacts.
+      - name: Build and publish installer (Tauri Action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "GymPOS ${{ github.ref_name }}"
+          releaseBody: |
+            ## GymPOS ${{ github.ref_name }} — Standalone Installer
+
+            ### What's included
+            - ✅ GymPOS desktop application (fully offline-capable)
+            - ✅ ONNX AI models bundled (face detection/recognition + anti-tailgate YOLOv8)
+            - ✅ Seed database with default staff accounts
+            - ✅ Auto-updater (terminals will self-update from this release)
+
+            ### Installation
+            1. Download `GymPOS_*_x64-setup.exe`
+            2. Run as Administrator → installs to `Program Files\GymPOS\`
+            3. Launch from Desktop shortcut
+
+            ### Default PIN Accounts
+            | Role | PIN |
+            |------|-----|
+            | Cashier | 1234 |
+            | Manager | 8888 |
+
+            ### Auto-Update
+            Running terminals on older versions will detect this release automatically
+            on next launch and prompt to install. No manual steps required.
+          releaseDraft: false
+          prerelease: false
+          projectPath: gympos-saas/desktop/src-tauri

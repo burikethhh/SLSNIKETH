@@ -168,3 +168,83 @@ Located in `gympos-saas/desktop/models/`:
 - **Face Detection**: `face_detection_yunet_2023mar.onnx`
 - **Face Recognition**: `face_recognition_sface_2021dec.onnx` (128-d normalized embeddings)
 - **Anti-Tailgating**: `yolov8n.onnx` (Person tracking & multi-occupancy trigger)
+
+---
+
+## 📦 Standalone Installer
+
+The GymPOS installer is a **single `.exe`** that bundles:
+- GymPOS desktop application (Tauri v2 / Rust)
+- All ONNX AI models (~65 MB)
+- Seed SQLite database with default staff accounts
+- WebView2 bootstrapper (auto-installs if missing)
+
+Installs to `C:\Program Files\GymPOS\` with Desktop + Start Menu shortcuts.
+
+### Building Locally
+
+```powershell
+.\scripts\build-installer.ps1
+# Output: bin\GymPOS-Setup-<version>-x64.exe
+```
+
+Requirements: Rust stable, `cargo install tauri-cli --version "^2"`, NSIS 3.x
+
+---
+
+## 🚀 Shipping an Update
+
+Updates are fully automated via GitHub Actions + Tauri's signed updater.
+
+### Steps
+
+**1. Bump the version** (must match in BOTH files):
+
+```toml
+# desktop/src-tauri/Cargo.toml
+version = "0.2.0"
+```
+
+```json
+// desktop/src-tauri/tauri.conf.json
+"version": "0.2.0"
+```
+
+**2. Commit and push:**
+
+```bash
+git add -A
+git commit -m "release: v0.2.0 — <describe what changed>"
+git push origin main
+```
+
+**3. Tag and push the release tag:**
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+**4. GitHub Actions runs automatically** (`.github/workflows/release.yml`):
+- Compiles the Rust binary (release mode)
+- Bundles NSIS installer with all models + seed DB
+- Signs the installer with `TAURI_SIGNING_PRIVATE_KEY`
+- Creates a GitHub Release containing:
+  - `GymPOS_0.2.0_x64-setup.exe` — the standalone installer
+  - `GymPOS_0.2.0_x64-setup.exe.sig` — updater signature
+  - `latest.json` — version manifest for auto-updater
+
+**5. Installed terminals auto-update:**
+- On next launch, the app checks `latest.json` from GitHub Releases
+- If a newer version is found, it downloads + installs silently (signature-verified)
+- No manual action needed at the gym
+
+### Required GitHub Secret
+
+In your repo → **Settings → Secrets → Actions**, add:
+
+| Secret Name | Value |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | Your minisign private key (generate once with `cargo tauri signer generate`) |
+
+The matching public key is already baked into `tauri.conf.json` → `plugins.updater.pubkey`.
