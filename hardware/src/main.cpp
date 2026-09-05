@@ -83,21 +83,73 @@ static const int LCD_SCL_PIN    = 19;  // I2C SCL
 static const int BUZZER_PIN     = 9;   // 5V active buzzer
 #endif
 
-// ───────────── I2C LCD Detection ─────────────
-static uint8_t detectLcdAddress() {
-  Serial.println("Detecting I2C LCD backpack address...");
-  // Candidates: 0x27 (PCF8574T default), 0x3F (PCF8574AT default), 0x26, 0x38, 0x20
-  const uint8_t candidates[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
-  for (uint8_t addr : candidates) {
-    Wire.beginTransmission(addr);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("  Found I2C LCD at 0x");
-      Serial.println(addr, HEX);
-      return addr;
+// ───────────── I2C Pin & Address Auto-Detection ─────────────
+struct I2cResult {
+  int sda;
+  int scl;
+  uint8_t addr;
+};
+
+int activeSdaPin = LCD_SDA_PIN;
+int activeSclPin = LCD_SCL_PIN;
+
+static I2cResult scanAllPinsForLcd() {
+  Serial.println("Auto-scanning board pins for I2C LCD backpack...");
+  const uint8_t candidateAddrs[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
+
+  // Priority pin pairs (18/19, reversed, common C3 alternate pins)
+  const int priorityPairs[][2] = {
+    {18, 19}, {19, 18},
+    {6, 7},   {7, 6},
+    {4, 5},   {5, 4},
+    {8, 9},   {9, 8},
+    {0, 1},   {1, 0},
+    {2, 3},   {3, 2},
+    {10, 18}, {18, 10}
+  };
+
+  for (auto& pair : priorityPairs) {
+    int sda = pair[0];
+    int scl = pair[1];
+    Wire.end();
+    Wire.setPins(sda, scl);
+    Wire.begin(sda, scl);
+    Wire.setTimeOut(30);
+    Wire.setClock(100000);
+    for (uint8_t a : candidateAddrs) {
+      Wire.beginTransmission(a);
+      if (Wire.endTransmission() == 0) {
+        Serial.printf("  >>> SUCCESS: I2C LCD found on SDA=GPIO%d, SCL=GPIO%d, Addr=0x%02X <<<\n", sda, scl, a);
+        return {sda, scl, a};
+      }
     }
   }
-  Serial.println("  No candidate ACKed, defaulting to 0x27");
-  return 0x27;
+
+  // Full sweep across all GPIO header pins
+  const int allHeaderPins[] = {18, 19, 6, 7, 4, 5, 8, 9, 0, 1, 2, 3, 10};
+  const int count = sizeof(allHeaderPins) / sizeof(allHeaderPins[0]);
+  for (int i = 0; i < count; i++) {
+    for (int j = 0; j < count; j++) {
+      if (i == j) continue;
+      int sda = allHeaderPins[i];
+      int scl = allHeaderPins[j];
+      Wire.end();
+      Wire.setPins(sda, scl);
+      Wire.begin(sda, scl);
+      Wire.setTimeOut(15);
+      Wire.setClock(100000);
+      for (uint8_t a : candidateAddrs) {
+        Wire.beginTransmission(a);
+        if (Wire.endTransmission() == 0) {
+          Serial.printf("  >>> SUCCESS: I2C LCD found on SDA=GPIO%d, SCL=GPIO%d, Addr=0x%02X <<<\n", sda, scl, a);
+          return {sda, scl, a};
+        }
+      }
+    }
+  }
+
+  Serial.println("  No I2C device ACKed on any pin pair. Defaulting to SDA=18, SCL=19, Addr=0x27");
+  return {18, 19, 0x27};
 }
 
 // ───────────── Peripherals ───────────────────
@@ -177,17 +229,25 @@ void buzzerTick() {
 // ───────────── LCD Helpers ───────────────────
 void lcdShowIdle();
 
-void initLcdHardware(uint8_t addr) {
+void initLcdHardware(int sda, int scl, uint8_t addr) {
+  activeSdaPin = sda;
+  activeSclPin = scl;
   if (lcd) {
     delete lcd;
     lcd = nullptr;
   }
+  Wire.end();
+  Wire.setPins(activeSdaPin, activeSclPin);
+  Wire.begin(activeSdaPin, activeSclPin);
+  Wire.setTimeOut(50);
+  Wire.setClock(100000);
+
   lcd = new LiquidCrystal_I2C(addr, 16, 2);
   // init() executes full HD44780 4-bit initialization
   lcd->init();
-  // Ensure Wire configuration persists on correct pins
-  Wire.setPins(LCD_SDA_PIN, LCD_SCL_PIN);
-  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  // Ensure Wire configuration persists on active pins
+  Wire.setPins(activeSdaPin, activeSclPin);
+  Wire.begin(activeSdaPin, activeSclPin);
   Wire.setTimeOut(50);
   Wire.setClock(100000);
 
@@ -435,9 +495,9 @@ void processSerialCommand(const String& cmdRaw) {
 
   // ── LCD_REINIT ──
   if (base == "LCD_REINIT") {
-    uint8_t addr = detectLcdAddress();
-    initLcdHardware(addr);
-    Serial.println("ACK:LCD_REINIT");
+    I2cResult res = scanAllPinsForLcd();
+    initLcdHardware(res.sda, res.scl, res.addr);
+    Serial.printf("ACK:LCD_REINIT:SDA=%d:SCL=%d:ADDR=0x%02X\n", res.sda, res.scl, res.addr);
     return;
   }
 
@@ -474,15 +534,9 @@ void setup() {
   // Immediate audible feedback that MCU has booted
   buzzerStart(PAT_STARTUP);
 
-  // Configure I2C bus pins explicitly
-  Wire.setPins(LCD_SDA_PIN, LCD_SCL_PIN);
-  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
-  Wire.setTimeOut(50);
-  Wire.setClock(100000);
-  delay(150);
-
-  uint8_t lcdAddr = detectLcdAddress();
-  initLcdHardware(lcdAddr);
+  // Automatically probe all board pins for the I2C LCD backpack
+  I2cResult res = scanAllPinsForLcd();
+  initLcdHardware(res.sda, res.scl, res.addr);
 
   Serial.println("READY");
 }
