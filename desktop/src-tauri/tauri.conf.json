@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "GymPOS",
   "version": "0.1.0",
-  "identifier": "com.gympos.app",
+  "identifier": "com.gympos.desktop",
   "build": {
     "frontendDist": "../webview"
   },
@@ -46,9 +46,7 @@
       "nsis": {
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
-        "headerImage": "icons/128x128.png",
-        "sidebarImage": "icons/128x128@2x.png",
-        "installMode": "perMachine",
+        "installMode": "both",
         "languages": ["English"],
         "template": null
       }

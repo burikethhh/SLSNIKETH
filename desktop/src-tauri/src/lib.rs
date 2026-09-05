@@ -17,14 +17,31 @@ use sync::CloudSyncWorker;
 
 pub fn run() {
     // Resolve DB path relative to the running executable so the app works
-    // correctly both after NSIS installation (Program Files\GymPOS\) and
-    // during development (cargo run from the workspace root).
+    // Resolve SQLite database path: in development or user mode, use exe directory;
+    // if exe directory is read-only (e.g. Program Files), fall back to %LOCALAPPDATA%\GymPOS.
     let db_path = {
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        exe_dir.join("gympos_local.sqlite")
+        let candidate = exe_dir.join("gympos_local.sqlite");
+
+        let is_writable = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(&candidate)
+            .is_ok();
+
+        if is_writable {
+            candidate
+        } else if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let app_data_dir = std::path::PathBuf::from(local_app_data).join("GymPOS");
+            let _ = std::fs::create_dir_all(&app_data_dir);
+            app_data_dir.join("gympos_local.sqlite")
+        } else {
+            candidate
+        }
     };
     let db = Database::new(db_path).expect("Failed to initialize SQLite database");
     let license = LicenseManager::new(None);

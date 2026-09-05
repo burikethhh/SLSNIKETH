@@ -34,7 +34,10 @@ pub fn find_models_dir() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             candidates.push(exe_dir.join("models"));
+            candidates.push(exe_dir.join("_up_").join("models"));
             candidates.push(exe_dir.join("resources").join("models"));
+            candidates.push(exe_dir.join("resources").join("_up_").join("models"));
+            candidates.push(exe_dir.join("..").join("models"));
         }
     }
 
