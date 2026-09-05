@@ -351,9 +351,9 @@
                     <div class="grid grid-cols-2 gap-3">
                         <input id="owner-new-branch-name" class="input-dark text-xs" placeholder="Branch name, e.g. SM Makati Branch">
                         <select id="owner-new-branch-tier" class="input-dark text-xs">
-                            <option value="basic">Basic — $99 (1 branch max)</option>
-                            <option value="pro" selected>Pro — $199 (5 branches)</option>
-                            <option value="ultra">Ultra — $349 (20 branches)</option>
+                            <option value="basic">Basic — ₱99 (1 branch max)</option>
+                            <option value="pro" selected>Pro — ₱199 (5 branches)</option>
+                            <option value="ultra">Ultra — ₱349 (20 branches)</option>
                         </select>
                     </div>
                     <div class="flex gap-2">
@@ -1391,13 +1391,11 @@
         // --- Products Catalog CRUD ---
         function renderCatalogTable() {
             const tbody = document.getElementById('catalog-tbody');
+            // No demo fallbacks: the catalog starts empty and only contains
+            // what the owner creates. Anything here syncs to every terminal.
             if (cachedProducts.length === 0) {
-                cachedProducts = [
-                    { id: 'prod-001', name: 'Optimum Whey Protein 2lb', category: 'Supplements', price: 1850.00, stock: 24, updated_at: new Date().toISOString() },
-                    { id: 'prod-002', name: 'C4 Pre-Workout Icy Blue', category: 'Supplements', price: 1450.00, stock: 18, updated_at: new Date().toISOString() },
-                    { id: 'prod-003', name: 'Monster Energy Ultra Zero', category: 'Beverages', price: 120.00, stock: 65, updated_at: new Date().toISOString() },
-                    { id: 'prod-004', name: 'Titan Quick-Dry Gym Towel', category: 'Merchandise', price: 350.00, stock: 40, updated_at: new Date().toISOString() }
-                ];
+                tbody.innerHTML = '<tr><td colspan="6" class="py-8 text-center text-slate-500">No products yet — click + Add Product to build your catalog.</td></tr>';
+                return;
             }
 
             tbody.innerHTML = cachedProducts.map((p, idx) => `
@@ -1486,12 +1484,10 @@
         // --- Plans CRUD (customizable rate cards: owner-defined name + tag + price + period) ---
         function renderPlansGrid() {
             const grid = document.getElementById('plans-grid');
+            // No demo fallbacks: rate cards start empty, owner-defined only.
             if (cachedPlans.length === 0) {
-                cachedPlans = [
-                    { id: 'plan-regular', name: 'Regular Monthly All-Access', tag: 'GYM ACCESS', billing_period: 'monthly', price_monthly: 1500.00, student_discount_pct: 15.0, benefits: ['Gym Access 24/7', 'Locker & Shower', '1 Free Coach Session'] },
-                    { id: 'plan-student', name: 'Student 3-Month Pass', tag: 'STUDENT', billing_period: '3-months', price_monthly: 1200.00, student_discount_pct: 20.0, benefits: ['Valid Student ID Required', 'Peak Access 6AM-5PM', 'Locker Access'] },
-                    { id: 'plan-vip', name: 'VIP Executive Annual', tag: 'VIP', billing_period: '1-year', price_monthly: 2800.00, student_discount_pct: 10.0, benefits: ['Multi-Branch All-Access', 'Dedicated VIP Locker', 'Unlimited Coach Booking', 'Towel Service'] }
-                ];
+                grid.innerHTML = '<div class="col-span-full py-8 text-center text-slate-500 text-xs">No membership plans yet — create your first rate card to feed the registration kiosks.</div>';
+                return;
             }
 
             const periodLabel = (p) => ({ 'session': '/ session', 'monthly': '/ month', '3-months': '/ 3 months', '6-months': '/ 6 months', '1-year': '/ year' }[(p.billing_period || 'monthly')] || '/ month');
@@ -1609,11 +1605,10 @@
         // --- Promos CRUD ---
         function renderPromosTable() {
             const tbody = document.getElementById('promos-tbody');
+            // No demo fallbacks: vouchers start empty, owner-defined only.
             if (cachedPromos.length === 0) {
-                cachedPromos = [
-                    { code: 'SUMMER2026', discount_type: 'percent', discount_value: 20.0, min_spend: 500.0, expires_at: '2026-12-31', is_active: true },
-                    { code: 'FIT500', discount_type: 'fixed', discount_value: 500.0, min_spend: 2000.0, expires_at: '2026-10-30', is_active: true }
-                ];
+                tbody.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500">No promo codes yet — create one to offer POS discounts.</td></tr>';
+                return;
             }
 
             tbody.innerHTML = cachedPromos.map((pr, idx) => `

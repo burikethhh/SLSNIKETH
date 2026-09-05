@@ -222,22 +222,13 @@ impl Database {
             [],
         )?;
 
-        // Seed default POS inventory if empty
-        let product_count: i64 = conn.query_row("SELECT COUNT(*) FROM products", [], |r| r.get(0))?;
-        if product_count == 0 {
-            conn.execute_batch(
-                r#"
-                INSERT INTO products (id, name, price, stock, category) VALUES
-                    ('prod-1', 'Whey Protein Isolate (2lb)', 45.00, 40, 'supplements'),
-                    ('prod-2', 'Pre-Workout Igniter (Blue Raspberry)', 35.00, 30, 'supplements'),
-                    ('prod-3', 'Titan Gym Shaker Bottle (750ml)', 15.00, 60, 'merch'),
-                    ('prod-4', 'Electrolyte Mineral Sports Drink', 3.50, 120, 'beverages'),
-                    ('prod-5', 'Heavy Duty Lifting Straps', 18.00, 25, 'gear'),
-                    ('prod-6', 'BCAA Recovery Powder (30 Servings)', 28.00, 35, 'supplements'),
-                    ('prod-7', 'Titan Gym Performance T-Shirt', 25.00, 50, 'merch');
-                "#,
-            )?;
-        }
+        // POS catalog is owner-managed ONLY (portal → cloud → sync). No local
+        // seeds: hard-coded demo products would pollute real POS sales and
+        // resurrect on every fresh database. Purge legacy demo rows once.
+        let _ = conn.execute(
+            "DELETE FROM products WHERE id IN ('prod-1','prod-2','prod-3','prod-4','prod-5','prod-6','prod-7')",
+            [],
+        );
 
         // Seed coaches if empty
         let coach_count: i64 = conn.query_row("SELECT COUNT(*) FROM coaches", [], |r| r.get(0))?;
@@ -252,24 +243,13 @@ impl Database {
             )?;
         }
 
-        // Seed default staff accounts if empty (Default cashiers for instant out-of-the-box operation)
-        let staff_count: i64 = conn.query_row("SELECT COUNT(*) FROM local_staff_accounts", [], |r| r.get(0)).unwrap_or(0);
-        if staff_count == 0 {
-            let pin_1234 = gympos_shared::hash_password("1234");
-            let pin_8888 = gympos_shared::hash_password("8888");
-
-            let now = Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at)
-                 VALUES ('staff-default-1', 'system@local', NULL, 'Default Branch', 'Front-Desk Cashier', 'cashier1', ?1, 'staff', 1, ?2)",
-                params![pin_1234, now],
-            )?;
-            conn.execute(
-                "INSERT INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at)
-                 VALUES ('staff-default-2', 'system@local', NULL, 'Default Branch', 'Duty Manager', 'manager1', ?1, 'manager', 1, ?2)",
-                params![pin_8888, now],
-            )?;
-        }
+        // Staff accounts are owner-managed ONLY (portal → cloud → sync).
+        // No default PINs: hard-coded 1234/8888 credentials would let anyone
+        // at the terminal into cashier/manager roles. Purge legacy defaults.
+        let _ = conn.execute(
+            "DELETE FROM local_staff_accounts WHERE id IN ('staff-default-1','staff-default-2') OR owner_email = 'system@local'",
+            [],
+        );
 
         Ok(())
     }

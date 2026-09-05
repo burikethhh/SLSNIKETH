@@ -2616,7 +2616,7 @@ async function submitWalkInPass() {
         await loadAttendanceLogs();
         await refreshDashboard();
 
-        alert(`Walk-In Pass Issued!\nPass ID: ${pass.id}\nGuest: ${name}\nPaid: $${fee.toFixed(2)} (${payment.toUpperCase()})\nGate unlocked for 3 seconds!`);
+        alert(`Walk-In Pass Issued!\nPass ID: ${pass.id}\nGuest: ${name}\nPaid: ₱${fee.toFixed(2)} (${payment.toUpperCase()})\nGate unlocked for 3 seconds!`);
     } catch (e) {
         errorEl.innerText = "Walk-in Error: " + e;
         errorEl.className = "text-xs text-red-400";
@@ -2690,7 +2690,7 @@ async function loadWalkIns() {
                     <td class="p-3 font-mono text-blue-300">${w.id}</td>
                     <td class="p-3 font-semibold text-slate-200">${w.guest_name}</td>
                     <td class="p-3 text-slate-400 font-mono">${w.phone || '--'}</td>
-                    <td class="p-3 font-bold text-emerald-400">$${w.amount_paid.toFixed(2)}</td>
+                    <td class="p-3 font-bold text-emerald-400">₱${w.amount_paid.toFixed(2)}</td>
                     <td class="p-3 uppercase text-[10px] font-bold text-slate-300">${w.payment_method}</td>
                     <td class="p-3">${statusBadge}</td>
                     <td class="p-3 text-right space-x-1">
@@ -3103,23 +3103,27 @@ function renderProductsGrid() {
     });
 
     if (filtered.length === 0) {
-        grid.innerHTML = '<div class="col-span-2 text-center text-slate-500 py-10">No items found in this category</div>';
+        grid.innerHTML = cachedProducts.length === 0
+            ? '<div class="col-span-2 text-center text-slate-500 py-10">No products yet — the gym owner adds them in the Owner Portal catalog and they sync here automatically.</div>'
+            : '<div class="col-span-2 text-center text-slate-500 py-10">No items found in this category</div>';
         return;
     }
+
+    const owner = isTerminalOwner();
 
     grid.innerHTML = filtered.map(p => `
         <div class="glass-panel p-3.5 border border-slate-800 flex flex-col justify-between card hover:border-slate-700 transition">
             <div>
                 <div class="flex items-center justify-between">
                     <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">${p.category}</span>
-                    <div class="flex items-center gap-1.5">
-                        <button onclick="openEditProductModal('${p.id}')" title="Edit Product" class="text-slate-400 hover:text-blue-300 text-xs p-1">
+                    ${owner ? `<div class="flex items-center gap-1.5">
+                        <button onclick="openEditProductModal('${p.id}')" title="Edit Product (owner)" class="text-slate-400 hover:text-blue-300 text-xs p-1">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
                         </button>
-                        <button onclick="deleteProduct('${p.id}', '${p.name.replace(/'/g, "\\'")}')" title="Delete Product" class="text-slate-400 hover:text-red-400 text-xs p-1">
+                        <button onclick="deleteProduct('${p.id}', '${p.name.replace(/'/g, "\\'")}')" title="Delete Product (owner)" class="text-slate-400 hover:text-red-400 text-xs p-1">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
-                    </div>
+                    </div>` : ''}
                 </div>
                 <div class="text-xs font-bold text-slate-200 mt-1">${p.name}</div>
                 <div class="flex items-center justify-between mt-1 text-[11px] text-slate-400">
@@ -3128,7 +3132,7 @@ function renderProductsGrid() {
                 </div>
             </div>
             <div class="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800">
-                <span class="text-base font-bold text-slate-100 brand">$${p.price.toFixed(2)}</span>
+                <span class="text-base font-bold text-slate-100 brand">₱${p.price.toFixed(2)}</span>
                 <button onclick="addToCart('${p.id}', '${p.name.replace(/'/g, "\\'")}', ${p.price})" class="px-3 py-1.5 rounded-lg bg-blue-600/80 hover:bg-blue-600 text-xs font-bold text-white transition flex items-center gap-1 shadow">
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
                     <span>Add</span>
@@ -3138,7 +3142,17 @@ function renderProductsGrid() {
     `).join('');
 }
 
+function isTerminalOwner() {
+    return !!(currentTerminalSession && currentTerminalSession.is_authenticated && currentTerminalSession.role === 'owner');
+}
+
 function openAddProductModal() {
+    // Owner-only: catalog definition lives in the owner portal. The server
+    // enforces this too (require_owner); this is just early UI guidance.
+    if (!isTerminalOwner()) {
+        alert("Owner login required: products are created in the Owner Portal catalog (or by the franchise owner on this terminal).");
+        return;
+    }
     document.getElementById('add-prod-name').value = '';
     document.getElementById('add-prod-price').value = '';
     document.getElementById('add-prod-stock').value = '50';
@@ -3175,6 +3189,10 @@ async function submitCreateProduct() {
 }
 
 function openEditProductModal(id) {
+    if (!isTerminalOwner()) {
+        alert("Owner login required: products are edited in the Owner Portal catalog.");
+        return;
+    }
     const p = cachedProducts.find(item => item.id === id);
     if (!p) return;
 
@@ -3226,6 +3244,10 @@ async function quickRestockProduct(id, delta) {
 }
 
 async function deleteProduct(id, name) {
+    if (!isTerminalOwner()) {
+        alert("Owner login required: products are deleted in the Owner Portal catalog.");
+        return;
+    }
     if (!confirm(`Delete product "${name}" from store inventory?`)) return;
     try {
         await invokeTauri('delete_product', { id });
@@ -3257,7 +3279,7 @@ function renderCart() {
 
     if (cart.length === 0) {
         container.innerHTML = '<div class="text-center text-slate-500 py-6">Cart is empty</div>';
-        if (totalEl) totalEl.innerText = '$0.00';
+        if (totalEl) totalEl.innerText = '₱0.00';
         return;
     }
 
@@ -3268,10 +3290,10 @@ function renderCart() {
             <div class="flex justify-between items-center bg-slate-800/40 p-2 rounded border border-slate-700">
                 <div>
                     <div class="font-semibold text-slate-200">${item.product_name}</div>
-                    <div class="text-[10px] text-slate-400">$${item.unit_price.toFixed(2)} &times; ${item.quantity}</div>
+                    <div class="text-[10px] text-slate-400">₱${item.unit_price.toFixed(2)} &times; ${item.quantity}</div>
                 </div>
                 <div class="flex items-center gap-2">
-                    <span class="font-bold text-slate-200">$${itemTotal.toFixed(2)}</span>
+                    <span class="font-bold text-slate-200">₱${itemTotal.toFixed(2)}</span>
                     <button onclick="removeFromCart(${idx})" class="text-red-400 hover:text-red-300 text-xs p-1">
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                     </button>
@@ -3284,10 +3306,10 @@ function renderCart() {
     if (disc.pct > 0) {
         const gross = total;
         const off = Math.round(gross * disc.pct) / 100;
-        if (totalEl) totalEl.innerHTML = `<span class="line-through text-slate-500 text-sm mr-2">$${gross.toFixed(2)}</span>$${(gross - off).toFixed(2)}`;
+        if (totalEl) totalEl.innerHTML = `<span class="line-through text-slate-500 text-sm mr-2">₱${gross.toFixed(2)}</span>₱${(gross - off).toFixed(2)}`;
         container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">Discount (${disc.label}): −$${off.toFixed(2)}</div>`);
     } else if (totalEl) {
-        totalEl.innerText = `$${total.toFixed(2)}`;
+        totalEl.innerText = `₱${total.toFixed(2)}`;
     }
 }
 
@@ -3385,7 +3407,7 @@ async function checkoutCart(paymentMethod) {
             discountPct: disc.pct
         });
 
-        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nGross: $${(tx.total_amount + (tx.discount_amount || 0)).toFixed(2)}\nDiscount: ${disc.label || 'None'} -$${(tx.discount_amount || 0).toFixed(2)}${idNote ? ` (ID: ${idNote})` : ''}\nTotal: $${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
+        alert(`Sale Processed!\nTransaction ID: ${tx.id}\nGross: ₱${(tx.total_amount + (tx.discount_amount || 0)).toFixed(2)}\nDiscount: ${disc.label || 'None'} -₱${(tx.discount_amount || 0).toFixed(2)}${idNote ? ` (ID: ${idNote})` : ''}\nTotal: ₱${tx.total_amount.toFixed(2)}\nPayment: ${paymentMethod.toUpperCase()}`);
         cart = [];
         appliedPromo = null;
         const promoInput = document.getElementById('pos-promo-input');
@@ -4317,7 +4339,6 @@ async function submitPinLogin() {
                 gym_id: res.gym_id,
                 gym_name: res.gym_name
             };
-            localStorage.setItem('gympos_terminal_session', JSON.stringify(currentTerminalSession));
             unlockTerminalUI();
         } else {
             if (err) err.innerText = "Invalid PIN. Access Denied.";
@@ -4358,7 +4379,6 @@ async function submitOwnerLogin(e) {
                 gym_id: null,
                 gym_name: null
             };
-            localStorage.setItem('gympos_terminal_session', JSON.stringify(currentTerminalSession));
             closeOwnerLoginModal();
             unlockTerminalUI();
         } else {
@@ -4377,15 +4397,24 @@ async function submitOwnerLogin(e) {
 
 function lockTerminal() {
     currentTerminalSession = null;
-    localStorage.removeItem('gympos_terminal_session');
     clearPin();
+    showLockScreen();
+}
+
+function showLockScreen() {
     const lockScreen = document.getElementById('terminal-lock-screen');
-    if (lockScreen) lockScreen.classList.remove('hidden');
+    if (lockScreen) {
+        lockScreen.classList.remove('hidden');
+        lockScreen.classList.add('flex');
+    }
 }
 
 function unlockTerminalUI() {
     const lockScreen = document.getElementById('terminal-lock-screen');
-    if (lockScreen) lockScreen.classList.add('hidden');
+    if (lockScreen) {
+        lockScreen.classList.add('hidden');
+        lockScreen.classList.remove('flex');
+    }
 
     const nameEl = document.getElementById('session-user-name');
     const roleEl = document.getElementById('session-user-role');
@@ -4429,6 +4458,13 @@ function applyRolePermissions(role) {
         licenseBtn.style.display = isStaff ? 'none' : '';
     }
 
+    // POS catalog definition is owner-only (portal → sync). Cashiers sell and
+    // restock; managers restock; only the owner sees Add/Edit/Delete.
+    const isOwner = (role === 'owner');
+    const addBtn = document.getElementById('btn-add-product');
+    if (addBtn) addBtn.style.display = isOwner ? '' : 'none';
+    if (typeof renderProductsGrid === 'function') renderProductsGrid();
+
     // If staff was on a restricted screen, switch to POS or Gate
     if (isStaff && (currentView === 'hardware' || currentView === 'branding')) {
         switchView('pos');
@@ -4436,6 +4472,11 @@ function applyRolePermissions(role) {
 }
 
 async function checkExistingTerminalSession() {
+    // Rust-side session is the single source of truth. There is deliberately
+    // NO localStorage fallback: a persisted browser copy cannot recreate the
+    // in-memory Rust session, so trusting it unlocked the UI while every
+    // gated command still failed — the "logged in but nothing works" ghost.
+    // Fresh start (or expired session) = lock screen, PIN required.
     try {
         const session = await invokeTauri('get_terminal_session');
         if (session && session.is_authenticated) {
@@ -4444,23 +4485,11 @@ async function checkExistingTerminalSession() {
             return;
         }
     } catch (e) {
-        // Fallback
-    }
-
-    const saved = localStorage.getItem('gympos_terminal_session');
-    if (saved) {
-        try {
-            currentTerminalSession = JSON.parse(saved);
-            if (currentTerminalSession && currentTerminalSession.is_authenticated) {
-                unlockTerminalUI();
-                return;
-            }
-        } catch (e) {}
+        // Backend unreachable in preview — stay locked.
     }
 
     // Default: Show Lock Screen
-    const lockScreen = document.getElementById('terminal-lock-screen');
-    if (lockScreen) lockScreen.classList.remove('hidden');
+    showLockScreen();
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

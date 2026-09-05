@@ -125,7 +125,7 @@
                 </div>
                 <div>
                     <div class="text-xs text-emerald-400 font-medium">Estimated Monthly ARR</div>
-                    <div id="stat-mrr" class="text-2xl font-bold mt-0.5 text-emerald-300 brand">$0.00</div>
+                    <div id="stat-mrr" class="text-2xl font-bold mt-0.5 text-emerald-300 brand">₱0.00</div>
                     <div class="text-[10px] text-emerald-400/60">Recurring Subscriptions</div>
                 </div>
             </div>
@@ -176,9 +176,9 @@
                     <div>
                         <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
                         <select id="gym-tier" class="input-dark">
-                            <option value="basic">Basic Tier — $99/mo (Max 200 Members)</option>
-                            <option value="pro" selected>Pro Tier — $199/mo (Max 500 Members, Multi-Loc)</option>
-                            <option value="ultra">Ultra Tier — $349/mo (Max 1000 Members, Full API)</option>
+                            <option value="basic">Basic Tier — ₱99/mo (Max 200 Members)</option>
+                            <option value="pro" selected>Pro Tier — ₱199/mo (Max 500 Members, Multi-Loc)</option>
+                            <option value="ultra">Ultra Tier — ₱349/mo (Max 1000 Members, Full API)</option>
                         </select>
                     </div>
                     <div>
@@ -460,9 +460,9 @@
                 <div>
                     <label class="block text-xs text-purple-300 mb-1">Subscription Tier</label>
                     <select id="edit-gym-tier" class="input-dark">
-                        <option value="basic">Basic Tier — $99/mo (Max 200)</option>
-                        <option value="pro">Pro Tier — $199/mo (Max 500, Multi-Loc)</option>
-                        <option value="ultra">Ultra Tier — $349/mo (Max 1000, Full API)</option>
+                        <option value="basic">Basic Tier — ₱99/mo (Max 200)</option>
+                        <option value="pro">Pro Tier — ₱199/mo (Max 500, Multi-Loc)</option>
+                        <option value="ultra">Ultra Tier — ₱349/mo (Max 1000, Full API)</option>
                     </select>
                 </div>
             </div>
@@ -529,9 +529,9 @@
                     <div>
                         <label class="block text-purple-300 font-medium mb-1">Subscription Tier</label>
                         <select id="admin-add-branch-tier" class="input-dark">
-                            <option value="basic">Basic ($99/mo, 200)</option>
-                            <option value="pro" selected>Pro ($199/mo, 500)</option>
-                            <option value="ultra">Ultra ($349/mo, 1000)</option>
+                            <option value="basic">Basic (₱99/mo, 200)</option>
+                            <option value="pro" selected>Pro (₱199/mo, 500)</option>
+                            <option value="ultra">Ultra (₱349/mo, 1000)</option>
                         </select>
                     </div>
                     <div>
@@ -1125,7 +1125,7 @@
                 else if (g.tier.toLowerCase() === 'pro') mrr += 199;
                 else mrr += 99;
             });
-            document.getElementById('stat-mrr').innerText = `$${mrr.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+            document.getElementById('stat-mrr').innerText = `₱${mrr.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
 
             const revokedCount = storedLicenses.filter(l => l.is_revoked).length + disabledGymIds.size;
             document.getElementById('stat-disabled-count').innerText = `${revokedCount} Revoked`;

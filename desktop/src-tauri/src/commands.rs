@@ -721,14 +721,16 @@ pub fn list_products(state: State<'_, AppContext>) -> Result<Vec<ProductItem>, S
 #[tauri::command]
 pub fn create_product(req: CreateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
     check_license_active(&state)?;
-    require_manager(&state)?;
+    // Owner-only: the POS catalog is defined in the owner portal and synced
+    // down. Branch terminals sell and restock; they never define products.
+    require_owner(&state)?;
     state.db.create_product(&req).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn update_product(req: UpdateProductRequest, state: State<'_, AppContext>) -> Result<ProductItem, String> {
     check_license_active(&state)?;
-    require_manager(&state)?;
+    require_owner(&state)?;
     state.db.update_product(&req).map_err(|e| e.to_string())
 }
 
@@ -742,7 +744,7 @@ pub fn adjust_product_stock(id: String, delta: i32, state: State<'_, AppContext>
 #[tauri::command]
 pub fn delete_product(id: String, state: State<'_, AppContext>) -> Result<(), String> {
     check_license_active(&state)?;
-    require_manager(&state)?;
+    require_owner(&state)?;
     state.db.delete_product(&id).map_err(|e| e.to_string())
 }
 

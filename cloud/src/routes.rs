@@ -782,7 +782,7 @@ pub async fn analytics_fleet(
         Json(json!({
             "total_gyms": gyms.len(),
             "mrr_usd": mrr,
-            "mrr_formatted": format!("${:.2}", mrr),
+            "mrr_formatted": format!("₱{:.2}", mrr),
             "tier_breakdown": tier_breakdown,
             "revoked_or_disabled": revoked,
             "total_cloud_members": total_cloud_members,
