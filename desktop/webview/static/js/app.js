@@ -2,11 +2,28 @@
 
 let currentTerminalSession = null;
 
+// The Rust RBAC gate drops an idle terminal session (30 min) server-side, but
+// the webview has no way to notice — every gated action would just fail with
+// "session expired" while the UI still looks unlocked. When that exact error
+// surfaces, lock the UI to match the backend state, then re-raise the error.
+function wrapIdleSessionGuard(promise) {
+    return Promise.resolve(promise).catch((err) => {
+        if (typeof err === 'string' && err.includes('session expired after inactivity')) {
+            try {
+                currentTerminalSession = null;
+                localStorage.removeItem('gympos_terminal_session');
+                if (typeof lockTerminal === 'function') lockTerminal();
+            } catch (_) { /* never mask the original error */ }
+        }
+        throw err;
+    });
+}
+
 async function invokeTauri(command, args = {}) {
     if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
-        return window.__TAURI__.core.invoke(command, args);
+        return wrapIdleSessionGuard(window.__TAURI__.core.invoke(command, args));
     } else if (window.__TAURI__ && typeof window.__TAURI__.invoke === 'function') {
-        return window.__TAURI__.invoke(command, args);
+        return wrapIdleSessionGuard(window.__TAURI__.invoke(command, args));
     } else {
         console.warn(`[Mock IPC] Invoked: ${command}`, args);
         // Browser fallback / mock responses
@@ -1849,9 +1866,14 @@ async function initApp() {
     }
     startHardwareButtonPoll();
 
-    // Auto refresh real-time polling every 2.5 seconds (skip when tab/window is hidden to save CPU/IPC)
+    // Auto refresh real-time polling every 2.5 seconds. Skips when the
+    // window is hidden (saves CPU) and while the lock screen is up (nothing
+    // behind the overlay is visible; the boot-restore and unlock flows
+    // refresh on demand). refreshDashboard itself also skips re-rendering
+    // when the summary is unchanged, so idle terminals do near-zero work.
     setInterval(async () => {
         if (document.hidden) return; // Skip polling when app is minimized or tab is not visible
+        if (!currentTerminalSession) return; // Lock screen up — dashboard DOM is hidden behind it
         await refreshDashboard();
         if (currentView === 'attendance') await loadAttendanceLogs();
     }, 2500);
@@ -2577,9 +2599,35 @@ async function submitStudioRegistration() {
 
 // --- Dashboard ---
 
+// Signature of the last rendered dashboard summary — refreshDashboard skips
+// all DOM work when nothing changed (the 2.5s poller ticks ~34k times/day).
+let lastDashboardSignature = null;
+
 async function refreshDashboard() {
     try {
         const summary = await invokeTauri('get_dashboard_summary');
+
+        // Change detection: build a signature of everything this function
+        // renders and bail out when nothing changed. Local actions (scans,
+        // sales, registrations, hardware connect) all change one of these
+        // fields and call refreshDashboard explicitly, so nothing sticks.
+        const status0 = summary.license_status;
+        const statusType0 = (typeof status0 === 'object' && status0 !== null)
+            ? (status0.type || (status0.Valid ? 'Valid' : status0.GracePeriod ? 'GracePeriod' : status0.Expired ? 'Expired' : status0.Invalid ? 'Invalid' : 'Unlicensed'))
+            : status0;
+        const statusDays0 = (status0 && typeof status0 === 'object')
+            ? (status0.days_remaining ?? (status0.Valid && status0.Valid.days_remaining) ?? null)
+            : null;
+        const statusReason0 = (status0 && typeof status0 === 'object')
+            ? (status0.reason ?? (status0.Invalid && status0.Invalid.reason) ?? null)
+            : null;
+        const signature = JSON.stringify([
+            summary.active_members, summary.max_members, summary.today_checkins,
+            summary.tailgate_count, summary.tier, summary.hardware_connected,
+            summary.hardware_port, statusType0, statusDays0, statusReason0,
+        ]);
+        if (signature === lastDashboardSignature) return;
+        lastDashboardSignature = signature;
 
         const activeMembersEl = document.getElementById('stat-active-members');
         if (activeMembersEl) {
@@ -2654,7 +2702,7 @@ async function refreshDashboard() {
             }
             if (licenseStateEl) licenseStateEl.innerText = "REVOKED";
             if (licenseDetailEl) licenseDetailEl.innerText = reason;
-            lockTerminalOnLicenseLoss('revoked');
+            lockTerminalOnLicenseLoss('revoked', reason);
         } else {
             if (licenseBadge) {
                 licenseBadge.innerText = "UNLICENSED";
@@ -4595,15 +4643,16 @@ function lockTerminal() {
 // tick while expired. First transition locks (and toasts once); steady
 // expired state only refreshes the badges above.
 let licenseWasLockedOut = false;
-function lockTerminalOnLicenseLoss(kind) {
+function lockTerminalOnLicenseLoss(kind, detail) {
+    const message = (kind === 'expired')
+        ? 'Subscription expired — terminal locked. Renew to reactivate.'
+        : ('License invalidated' + (detail ? `: ${detail}` : '') + ' — terminal locked. Contact the platform administrator.');
     if (!licenseWasLockedOut) {
         lockTerminal();
         try {
             showHudToast(
                 kind === 'expired' ? 'License Expired' : 'License Revoked',
-                kind === 'expired'
-                    ? 'Subscription expired — terminal locked. Renew to reactivate.'
-                    : 'License invalidated — terminal locked. Contact the platform administrator.',
+                message,
                 'danger'
             );
         } catch (_) {}
@@ -4613,6 +4662,11 @@ function lockTerminalOnLicenseLoss(kind) {
         try { invokeTauri('logout_terminal_session'); } catch (_) {}
         showLockScreen();
     }
+    // Show the reason on the lock form itself — a silent relock looks like a
+    // random logout and invites retry-spam against a dead session.
+    try {
+        if (typeof showTerminalLoginError === 'function') showTerminalLoginError(message);
+    } catch (_) {}
 }
 
 // On app start: if Rust already has a valid session (app reopened without closing),
