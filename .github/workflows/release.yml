@@ -10,17 +10,12 @@ name: GymPOS — Build & Publish Standalone Installer
 #   3. Tag and push the tag:
 #        git tag v0.2.0
 #        git push origin v0.2.0
-#   4. This workflow runs automatically, compiles the Rust binary, packages
-#      the NSIS installer (with ONNX models + seed DB bundled inside), signs
-#      it with your Tauri private key, and creates a GitHub Release containing:
-#        • GymPOS_<version>_x64-setup.exe  — the installer
-#        • GymPOS_<version>_x64-setup.exe.sig — updater signature
-#        • latest.json                     — updater manifest
-#   5. Every installed terminal polls latest.json on next launch and
-#      auto-downloads + installs the update (signature-verified, zero-touch).
+#   4. GitHub Actions builds the NSIS installer (ONNX models bundled inside),
+#      signs it, and creates a GitHub Release with latest.json for auto-update.
+#   5. Running terminals self-update on next launch — no manual steps at gym.
 #
 # SECRETS REQUIRED (Settings → Secrets → Actions):
-#   TAURI_SIGNING_PRIVATE_KEY  — minisign private key (generate with tauri signer)
+#   TAURI_SIGNING_PRIVATE_KEY  — minisign private key
 #   GITHUB_TOKEN               — automatic, no setup needed
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -32,7 +27,7 @@ on:
 jobs:
   build-windows-installer:
     permissions:
-      contents: write        # needed to create GitHub Release + upload assets
+      contents: write
     runs-on: windows-latest
 
     steps:
@@ -47,10 +42,11 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       # ── 3. Rust build cache ────────────────────────────────────────────────
+      # NOTE: path is relative to the repo root (no gympos-saas/ prefix)
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: gympos-saas/desktop/src-tauri -> target
+          workspaces: desktop/src-tauri -> target
 
       # ── 4. Node.js (Tauri CLI bundler dependency) ─────────────────────────
       - name: Setup Node.js 24
@@ -59,13 +55,14 @@ jobs:
           node-version: 24
 
       # ── 5. Verify ONNX models exist (fail fast) ───────────────────────────
+      # Paths are relative to the repo root as checked out by actions/checkout
       - name: Verify ONNX models are present
         shell: pwsh
         run: |
           $models = @(
-            "gympos-saas/desktop/models/face_detection_yunet_2023mar.onnx",
-            "gympos-saas/desktop/models/face_recognition_sface_2021dec.onnx",
-            "gympos-saas/desktop/models/yolov8n.onnx"
+            "desktop/models/face_detection_yunet_2023mar.onnx",
+            "desktop/models/face_recognition_sface_2021dec.onnx",
+            "desktop/models/yolov8n.onnx"
           )
           foreach ($m in $models) {
             if (-not (Test-Path $m)) {
@@ -73,13 +70,13 @@ jobs:
               exit 1
             }
             $sz = [math]::Round((Get-Item $m).Length / 1MB, 1)
-            Write-Host "  ✓ $m ($sz MB)"
+            Write-Host "  OK $m ($sz MB)"
           }
 
-      # ── 7. Build + publish via tauri-action ──────────────────────────────
-      #    tauri-action reads tauri.conf.json, compiles the binary, runs the
-      #    NSIS bundler (with resources: ../models/*), signs the
-      #    installer, creates the GitHub Release, and uploads all artifacts.
+      # ── 6. Build + publish via tauri-action ──────────────────────────────
+      #    Reads tauri.conf.json, compiles Rust binary, runs NSIS bundler
+      #    (ONNX models in resources: ../models/*), signs installer, creates
+      #    GitHub Release with latest.json for auto-updater.
       - name: Build and publish installer (Tauri Action)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -94,7 +91,7 @@ jobs:
             ### What's included
             - ✅ GymPOS desktop application (fully offline-capable)
             - ✅ ONNX AI models bundled (face detection/recognition + anti-tailgate YOLOv8)
-            - ✅ Seed database with default staff accounts
+            - ✅ Auto-seeded database with default staff accounts on first launch
             - ✅ Auto-updater (terminals will self-update from this release)
 
             ### Installation
@@ -109,8 +106,8 @@ jobs:
             | Manager | 8888 |
 
             ### Auto-Update
-            Running terminals on older versions will detect this release automatically
-            on next launch and prompt to install. No manual steps required.
+            Running terminals on older versions detect this release on next launch
+            and install the update automatically. No manual steps required at the gym.
           releaseDraft: false
           prerelease: false
-          projectPath: gympos-saas/desktop/src-tauri
+          projectPath: desktop/src-tauri
