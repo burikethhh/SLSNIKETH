@@ -243,13 +243,22 @@ impl Database {
             )?;
         }
 
-        // Staff accounts are owner-managed ONLY (portal → cloud → sync).
-        // No default PINs: hard-coded 1234/8888 credentials would let anyone
-        // at the terminal into cashier/manager roles. Purge legacy defaults.
-        let _ = conn.execute(
-            "DELETE FROM local_staff_accounts WHERE id IN ('staff-default-1','staff-default-2') OR owner_email = 'system@local'",
+        // Ensure fallback Cashier (1234) and Manager (8888) exist so terminal
+        // staff can always log in even when offline or before owner sync.
+        let has_cashier: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM local_staff_accounts WHERE username = 'cashier1' AND is_active = 1",
             [],
-        );
+            |r| r.get(0),
+        ).unwrap_or(0);
+
+        if has_cashier == 0 {
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO local_staff_accounts (id, owner_email, gym_id, gym_name, full_name, username, pin_hash, role, is_active, updated_at) VALUES
+                ('staff-default-1', 'system@local', NULL, 'Default Branch', 'Front-Desk Cashier', 'cashier1', '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4', 'staff', 1, datetime('now')),
+                ('staff-default-2', 'system@local', NULL, 'Default Branch', 'Duty Manager', 'manager1', '2926a2731f4b312c08982cacf8061eb14bf65c1a87cc5d70e864e079c6220731', 'manager', 1, datetime('now'))",
+                [],
+            );
+        }
 
         Ok(())
     }

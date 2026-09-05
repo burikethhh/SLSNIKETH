@@ -4278,11 +4278,16 @@ async function triggerUpdateInstall() {
 // Hook checkAppVersion, checkForUpdatesSilent, and checkExistingTerminalSession into initApp
 const origInitApp = initApp;
 initApp = async function() {
-    await origInitApp();
-    await checkAppVersion();
-    await checkExistingTerminalSession();
+    // 1. Check terminal session FIRST so the PIN lock screen appears and becomes interactive immediately!
+    try {
+        await checkExistingTerminalSession();
+    } catch (e) {
+        console.debug("Session check error:", e);
+    }
+    // 2. Run background loaders without blocking lock screen interactivity
+    origInitApp().catch(e => console.error("origInitApp error:", e));
+    checkAppVersion().catch(e => console.error("checkAppVersion error:", e));
     setTimeout(checkForUpdatesSilent, 3000);
-    // Background interval check every 1 hour
     setInterval(checkForUpdatesSilent, 3600000);
 };
 
@@ -4322,6 +4327,37 @@ function clearPin() {
     const err = document.getElementById('pin-error-text');
     if (err) err.innerText = "";
 }
+
+// Physical keyboard / Numpad listener for staff PIN pad
+document.addEventListener('keydown', (e) => {
+    const lockScreen = document.getElementById('terminal-lock-screen');
+    if (!lockScreen || lockScreen.classList.contains('hidden')) return;
+
+    // Do not intercept if owner login modal is active (staff typing owner password)
+    const ownerModal = document.getElementById('modal-owner-login');
+    if (ownerModal && !ownerModal.classList.contains('hidden')) return;
+
+    if (/^[0-9]$/.test(e.key)) {
+        e.preventDefault();
+        pressPinKey(e.key);
+    } else if (e.key === 'Backspace') {
+        e.preventDefault();
+        if (currentEnteredPin.length > 0) {
+            currentEnteredPin = currentEnteredPin.slice(0, -1);
+            updatePinDots();
+            const err = document.getElementById('pin-error-text');
+            if (err) err.innerText = "";
+        }
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        clearPin();
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (currentEnteredPin.length === 4) {
+            submitPinLogin();
+        }
+    }
+});
 
 async function submitPinLogin() {
     if (currentEnteredPin.length < 4) return;
