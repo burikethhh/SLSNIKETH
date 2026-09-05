@@ -81,27 +81,21 @@ static const int LCD_SCL_PIN    = 19;  // I2C SCL
 static const int BUZZER_PIN     = 9;   // 5V active buzzer
 #endif
 
-// ───────────── I2C Scanner ───────────────────
-static uint8_t scanLcdAddress() {
-  Serial.println("Scanning I2C bus for devices...");
-  uint8_t found = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
+// ───────────── I2C LCD Detection ─────────────
+static uint8_t detectLcdAddress() {
+  Serial.println("Detecting I2C LCD backpack address...");
+  // Candidates: 0x27 (PCF8574T default), 0x3F (PCF8574AT default), 0x26, 0x38, 0x20
+  const uint8_t candidates[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
+  for (uint8_t addr : candidates) {
     Wire.beginTransmission(addr);
     if (Wire.endTransmission() == 0) {
-      Serial.print("  I2C device found at 0x");
+      Serial.print("  Found I2C LCD at 0x");
       Serial.println(addr, HEX);
-      if (!found && ((addr >= 0x20 && addr <= 0x2F) || (addr >= 0x38 && addr <= 0x3F))) {
-        found = addr;
-      }
+      return addr;
     }
   }
-  if (found) {
-    Serial.print("Using LCD at 0x");
-    Serial.println(found, HEX);
-  } else {
-    Serial.println("WARNING: No LCD backpack found on I2C bus!");
-  }
-  return found;
+  Serial.println("  No candidate ACKed, defaulting to 0x27");
+  return 0x27;
 }
 
 // ───────────── Peripherals ───────────────────
@@ -173,6 +167,32 @@ void buzzerTick() {
 }
 
 // ───────────── LCD Helpers ───────────────────
+void lcdShowIdle();
+
+void initLcdHardware(uint8_t addr) {
+  if (lcd) {
+    delete lcd;
+    lcd = nullptr;
+  }
+  lcd = new LiquidCrystal_I2C(addr, 16, 2);
+  // init() executes full HD44780 4-bit initialization
+  lcd->init();
+  // Ensure Wire configuration persists on correct pins
+  Wire.setPins(LCD_SDA_PIN, LCD_SCL_PIN);
+  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  Wire.setTimeOut(50);
+  Wire.setClock(100000);
+
+  lcd->backlight();
+  delay(20);
+  lcd->clear();
+  delay(20);
+  lcd->createChar(0, lockChar);
+  lcd->createChar(1, unlockChar);
+  lcd->createChar(2, alertChar);
+  lcdShowIdle();
+}
+
 void lcdShowIdle() {
   if (!lcd) return;
   lcd->clear();
@@ -401,6 +421,14 @@ void processSerialCommand(const String& cmdRaw) {
     return;
   }
 
+  // LCD_REINIT
+  if (base == "LCD_REINIT") {
+    uint8_t addr = detectLcdAddress();
+    initLcdHardware(addr);
+    Serial.println("ACK:LCD_REINIT");
+    return;
+  }
+
   // PING
   if (base == "PING") {
     Serial.println("ACK:PONG");
@@ -421,33 +449,26 @@ void processSerialCommand(const String& cmdRaw) {
 // ───────────── Setup ─────────────────────────
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
-
   digitalWrite(BUZZER_PIN, LOW);
   setLocked(true);
 
   Serial.begin(115200);
-  while (!Serial) { delay(5); }
+  delay(100);
   Serial.setTimeout(50);
+  Serial.println("\nGymPOS Controller Booting...");
 
-  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
-  Wire.setClock(50000);
-
-  uint8_t lcdAddr = scanLcdAddress();
-  if (!lcdAddr) {
-    lcdAddr = 0x27;
-    Serial.println("Defaulting to LCD address 0x27");
-  }
-  delay(250);
-
-  lcd = new LiquidCrystal_I2C(lcdAddr, 16, 2);
-  lcd->begin(16, 2);
-  lcd->backlight();
-  lcd->createChar(0, lockChar);
-  lcd->createChar(1, unlockChar);
-  lcd->createChar(2, alertChar);
-
+  // Immediate audible feedback that MCU has booted
   buzzerStart(PAT_STARTUP);
-  lcdShowIdle();
+
+  // Configure I2C bus pins explicitly
+  Wire.setPins(LCD_SDA_PIN, LCD_SCL_PIN);
+  Wire.begin(LCD_SDA_PIN, LCD_SCL_PIN);
+  Wire.setTimeOut(50);
+  Wire.setClock(100000);
+  delay(150);
+
+  uint8_t lcdAddr = detectLcdAddress();
+  initLcdHardware(lcdAddr);
 
   Serial.println("READY");
 }
