@@ -5,14 +5,20 @@
   Controls door solenoid/relay, buzzer, and 16x2 I2C LCD.
   RFID is handled by external USB reader on the PC side.
 
-  Pin Wiring (Relay direct COM/NC — no ESP relay pin):
+  Pin Wiring (Field Connections):
     GPIO18  → LCD SDA           (software I2C, Wire.begin(18, 19))
     GPIO19  → LCD SCL           (software I2C)
     GPIO9   → 5V Buzzer         (active HIGH)
-    GPIO2   → Built-in LED      (status indicator)
+    5V      → LCD VCC & Buzzer VCC
+    GND     → Common Ground
 
-  Buttonless Architecture:
-    - No physical push-buttons required.
+  Hardware Notes:
+    - LCD is a standard 4-pin I2C backpack: SDA, SCL, GND, and 5V only (no LED pin).
+    - Status feedback is rendered directly on the 16x2 LCD using custom status icons:
+        Character 0: Lock icon
+        Character 1: Unlock icon
+        Character 2: Alert icon
+    - No push-buttons or external LED indicators required.
     - Continuous camera feeds with automated face detection & anti-tailgate
       verification handled upstream by the GymPOS PC host application.
     - Tailgate alarm arms automatically on every verified entry/exit.
@@ -54,6 +60,7 @@
 #endif
 
 // ───────────── Pin Configuration ─────────────
+// Standard 4-pin I2C LCD backpack: SDA, SCL, GND, 5V
 #ifndef LCD_SDA_PIN
 static const int LCD_SDA_PIN    = 18;  // I2C SDA (Wire.begin(18, 19))
 #endif
@@ -62,9 +69,6 @@ static const int LCD_SCL_PIN    = 19;  // I2C SCL
 #endif
 #ifndef BUZZER_PIN
 static const int BUZZER_PIN     = 9;   // 5V active buzzer
-#endif
-#ifndef STATUS_LED_PIN
-static const int STATUS_LED_PIN = 2;   // Built-in LED indicator
 #endif
 
 // ───────────── I2C Scanner ───────────────────
@@ -196,7 +200,6 @@ void setLocked(bool locked) {
     digitalWrite(LOCK_PIN, LOW);
   }
 #endif
-  digitalWrite(STATUS_LED_PIN, locked ? LOW : HIGH);
 }
 
 void unlockDoor(unsigned long ms) {
@@ -348,7 +351,6 @@ void processSerialCommand(const String& cmdRaw) {
 // ───────────── Setup ─────────────────────────
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(STATUS_LED_PIN, OUTPUT);
 
   digitalWrite(BUZZER_PIN, LOW);
   setLocked(true);
