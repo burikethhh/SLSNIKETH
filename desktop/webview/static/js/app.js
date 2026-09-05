@@ -1217,16 +1217,28 @@ let autoScanCamToggle = false; // false = entry cam (in), true = exit cam (out)
 // --- Two-frame confirmation + liveness-lite (Phase A) ---
 // The ONNX pipeline is deterministic: a static photo yields bit-identical
 // embeddings frame after frame, while a live face always differs slightly
-// (sensor noise, micro-motion). So: first match only arms a pending state;
-// a second consecutive match for the SAME member confirms liveness when
-// either the embedding differs (cosine < 0.999) or the eyes moved (>= 0.5px).
-// Two identical frames in a row = static image: require a 3rd frame, deny
-// with "liveness failed" if still identical. State is per scan lane
-// ('cam1', 'cam2', 'btn-in', 'btn-out') so cameras never interfere.
-const liveConfirmState = {}; // key -> {member_id, vector, landmarks, strikes, ts}
+// (sensor noise, micro-motion). So: the first detection only arms pending
+// state; process_face_scan runs once, on a confirmed-live frame pair, when
+// either the embedding differs (cosine < 0.999) or the eyes moved beyond the
+// distance-scaled threshold. Two identical frames in a row = static image:
+// require a 3rd frame, deny with "liveness failed" if still identical. State
+// is per scan lane ('cam1', 'cam2', 'btn-in', 'btn-out') so cameras and
+// button presses never interfere.
 function livenessMinPx() {
     const v = parseFloat(tuningCfg().liveness_min_px);
     return Number.isFinite(v) ? v : 0.5;
+}
+
+// Micro-motion scales with face size: a small/far face produces proportionally
+// smaller landmark jitter for genuinely live micro-motion, so a fixed 0.5px
+// bar wrongly struck far-away live faces. Scale the required displacement by
+// the detected face width (full bar at >=320px, floored at 15% so a static
+// image can never slip through by standing far away).
+function liveThresholdPx(faceBox) {
+    const base = livenessMinPx();
+    const w = faceBox?.w || 0;
+    if (!w) return base;
+    return base * Math.min(1, Math.max(0.15, w / 320));
 }
 
 function cosineOf(a, b) {
@@ -1253,18 +1265,6 @@ function eyeDisplacement(lm1, lm2) {
     return sum / 2;
 }
 
-function confirmLiveMatch(key, memberId, vector, landmarks) {
-    // A live face detected with YuNet landmarks and matched by ArcFace/SFace confirms immediately.
-    // The frontend 12-second memberCooldownMap and backend 3-second atomic cooldown
-    // guarantee single-pulse turnstile unlocking and prevent duplicate spam.
-    delete liveConfirmState[key];
-    return 'confirmed';
-}
-
-function clearLiveConfirm(key) {
-    delete liveConfirmState[key];
-}
-
 // Pre-match liveness (deadlock-free): each lane holds ONE pending detection.
 // process_face_scan is called only AFTER two consecutive live frames, so the
 // backend 3s atomic cooldown never suppresses the confirmation frame (that
@@ -1272,27 +1272,30 @@ function clearLiveConfirm(key) {
 // Rust returned matched:false). Static photos yield near-identical embeddings
 // frame after frame; live faces always differ slightly (sensor noise,
 // micro-motion), so identical consecutive frames = spoof.
-const livePending = { cam1: null, cam2: null };
+const livePending = { cam1: null, cam2: null, 'btn-in': null, 'btn-out': null };
 const liveSpoofToastAt = { cam1: 0, cam2: 0 };
-function checkLivePending(lane, vector, landmarks) {
+function checkLivePending(lane, vector, landmarks, faceBox) {
     const prev = livePending[lane];
     if (!prev) {
-        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes: 0 };
+        livePending[lane] = { vector, landmarks, box: faceBox || null, ts: Date.now(), strikes: 0 };
         return 'wait';
     }
     if (Date.now() - prev.ts > 2000) { // stale pending — re-arm
-        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes: 0 };
+        livePending[lane] = { vector, landmarks, box: faceBox || null, ts: Date.now(), strikes: 0 };
         return 'wait';
     }
     const cos = cosineOf(prev.vector, vector);
     const disp = eyeDisplacement(prev.landmarks, landmarks);
-    if (cos >= 0.999 && disp < livenessMinPx()) {
+    // Threshold is distance-scaled (see liveThresholdPx) using the current
+    // frame's face box, falling back to the armed frame's.
+    const thresh = liveThresholdPx(faceBox || prev.box);
+    if (cos >= 0.999 && disp < thresh) {
         const strikes = (prev.strikes || 0) + 1;
         if (strikes >= 2) {
             livePending[lane] = null;
             return 'spoof';
         }
-        livePending[lane] = { vector, landmarks, ts: Date.now(), strikes };
+        livePending[lane] = { vector, landmarks, box: faceBox || prev.box || null, ts: Date.now(), strikes };
         return 'wait';
     }
     livePending[lane] = null;
@@ -1560,7 +1563,7 @@ async function startAutonomousBiometricEngine() {
 
             // Pre-match liveness: first sighting only arms pending state;
             // process_face_scan runs once, on the confirmed-live frame.
-            const live1 = checkLivePending('cam1', scanRes.vector, scanRes.landmarks);
+            const live1 = checkLivePending('cam1', scanRes.vector, scanRes.landmarks, scanRes.box);
             if (live1 === 'wait') return;
             if (live1 === 'spoof') {
                 const now0 = Date.now();
@@ -1621,7 +1624,7 @@ async function startAutonomousBiometricEngine() {
                 await loadAttendanceLogs();
                 await refreshDashboard();
             } else if (res && res.needs_reenroll) {
-                clearLiveConfirm('cam1');
+                livePending['cam1'] = null;
                 showHudToast("Re-enrollment Needed", "Face gallery uses a legacy embedding width — re-scan this member in the Studio.", "warn");
             } else if (res && res.passback_violation) {
                 const matchedId = res.member_id || 'unknown';
@@ -1665,7 +1668,7 @@ async function startAutonomousBiometricEngine() {
             if (Math.min(_bb2.w || 0, _bb2.h || 0) < 80) return;
 
             // Pre-match liveness (per-lane state, deadlock-free).
-            const live2 = checkLivePending('cam2', scanRes.vector, scanRes.landmarks);
+            const live2 = checkLivePending('cam2', scanRes.vector, scanRes.landmarks, scanRes.box);
             if (live2 === 'wait') return;
             if (live2 === 'spoof') {
                 const now0 = Date.now();
@@ -1719,10 +1722,10 @@ async function startAutonomousBiometricEngine() {
                 await loadAttendanceLogs();
                 await refreshDashboard();
             } else if (res && res.needs_reenroll) {
-                clearLiveConfirm('cam2');
+                livePending['cam2'] = null;
                 showHudToast("Re-enrollment Needed", "Face gallery uses a legacy embedding width — re-scan this member in the Studio.", "warn");
             } else if (res && (res.passback_violation || res.account_hold || res.is_expired)) {
-                clearLiveConfirm('cam2');
+                livePending['cam2'] = null;
                 const matchedId = res.member_id || 'unknown';
                 const lastSeen = memberCooldownMap.get(matchedId) || 0;
                 if (now - lastSeen > 8000) {
@@ -1935,7 +1938,7 @@ async function doHardwareFaceScan(videoId, direction) {
     const laneKey = direction === 'in' ? 'btn-in' : 'btn-out';
     const frame = await captureScanFrame(camNumber);
     if (!frame) {
-        clearLiveConfirm(laneKey);
+        livePending[laneKey] = null;
         showHudToast('Camera Not Ready', 'No video feed for ' + direction.toUpperCase() + ' scan. Check Hardware Settings.', 'warn');
         return;
     }
@@ -1948,48 +1951,52 @@ async function doHardwareFaceScan(videoId, direction) {
         return;
     }
     if (!scanRes || !scanRes.face_detected || !scanRes.vector) {
-        clearLiveConfirm(laneKey);
+        livePending[laneKey] = null;
         showHudToast('No Face Detected', 'Center your face and try again, or press the button again.', 'warn');
         return;
     }
+
+    // Distance gate — the same quality floors the autonomous loops apply
+    // BEFORE liveness: YuNet confidence and a minimum face size in pixels.
+    const box1 = scanRes.box || {};
+    if ((scanRes.confidence ?? 0) < 0.5 || Math.min(box1.w ?? 0, box1.h ?? 0) < 80) {
+        livePending[laneKey] = null;
+        showHudToast('Move Closer', 'Step up to the camera so your face fills the frame, then press again.', 'warn');
+        return;
+    }
+
+    // SECURITY: button scans previously matched (and unlocked) on the FIRST
+    // frame with a stubbed liveness confirm — a held-up photo could unlock the
+    // gate. Button scans now pass the SAME pre-match 2-frame liveness gate as
+    // the autonomous loops: the first press arms the lane, the second press
+    // within 2s completes the live check, and only then does matching run.
+    const live = checkLivePending(laneKey, scanRes.vector, scanRes.landmarks, scanRes.box);
+    if (live !== 'confirmed') {
+        if (live === 'spoof') {
+            livePending[laneKey] = null;
+            showHudToast('Liveness Check Failed', 'Static image suspected — denied. Present a live face.', 'danger');
+        } else {
+            showHudToast('Verifying Liveness', 'Hold still and press the button again to finish the live check.', 'info');
+        }
+        return;
+    }
+
     try {
         const result = await invokeTauri('process_face_scan', { probeVector: scanRes.vector, direction: direction });
         if (result.passback_violation) {
-            clearLiveConfirm(laneKey);
             showHudToast('Anti-Passback Blocked', result.message, 'warn');
             return;
         }
         if (result.account_hold) {
-            clearLiveConfirm(laneKey);
             showHudToast('Account On Hold', result.message, 'danger');
             return;
         }
         if (result.is_expired) {
-            clearLiveConfirm(laneKey);
             showHudToast('Pass Expired', result.message, 'danger');
             return;
         }
         if (result.matched) {
             const matchedId = result.member_id || 'unknown';
-            // Button scans are single-shot: seed this frame, capture a second
-            // frame ~650ms later, and apply the same 2-frame liveness
-            // confirmation as the autonomous loops.
-            confirmLiveMatch(laneKey, matchedId, scanRes.vector, scanRes.landmarks);
-            await new Promise(r => setTimeout(r, 650));
-            const frame2 = await captureScanFrame(camNumber);
-            if (frame2) {
-                try {
-                    const scan2 = await invokeTauri('scan_face_frame', { imageBase64: frame2 });
-                    if (scan2 && scan2.face_detected && scan2.vector) {
-                        const confirm = confirmLiveMatch(laneKey, matchedId, scan2.vector, scan2.landmarks);
-                        if (confirm === 'spoof') {
-                            showHudToast('Liveness Check Failed', 'Static image suspected — denied. Present a live face.', 'danger');
-                            return;
-                        }
-                        if (confirm !== 'confirmed') return;
-                    }
-                } catch (e) { /* second-frame failure: fall through to single-match unlock */ }
-            }
             const isCross = result.member_name && cachedMembers.find(m => `${m.first_name} ${m.last_name}` === result.member_name)?.home_gym_name;
             showHudToast(direction === 'in' ? 'Entry Verified' : 'Exit Verified',
                 `${escapeHtml(result.member_name || 'Member')} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
@@ -1997,7 +2004,6 @@ async function doHardwareFaceScan(videoId, direction) {
             await loadAttendanceLogs();
             await refreshDashboard();
         } else {
-            clearLiveConfirm(laneKey);
             if (result.needs_reenroll) {
                 showHudToast('Re-enrollment Needed', 'Face gallery uses a legacy embedding width — re-scan this member in the Studio.', 'warn');
             } else {
@@ -2409,6 +2415,33 @@ async function captureCurrentAngleSnapshot() {
         return;
     }
     clearError();
+
+    // Enrollment liveness gate: a static photo yields bit-identical embeddings
+    // and sub-threshold eye motion across frames, so without this check a
+    // photo could permanently poison a member's gallery. Capture a second
+    // frame ~450ms later and apply the same natural-motion test the gate
+    // loops use — only a NOT-static pair is accepted. Transient second-frame
+    // failures fail open (the gate loops still enforce liveness at match time).
+    if (badge) {
+        badge.innerText = "Verifying live...";
+        badge.className = "text-[9px] text-blue-400 font-bold font-mono mt-0.5";
+    }
+    try {
+        await new Promise(r => setTimeout(r, 450));
+        const liveFrame = captureVideoFrame(video);
+        if (liveFrame) {
+            const liveRes = await invokeTauri('scan_face_frame', { imageBase64: liveFrame });
+            if (liveRes && liveRes.face_detected && liveRes.vector && liveRes.landmarks) {
+                const cos = cosineOf(result.vector, liveRes.vector);
+                const disp = eyeDisplacement(result.landmarks, liveRes.landmarks);
+                if (cos >= 0.999 && disp < liveThresholdPx(result.box)) {
+                    showError("Static image suspected — present your LIVE face for enrollment.");
+                    if (badge) { badge.innerText = "Liveness Fail"; badge.className = "text-[9px] text-red-400 font-bold font-mono mt-0.5"; }
+                    return;
+                }
+            }
+        }
+    } catch (e) { /* transient capture/scan error — fail open, match-time liveness still applies */ }
 
     capturedRegFrames[selectedRegAngle] = dataUrl;
     capturedRegVectors[selectedRegAngle] = result.vector;

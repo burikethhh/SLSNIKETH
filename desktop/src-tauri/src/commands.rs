@@ -548,9 +548,10 @@ pub async fn scan_face_frame(image_base64: String, state: State<'_, AppContext>)
 }
 
 /// Counts persons inside the overhead Camera 3 ROI using the bundled
-/// `yolov8n.onnx` (`crate::vision::PersonCounter`). Called once per 250ms
+/// `yolov8n.onnx` (`crate::vision::PersonCounter`). Called once per 350ms
 /// tick by `armDoorOpenTailgateSurveillance` in the webview during the
-/// 3.5s door-open window; `person_count > 1` means tailgating.
+/// 7.5s door-open window; `person_count > 1` (fused with ROI motion and
+/// per-box tracking) means tailgating.
 #[tauri::command]
 pub async fn count_persons_in_frame(
     image_base64: String,

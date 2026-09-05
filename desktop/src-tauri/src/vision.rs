@@ -506,7 +506,8 @@ impl PersonCounter {
         })
     }
 
-    /// Hardware Settings tunable (Phase E): 0 = hair-trigger, 1 = only gross motion.
+    /// Hardware Settings tunable (Phase E): 1 = most sensitive (lowest motion
+    /// threshold), 0 = only gross motion triggers.
     pub fn set_motion_sensitivity(&self, v: f32) {
         let mut s = self.motion_sensitivity.lock().unwrap_or_else(|e| e.into_inner());
         *s = v.clamp(0.0, 1.0);
