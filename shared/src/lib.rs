@@ -949,3 +949,70 @@ mod password_tests {
         assert!(!verify_password("wrong-pin", &legacy_hash));
     }
 }
+
+#[cfg(test)]
+mod sync_compat_tests {
+    // Sync-contract guards: the exe and cloud deploy independently, so a new
+    // field must never break an old peer's payloads (the 401/400 class of
+    // "same error again" after a one-sided deploy).
+    use super::*;
+
+    #[test]
+    fn legacy_attendance_without_attribution_deserializes() {
+        // Pre-Phase-A row: no linked_member_id / person_count keys at all.
+        let legacy = serde_json::json!({
+            "id": "ATT-OLD",
+            "member_id": "MEM-1",
+            "member_name": "Test Member",
+            "direction": "in",
+            "confidence": 0.9,
+            "tailgate_flag": true,
+            "timestamp": "2026-09-01T00:00:00Z",
+            "sync_status": "pending"
+        });
+        let rec: AttendanceRecord = serde_json::from_value(legacy).expect("legacy row must parse");
+        assert_eq!(rec.linked_member_id, None);
+        assert_eq!(rec.person_count, None);
+        assert!(rec.tailgate_flag);
+    }
+
+    #[test]
+    fn attributed_attendance_roundtrips() {
+        let rec = AttendanceRecord {
+            id: "ATT-NEW".to_string(),
+            member_id: None,
+            member_name: Some("⚠️ Tailgate Intrusion".to_string()),
+            direction: "in".to_string(),
+            confidence: None,
+            tailgate_flag: true,
+            timestamp: Utc::now(),
+            sync_status: "pending".to_string(),
+            linked_member_id: Some("MEM-7".to_string()),
+            person_count: Some(2),
+        };
+        let back: AttendanceRecord =
+            serde_json::from_value(serde_json::to_value(&rec).unwrap()).unwrap();
+        assert_eq!(back.linked_member_id.as_deref(), Some("MEM-7"));
+        assert_eq!(back.person_count, Some(2));
+    }
+
+    #[test]
+    fn sync_response_without_policy_means_keep_local() {
+        // Old cloud: no tailgate_policy key → None → exe keeps local behavior.
+        let v = serde_json::json!({
+            "processed_attendance": 1, "processed_members": 0, "processed_vectors": 0,
+            "processed_sales": 0, "remote_disabled": false, "sister_branch_members": [],
+            "remote_catalog": null, "remote_plans": null, "remote_promos": null,
+            "staff_accounts": null, "server_time": "2026-09-01T00:00:00Z"
+        });
+        let resp: SyncResponse = serde_json::from_value(v).expect("old response must parse");
+        assert!(resp.tailgate_policy.is_none());
+    }
+
+    #[test]
+    fn tailgate_policy_defaults_to_enabled() {
+        let p = TailgatePolicy::default();
+        assert!(p.enabled);
+        assert!(p.siren_cooldown_secs > 0);
+    }
+}

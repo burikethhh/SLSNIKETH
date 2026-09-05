@@ -703,6 +703,18 @@
             };
         }
 
+        // Same 401-storm guard as the owner portal: an expired/revoked CEO
+        // token (Render restarts rotate signing keys unless RSA_PRIVATE_KEY_PEM
+        // is set) re-opens the login modal once instead of failing silently.
+        async function adminFetch(url, options) {
+            const res = await fetch(url, options);
+            if (res.status === 401) {
+                promptAdminKey();
+                throw new Error('CEO session expired (401) — please sign in again.');
+            }
+            return res;
+        }
+
         async function refreshAllData() {
             await Promise.all([fetchGyms(), fetchLicenses(), fetchIncidents(), fetchReleases()]);
         }
@@ -1137,8 +1149,7 @@
 
         async function fetchIncidents() {
             try {
-                const res = await fetch('/api/v1/admin/incidents?limit=50', { headers: getAdminHeaders() });
-                if (res.status === 401) { promptAdminKey(); return; }
+                const res = await adminFetch('/api/v1/admin/incidents?limit=50', { headers: getAdminHeaders() });
                 if (res.ok) {
                     const data = await res.json();
                     ceoIncidents = data.incidents || [];
@@ -1150,7 +1161,7 @@
                 console.error("Failed to fetch tailgate incidents:", e);
             }
             try {
-                const res = await fetch('/api/v1/analytics/fleet', { headers: getAdminHeaders() });
+                const res = await adminFetch('/api/v1/analytics/fleet', { headers: getAdminHeaders() });
                 if (res.ok) {
                     const data = await res.json();
                     ceoBreachByGym7d = data.security_breach_by_gym_7d || {};
@@ -1188,7 +1199,7 @@
 
         async function ackIncident(id) {
             try {
-                const res = await fetch(`/api/v1/admin/incidents/${encodeURIComponent(id)}/ack`, {
+                const res = await adminFetch(`/api/v1/admin/incidents/${encodeURIComponent(id)}/ack`, {
                     method: 'POST',
                     headers: getAdminHeaders()
                 });
@@ -1220,7 +1231,7 @@
 
         async function setGymTailgate(gymId, enabled) {
             try {
-                const res = await fetch(`/api/v1/admin/gyms/${encodeURIComponent(gymId)}/tailgate`, {
+                const res = await adminFetch(`/api/v1/admin/gyms/${encodeURIComponent(gymId)}/tailgate`, {
                     method: 'POST',
                     headers: getAdminHeaders(),
                     body: JSON.stringify({ enabled: !!enabled, siren_cooldown_secs: 300 })

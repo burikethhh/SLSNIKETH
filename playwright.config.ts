@@ -28,7 +28,7 @@ export default defineConfig({
     },
     {
       name: 'cloud',
-      testMatch: /(cloud|owner-guard)\.spec\.ts/,
+      testMatch: /(cloud|owner-guard|auth-recovery)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:8080' },
     },
     {
@@ -42,6 +42,17 @@ export default defineConfig({
       // Desktop static preview — serves desktop/webview as http://127.0.0.1:5175
       command: 'npx http-server desktop/webview -p 5175 --cors -c-1 --silent',
       url: 'http://127.0.0.1:5175',
+      reuseExistingServer: !process.env.CI,
+      timeout: 20_000,
+      stdout: 'ignore',
+      stderr: 'ignore',
+    },
+    {
+      // Cloud dashboards static preview — serves cloud/dashboard as
+      // http://127.0.0.1:8090 for auth-recovery specs (API calls are mocked
+      // with page.route, so no DATABASE_URL / live cloud is needed).
+      command: 'npx http-server cloud/dashboard -p 8090 --cors -c-1 --silent',
+      url: 'http://127.0.0.1:8090',
       reuseExistingServer: !process.env.CI,
       timeout: 20_000,
       stdout: 'ignore',

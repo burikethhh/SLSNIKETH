@@ -869,6 +869,53 @@
     <script>
         const API_BASE = window.location.origin;
         let ownerSession = JSON.parse(localStorage.getItem('gympos_owner_session') || 'null');
+        // Shape guard: sessions stored by older builds (or corrupted writes)
+        // without a Bearer token would 401 every endpoint forever. Drop them
+        // at boot so the login modal shows instead of a dead dashboard.
+        if (ownerSession && (!ownerSession.token || !ownerSession.authenticated)) {
+            ownerSession = null;
+            try { localStorage.removeItem('gympos_owner_session'); } catch (e) {}
+        }
+        let ownerSessionExpiredShown = false;
+
+        // Token format is `owner:<email>:<exp_unix>:<hmac>`. When the embedded
+        // expiry is past, don't bother the server — go straight to login.
+        function ownerTokenExpired() {
+            try {
+                const parts = String(ownerSession && ownerSession.token || '').split(':');
+                if (parts.length < 4) return true;
+                return (parseInt(parts[2], 10) * 1000) < Date.now();
+            } catch (e) { return true; }
+        }
+
+        function handleOwnerSessionExpired() {
+            ownerSession = null;
+            try { localStorage.removeItem('gympos_owner_session'); } catch (e) {}
+            document.getElementById('modal-auth').classList.remove('hidden');
+            if (!ownerSessionExpiredShown) {
+                ownerSessionExpiredShown = true;
+                const errEl = document.getElementById('auth-login-error');
+                if (errEl) {
+                    errEl.textContent = 'Session expired or revoked (server restart rotates signing keys unless RSA_PRIVATE_KEY_PEM is set) — please log in again.';
+                    errEl.classList.remove('hidden');
+                }
+            }
+            // Fail the in-flight call chain with a catchable 401-like error.
+            throw new Error('Owner session expired (401) — re-login required.');
+        }
+
+        // Central authenticated fetch: exactly ONE login prompt per expiry
+        // storm no matter how many parallel dashboard calls 401 together.
+        async function ownerFetch(url, options) {
+            if (!ownerSession || !ownerSession.token || ownerTokenExpired()) {
+                handleOwnerSessionExpired();
+            }
+            const res = await fetch(url, options);
+            if (res.status === 401) {
+                handleOwnerSessionExpired();
+            }
+            return res;
+        }
         let currentAnalytics = null;
         let cachedProducts = [];
         let cachedPlans = [];
@@ -934,7 +981,7 @@
                     body: JSON.stringify({ email, password })
                 });
                 const data = await res.json();
-                if (data.authenticated) {
+                if (data.authenticated && data.token) {
                     ownerSession = data;
                     localStorage.setItem('gympos_owner_session', JSON.stringify(data));
                     document.getElementById('modal-auth').classList.add('hidden');
@@ -1012,7 +1059,7 @@
             if (!name) { msgEl.textContent = 'Branch name required'; msgEl.className='text-xs text-red-400'; return; }
             msgEl.textContent = 'Registering branch location with CEO Command Center...'; msgEl.className='text-xs text-blue-400';
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/gyms`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/gyms`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ownerSession.token}` },
                     body: JSON.stringify({ name, owner_email: ownerSession.owner_email, tier, duration_days: duration })
@@ -1054,7 +1101,7 @@
 
             try {
                 // 1. Fetch Analytics & Branches
-                const res = await fetch(`${API_BASE}/api/v1/owner/analytics`, { headers });
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/analytics`, { headers });
                 if (res.ok) {
                     currentAnalytics = await res.json();
                     renderAnalyticsCards(currentAnalytics);
@@ -1066,7 +1113,7 @@
                 }
 
                 // 2. Fetch Catalog, Plans, Promos
-                const catRes = await fetch(`${API_BASE}/api/v1/owner/catalog`, { headers });
+                const catRes = await ownerFetch(`${API_BASE}/api/v1/owner/catalog`, { headers });
                 if (catRes.ok) {
                     const catData = await catRes.json();
                     cachedProducts = catData.products || [];
@@ -1078,7 +1125,7 @@
                 }
 
                 // 3. Fetch Staff Accounts
-                const staffRes = await fetch(`${API_BASE}/api/v1/owner/staff`, { headers });
+                const staffRes = await ownerFetch(`${API_BASE}/api/v1/owner/staff`, { headers });
                 if (staffRes.ok) {
                     const staffData = await staffRes.json();
                     cachedStaff = staffData.staff || [];
@@ -1099,7 +1146,7 @@
             if (!ownerSession) return;
             const headers = { 'Authorization': `Bearer ${ownerSession.token}` };
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/incidents?limit=50`, { headers });
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/incidents?limit=50`, { headers });
                 if (!res.ok) return;
                 const data = await res.json();
                 ownerIncidents = data.incidents || [];
@@ -1153,7 +1200,7 @@
         async function ackOwnerIncident(id) {
             if (!ownerSession) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/incidents/${id}/ack`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/incidents/${id}/ack`, {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${ownerSession.token}` }
                 });
@@ -1461,7 +1508,7 @@
         async function saveAndSyncProducts() {
             if (!ownerSession) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/products`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/catalog/products`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1582,7 +1629,7 @@
         async function saveAndSyncPlans() {
             if (!ownerSession) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/plans`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/catalog/plans`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1698,7 +1745,7 @@
         async function saveAndSyncPromos() {
             if (!ownerSession) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/catalog/promos`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/catalog/promos`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1829,7 +1876,7 @@
             }
 
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/staff`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/staff`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1861,7 +1908,7 @@
         async function toggleStaffActive(staffId, newStatus) {
             if (!ownerSession) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1889,7 +1936,7 @@
                 return;
             }
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
                     method: 'PUT',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1913,7 +1960,7 @@
             if (!ownerSession) return;
             if (!confirm('Are you sure you want to remove this staff account?')) return;
             try {
-                const res = await fetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
+                const res = await ownerFetch(`${API_BASE}/api/v1/owner/staff/${staffId}`, {
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${ownerSession.token}` }
                 });
