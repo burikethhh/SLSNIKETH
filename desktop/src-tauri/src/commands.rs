@@ -316,6 +316,7 @@ pub fn get_dashboard_summary(state: State<'_, AppContext>) -> Result<serde_json:
     let member_count = state.db.count_members().map_err(|e| e.to_string())?;
     let today_checkins = state.db.count_today_checkins().unwrap_or(0);
     let tailgates = state.db.count_tailgates().unwrap_or(0);
+    let tailgate_unacked = state.db.count_unacked_tailgates().unwrap_or(0);
     let license_status = state.license.current_status();
     let (hw_connected, port_name) = state.hardware.get_status();
 
@@ -329,6 +330,7 @@ pub fn get_dashboard_summary(state: State<'_, AppContext>) -> Result<serde_json:
         "max_members": max_members,
         "today_checkins": today_checkins,
         "tailgate_count": tailgates,
+        "tailgate_unacked": tailgate_unacked,
         "tier": tier_name,
         "license_status": license_status,
         "hardware_connected": hw_connected,
@@ -677,7 +679,7 @@ pub fn log_tailgate_event(state: State<'_, AppContext>) -> Result<serde_json::Va
     let _ = state.hardware.trigger_alarm(4000);
     let log = state
         .db
-        .log_attendance(None, Some("⚠️ Tailgate Intrusion"), "in", None, true)
+        .log_tailgate_incident(None, "⚠️ Tailgate Intrusion", None)
         .map_err(|e| e.to_string())?;
 
     Ok(json!({
@@ -690,6 +692,23 @@ pub fn log_tailgate_event(state: State<'_, AppContext>) -> Result<serde_json::Va
 pub fn list_recent_attendance(limit: Option<usize>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     let logs = state.db.list_recent_attendance(limit.unwrap_or(20)).map_err(|e| e.to_string())?;
     Ok(json!(logs))
+}
+
+/// Phase D: tailgate incident history for the exe resolve-view (newest first).
+#[tauri::command]
+pub fn list_tailgate_incidents(limit: Option<usize>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    let logs = state.db.list_tailgate_incidents(limit.unwrap_or(50)).map_err(|e| e.to_string())?;
+    let unacked = state.db.count_unacked_tailgates().unwrap_or(0);
+    Ok(json!({ "incidents": logs, "unacked": unacked }))
+}
+
+/// Phase D: marks a local tailgate incident reviewed (manager+). Cloud
+/// acknowledgement stays on the dashboards; this clears the local queue.
+#[tauri::command]
+pub fn resolve_tailgate_incident(id: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+    require_role(&state, &[StaffRole::Manager, StaffRole::Owner])?;
+    let updated = state.db.resolve_tailgate_incident(&id).map_err(|e| e.to_string())?;
+    Ok(json!({ "resolved": updated }))
 }
 
 // --- POS Store Commands ---

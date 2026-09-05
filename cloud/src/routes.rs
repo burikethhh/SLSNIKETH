@@ -667,6 +667,8 @@ pub async fn sync_push(
     let remote_plans = state.db.get_plans(&trusted_owner).await.ok();
     let remote_promos = state.db.get_promos(&trusted_owner).await.ok();
     let staff_accounts = state.db.list_staff_for_branch(&trusted_owner, &payload.gym_id).await.ok();
+    // Phase D: remote tailgate policy for this branch (defaults when unset).
+    let tailgate_policy = Some(state.db.get_gym_tailgate_policy(&payload.gym_id).await);
 
     Ok((
         StatusCode::OK,
@@ -681,6 +683,7 @@ pub async fn sync_push(
             remote_plans,
             remote_promos,
             staff_accounts,
+            tailgate_policy,
             server_time: Utc::now(),
         }),
     ))
@@ -770,6 +773,9 @@ pub async fn analytics_fleet(
     let total_cloud_members: usize = state.db.count_cloud_members().await.unwrap_or(0);
     let total_attendance: usize = state.db.count_attendance().await.unwrap_or(0);
     let breach_flags: usize = state.db.count_tailgate_breaches().await.unwrap_or(0);
+    // Phase B: per-branch trailing-7d counts + fleet unacked (Security Console).
+    let breach_by_gym_7d = state.db.tailgate_counts_by_gym(None, 7).await.unwrap_or_default();
+    let breach_unacked: usize = state.db.count_unacked_tailgates(None).await.unwrap_or(0);
 
     Ok((
         StatusCode::OK,
@@ -782,9 +788,95 @@ pub async fn analytics_fleet(
             "total_cloud_members": total_cloud_members,
             "total_attendance_logs": total_attendance,
             "security_breach_flags": breach_flags,
+            "security_breach_unacked": breach_unacked,
+            "security_breach_by_gym_7d": breach_by_gym_7d,
             "server_time": Utc::now(),
         })),
     ))
+}
+
+// --- Phase B/C tailgate incidents (CEO console + owner portal) ---
+
+/// CEO: latest fleet incidents, newest first. `?limit=` capped at 200.
+pub async fn admin_list_incidents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let ceo = verify_admin_auth(&headers, &state.db, &state.tokens).await?;
+    let _ = ceo;
+    let limit: i64 = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).clamp(1, 200);
+    let incidents = state.db.list_tailgate_incidents(None, limit).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB error: {}", e), "code": "DB_ERROR" })))
+    })?;
+    let unacked = state.db.count_unacked_tailgates(None).await.unwrap_or(0);
+    Ok((StatusCode::OK, Json(json!({ "incidents": incidents, "unacked": unacked }))))
+}
+
+/// CEO: acknowledge one incident (records `acknowledged_by` = CEO email).
+pub async fn admin_ack_incident(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let ceo = verify_admin_auth(&headers, &state.db, &state.tokens).await?;
+    let ok = state.db.ack_tailgate_incident(&id, None, &ceo).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB error: {}", e), "code": "DB_ERROR" })))
+    })?;
+    if ok {
+        Ok((StatusCode::OK, Json(json!({ "acknowledged": true, "id": id }))))
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Incident not found", "code": "NOT_FOUND" }))))
+    }
+}
+
+/// CEO: per-branch remote tailgate policy (exe enforces on next sync).
+pub async fn admin_set_gym_tailgate(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(gym_id): Path<Uuid>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _ = verify_admin_auth(&headers, &state.db, &state.tokens).await?;
+    let enabled = payload.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let cooldown = payload.get("siren_cooldown_secs").and_then(|v| v.as_i64()).unwrap_or(300);
+    state.db.set_gym_tailgate_policy(&gym_id, enabled, cooldown).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB error: {}", e), "code": "DB_ERROR" })))
+    })?;
+    Ok((StatusCode::OK, Json(json!({ "gym_id": gym_id, "enabled": enabled, "siren_cooldown_secs": cooldown.clamp(0, 3600) }))))
+}
+
+/// Owner: my franchise's incidents only (identity from token, never payload).
+pub async fn owner_list_incidents(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
+    let limit: i64 = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50).clamp(1, 200);
+    let incidents = state.db.list_tailgate_incidents(Some(&owner_email), limit).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB error: {}", e), "code": "DB_ERROR" })))
+    })?;
+    let unacked = state.db.count_unacked_tailgates(Some(&owner_email)).await.unwrap_or(0);
+    let by_gym_7d = state.db.tailgate_counts_by_gym(Some(&owner_email), 7).await.unwrap_or_default();
+    Ok((StatusCode::OK, Json(json!({ "incidents": incidents, "unacked": unacked, "by_gym_7d": by_gym_7d }))))
+}
+
+/// Owner: ack own incident (scoped — another franchise's id yields 404).
+pub async fn owner_ack_incident(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let owner_email = extract_owner_email(&headers, &state.db, &state.tokens).await?;
+    let ok = state.db.ack_tailgate_incident(&id, Some(&owner_email), &owner_email).await.map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": format!("DB error: {}", e), "code": "DB_ERROR" })))
+    })?;
+    if ok {
+        Ok((StatusCode::OK, Json(json!({ "acknowledged": true, "id": id }))))
+    } else {
+        Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Incident not found", "code": "NOT_FOUND" }))))
+    }
 }
 
 // --- Owner Portal Authentication & Scoped Management ---

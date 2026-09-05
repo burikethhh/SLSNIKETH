@@ -86,7 +86,20 @@ impl CloudDatabase {
                 direction TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 confidence DOUBLE PRECISION,
-                tailgate_flag INTEGER NOT NULL
+                tailgate_flag INTEGER NOT NULL,
+                linked_member_id TEXT,
+                person_count INTEGER,
+                acknowledged INTEGER NOT NULL DEFAULT 0,
+                acknowledged_by TEXT,
+                acknowledged_at TEXT
+            )"#,
+            // Phase B/D: per-branch tailgate policy (remote enable + siren
+            // cooldown), synced down to the exe inside SyncResponse.
+            r#"CREATE TABLE IF NOT EXISTS cloud_gym_tailgate_policy (
+                gym_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                siren_cooldown_secs INTEGER NOT NULL DEFAULT 300,
+                updated_at TEXT NOT NULL
             )"#,
             r#"CREATE TABLE IF NOT EXISTS cloud_owner_accounts (
                 owner_email TEXT PRIMARY KEY,
@@ -203,6 +216,7 @@ impl CloudDatabase {
             "CREATE INDEX IF NOT EXISTS idx_members_gym_status ON cloud_members(home_gym_id, status)",
             "CREATE INDEX IF NOT EXISTS idx_attendance_gym_ts ON cloud_attendance(gym_id, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_attendance_owner_ts ON cloud_attendance(owner_email, timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_attendance_tailgate ON cloud_attendance(tailgate_flag, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_sales_gym_ts ON cloud_sales(gym_id, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_sales_owner_ts ON cloud_sales(owner_email, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_staff_owner_gym ON cloud_staff_accounts(owner_email, gym_id)",
@@ -232,6 +246,12 @@ impl CloudDatabase {
             ("cloud_promos", "label", "ALTER TABLE cloud_promos ADD COLUMN label TEXT NOT NULL DEFAULT ''"),
             ("cloud_sales", "discount_type", "ALTER TABLE cloud_sales ADD COLUMN discount_type TEXT NOT NULL DEFAULT ''"),
             ("cloud_sales", "discount_amount", "ALTER TABLE cloud_sales ADD COLUMN discount_amount DOUBLE PRECISION NOT NULL DEFAULT 0"),
+            // Phase A-D tailgate incidents (attribution + acknowledge lifecycle)
+            ("cloud_attendance", "linked_member_id", "ALTER TABLE cloud_attendance ADD COLUMN linked_member_id TEXT"),
+            ("cloud_attendance", "person_count", "ALTER TABLE cloud_attendance ADD COLUMN person_count INTEGER"),
+            ("cloud_attendance", "acknowledged", "ALTER TABLE cloud_attendance ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0"),
+            ("cloud_attendance", "acknowledged_by", "ALTER TABLE cloud_attendance ADD COLUMN acknowledged_by TEXT"),
+            ("cloud_attendance", "acknowledged_at", "ALTER TABLE cloud_attendance ADD COLUMN acknowledged_at TEXT"),
         ];
         for (table, column, ddl) in MIGRATIONS {
             let exists: bool = sqlx::query_scalar(
@@ -604,8 +624,8 @@ impl CloudDatabase {
         let mut count = 0;
         for l in logs {
             sqlx::query(
-                "INSERT INTO cloud_attendance (id, gym_id, owner_email, member_id, member_name, direction, timestamp, confidence, tailgate_flag)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                "INSERT INTO cloud_attendance (id, gym_id, owner_email, member_id, member_name, direction, timestamp, confidence, tailgate_flag, linked_member_id, person_count)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                  ON CONFLICT(id) DO NOTHING",
             )
             .bind(&l.id)
@@ -617,11 +637,172 @@ impl CloudDatabase {
             .bind(l.timestamp.to_rfc3339())
             .bind(l.confidence)
             .bind(if l.tailgate_flag { 1 } else { 0 })
+            .bind(&l.linked_member_id)
+            .bind(l.person_count)
             .execute(&self.pool)
             .await?;
             count += 1;
         }
         Ok(count)
+    }
+
+    // --- Phase A-D tailgate incidents (CEO + owner feeds, ack lifecycle) ---
+
+    fn incident_from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<gympos_shared::TailgateIncident> {
+        use sqlx::Row as _;
+        let ts_str: String = row.try_get("timestamp")?;
+        let timestamp = DateTime::parse_from_rfc3339(&ts_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        Ok(gympos_shared::TailgateIncident {
+            id: row.try_get("id")?,
+            gym_id: row.try_get("gym_id")?,
+            gym_name: row.try_get::<Option<String>, _>("gym_name")?.unwrap_or_else(|| "Unknown branch".to_string()),
+            owner_email: row.try_get("owner_email")?,
+            member_name: row.try_get("member_name")?,
+            linked_member_id: row.try_get("linked_member_id").unwrap_or(None),
+            person_count: row.try_get("person_count").unwrap_or(None),
+            timestamp,
+            acknowledged: row.try_get::<i32, _>("acknowledged").unwrap_or(0) == 1,
+            acknowledged_by: row.try_get("acknowledged_by").unwrap_or(None),
+        })
+    }
+
+    /// Latest tailgate incidents, newest first. `owner_email=None` = fleet-wide
+    /// (CEO); `Some` = that franchise only (owner portal — enforced again at
+    /// the route layer, this is defense in depth, not the trust boundary).
+    pub async fn list_tailgate_incidents(&self, owner_email: Option<&str>, limit: i64) -> sqlx::Result<Vec<gympos_shared::TailgateIncident>> {
+        let rows = match owner_email {
+            Some(owner) => sqlx::query(
+                "SELECT a.id, a.gym_id, COALESCE(g.name, 'Unknown branch') AS gym_name, a.owner_email,
+                        a.member_name, a.linked_member_id, a.person_count, a.timestamp, a.acknowledged, a.acknowledged_by
+                 FROM cloud_attendance a LEFT JOIN cloud_gyms g ON g.id = a.gym_id
+                 WHERE a.tailgate_flag = 1 AND a.owner_email = $1
+                 ORDER BY a.timestamp DESC LIMIT $2",
+            )
+            .bind(owner)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?,
+            None => sqlx::query(
+                "SELECT a.id, a.gym_id, COALESCE(g.name, 'Unknown branch') AS gym_name, a.owner_email,
+                        a.member_name, a.linked_member_id, a.person_count, a.timestamp, a.acknowledged, a.acknowledged_by
+                 FROM cloud_attendance a LEFT JOIN cloud_gyms g ON g.id = a.gym_id
+                 WHERE a.tailgate_flag = 1
+                 ORDER BY a.timestamp DESC LIMIT $1",
+            )
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?,
+        };
+        rows.iter().map(Self::incident_from_row).collect()
+    }
+
+    /// Acknowledge an incident. Owner callers must pass `Some(owner)` so one
+    /// franchise can never ack another's incidents; CEO passes `None`.
+    pub async fn ack_tailgate_incident(&self, id: &str, owner_email: Option<&str>, by: &str) -> sqlx::Result<bool> {
+        let res = match owner_email {
+            Some(owner) => sqlx::query(
+                "UPDATE cloud_attendance SET acknowledged = 1, acknowledged_by = $1, acknowledged_at = $2
+                 WHERE id = $3 AND tailgate_flag = 1 AND owner_email = $4",
+            )
+            .bind(by)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .bind(owner)
+            .execute(&self.pool)
+            .await?,
+            None => sqlx::query(
+                "UPDATE cloud_attendance SET acknowledged = 1, acknowledged_by = $1, acknowledged_at = $2
+                 WHERE id = $3 AND tailgate_flag = 1",
+            )
+            .bind(by)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(&self.pool)
+            .await?,
+        };
+        Ok(res.rows_affected() > 0)
+    }
+
+    pub async fn count_unacked_tailgates(&self, owner_email: Option<&str>) -> sqlx::Result<usize> {
+        let n: i64 = match owner_email {
+            Some(owner) => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1 AND acknowledged = 0 AND owner_email = $1",
+            )
+            .bind(owner)
+            .fetch_one(&self.pool)
+            .await?,
+            None => sqlx::query_scalar(
+                "SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1 AND acknowledged = 0",
+            )
+            .fetch_one(&self.pool)
+            .await?,
+        };
+        Ok(n as usize)
+    }
+
+    /// Per-branch tailgate counts over the trailing `days` (fleet panel).
+    pub async fn tailgate_counts_by_gym(&self, owner_email: Option<&str>, days: i64) -> sqlx::Result<HashMap<String, i64>> {
+        let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        let rows = match owner_email {
+            Some(owner) => sqlx::query(
+                "SELECT gym_id, COUNT(*) AS n FROM cloud_attendance
+                 WHERE tailgate_flag = 1 AND timestamp >= $1 AND owner_email = $2 GROUP BY gym_id",
+            )
+            .bind(cutoff)
+            .bind(owner)
+            .fetch_all(&self.pool)
+            .await?,
+            None => sqlx::query(
+                "SELECT gym_id, COUNT(*) AS n FROM cloud_attendance
+                 WHERE tailgate_flag = 1 AND timestamp >= $1 GROUP BY gym_id",
+            )
+            .bind(cutoff)
+            .fetch_all(&self.pool)
+            .await?,
+        };
+        let mut map = HashMap::new();
+        for row in rows {
+            use sqlx::Row as _;
+            let gym_id: String = row.try_get(0)?;
+            let n: i64 = row.try_get(1)?;
+            map.insert(gym_id, n);
+        }
+        Ok(map)
+    }
+
+    /// Remote tailgate policy for one branch (defaults when no row exists).
+    pub async fn get_gym_tailgate_policy(&self, gym_id: &Uuid) -> gympos_shared::TailgatePolicy {
+        let row: Option<(i32, i32)> = sqlx::query_as(
+            "SELECT enabled, siren_cooldown_secs FROM cloud_gym_tailgate_policy WHERE gym_id = $1",
+        )
+        .bind(gym_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .unwrap_or(None);
+        match row {
+            Some((enabled, cooldown)) => gympos_shared::TailgatePolicy {
+                enabled: enabled == 1,
+                siren_cooldown_secs: cooldown.max(0) as u64,
+            },
+            None => gympos_shared::TailgatePolicy::default(),
+        }
+    }
+
+    pub async fn set_gym_tailgate_policy(&self, gym_id: &Uuid, enabled: bool, siren_cooldown_secs: i64) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO cloud_gym_tailgate_policy (gym_id, enabled, siren_cooldown_secs, updated_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT(gym_id) DO UPDATE SET enabled = $2, siren_cooldown_secs = $3, updated_at = $4",
+        )
+        .bind(gym_id.to_string())
+        .bind(if enabled { 1 } else { 0 })
+        .bind(siren_cooldown_secs.clamp(0, 3600))
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     // --- Analytics helpers (Stage 5.1) ---

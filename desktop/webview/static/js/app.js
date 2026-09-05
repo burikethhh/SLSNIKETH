@@ -148,6 +148,12 @@ async function invokeTauri(command, args = {}) {
             return { matched: false, is_expired: false, message: "Face not recognized", door_unlocked: false };
         } else if (command === 'list_recent_attendance') {
             return window.cachedAttendanceLogs || [];
+        } else if (command === 'list_tailgate_incidents') {
+            const all = window.cachedAttendanceLogs || [];
+            const incidents = all.filter(l => l.tailgate_flag);
+            return { incidents, unacked: incidents.length };
+        } else if (command === 'resolve_tailgate_incident') {
+            return { resolved: true };
         } else if (command === 'list_products') {
             return [
                 { id: "prod-1", name: "Whey Protein Isolate (2lb)", price: 45.0, stock: 40, category: "supplements" },
@@ -163,7 +169,7 @@ async function invokeTauri(command, args = {}) {
                 { id: "coach-3", name: "Darius Stone", specialty: "Combat & Endurance", phone: "0917-555-0103", active_students: 10 }
             ];
         } else if (command === 'trigger_tailgate_alarm') {
-            return { status: "ALARM_TRIGGERED", reason: "Turnstile ROI multi-occupancy violation" };
+            return { status: "ALARM_TRIGGERED", reason: "Turnstile ROI multi-occupancy violation", siren_suppressed: false, policy_enabled: true };
         } else if (command === 'scan_face_frame') {
             // Browser-preview-only mock (no Tauri/ONNX backend available outside
             // the desktop app) — fabricates a plausible embedding so the UI can
@@ -1367,10 +1373,13 @@ function clearTailgateOverlay() {
     }
 }
 
-function armDoorOpenTailgateSurveillance(durationMs = TAILGATE_WINDOW_MS) {
+let activeWindowMemberId = null; // whose admitted entry Loop 3 attributes if piggybacked
+
+function armDoorOpenTailgateSurveillance(durationMs = TAILGATE_WINDOW_MS, admittedMemberId = null) {
     activeDoorPassageWindow = true;
     doorOpenFrameCount = 0;
     suspiciousFrames = 0;
+    activeWindowMemberId = admittedMemberId || null;
     maxTailgateFrames = Math.max(6, Math.floor(durationMs / TAILGATE_TICK_MS));
     console.debug(`[Security] 1:1 Anti-Tailgate Surveillance armed for ${durationMs}ms`);
 }
@@ -1465,8 +1474,9 @@ async function startAutonomousBiometricEngine() {
                     "success"
                 );
 
-                // Arm 1:1 Door-Open Anti-Tailgate Surveillance for 6.0s (SLS123 standard)
-                armDoorOpenTailgateSurveillance();
+                // Arm 1:1 Door-Open Anti-Tailgate Surveillance for 7.5s,
+                // attributed to this admitted member for the incident record.
+                armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
 
                 await loadAttendanceLogs();
                 await refreshDashboard();
@@ -1561,9 +1571,10 @@ async function startAutonomousBiometricEngine() {
                     "exit"
                 );
 
-                // Exit opens the same 7.5s window: a tailgater can follow an
-                // exiting member just as easily as an entering one.
-                armDoorOpenTailgateSurveillance();
+                // Exit opens the same 7.5s window, attributed to the exiting
+                // member: a tailgater can follow an exiting member just as
+                // easily as an entering one.
+                armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
 
                 await loadAttendanceLogs();
                 await refreshDashboard();
@@ -1646,9 +1657,15 @@ async function startAutonomousBiometricEngine() {
                     activeDoorPassageWindow = false;
                     clearTailgateOverlay();
                     try {
-                        await invokeTauri('trigger_tailgate_alarm', {
-                            reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`
-                        });
+                        const alarmRes = await invokeTauri('trigger_tailgate_alarm', {
+                            reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`,
+                            linkedMemberId: activeWindowMemberId,
+                            personCount: res.person_count
+                        }).catch(() => null);
+                        activeWindowMemberId = null;
+                        const sirenNote = alarmRes && alarmRes.siren_suppressed
+                            ? ' Siren held (log-only mode or cooldown) — incident recorded.'
+                            : ' Hardware Siren Active!';
 
                         const banner = document.getElementById('tailgate-siren-banner');
                         if (banner) {
@@ -1658,7 +1675,7 @@ async function startAutonomousBiometricEngine() {
 
                         showHudToast(
                             "Anti-Tailgate Violation",
-                            `Tailgating Detected! Multiple persons in Turnstile ROI during gate transit (${res.person_count} persons). Hardware Siren Active!`,
+                            `Tailgating Detected! Multiple persons in Turnstile ROI during gate transit (${res.person_count} persons).${sirenNote}`,
                             "danger"
                         );
 
@@ -1825,7 +1842,7 @@ async function doHardwareFaceScan(videoId, direction) {
             const isCross = result.member_name && cachedMembers.find(m => `${m.first_name} ${m.last_name}` === result.member_name)?.home_gym_name;
             showHudToast(direction === 'in' ? 'Entry Verified' : 'Exit Verified',
                 `${escapeHtml(result.member_name || 'Member')} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
-            armDoorOpenTailgateSurveillance();
+            armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
             await loadAttendanceLogs();
             await refreshDashboard();
         } else {
@@ -3716,18 +3733,54 @@ async function cancelCoachSession(sessionId) {
 
 // --- Live Gate & Anti-Tailgate Incident System ---
 
+let attendanceTailgateOnly = false;
+
+function toggleTailgateFilter() {
+    attendanceTailgateOnly = !attendanceTailgateOnly;
+    const btn = document.getElementById('btn-tailgate-filter');
+    if (btn) {
+        btn.innerText = attendanceTailgateOnly ? 'Show all activity' : 'Show tailgate only';
+        btn.className = attendanceTailgateOnly
+            ? 'px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-red-950 hover:bg-red-900 text-red-200 border border-red-800 transition'
+            : 'px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition';
+    }
+    loadAttendanceLogs();
+}
+
+async function resolveTailgateIncident(id) {
+    try {
+        await invokeTauri('resolve_tailgate_incident', { id });
+        await loadAttendanceLogs();
+        await refreshDashboard();
+    } catch (e) {
+        alert("Resolve failed (manager/owner login required): " + e);
+    }
+}
+
 async function loadAttendanceLogs() {
     try {
-        const logs = await invokeTauri('list_recent_attendance', { limit: 15 });
+        const [logs, inc] = await Promise.all([
+            invokeTauri('list_recent_attendance', { limit: 15 }),
+            invokeTauri('list_tailgate_incidents', { limit: 1 }).catch(() => null)
+        ]);
         const tbody = document.getElementById('attendance-log-tbody');
+        if (tbody) {
+            const badge = document.getElementById('tailgate-unacked-badge');
+            const unacked = inc && typeof inc.unacked === 'number' ? inc.unacked : 0;
+            if (badge) {
+                badge.innerText = `${unacked} unreviewed`;
+                badge.classList.toggle('hidden', unacked === 0);
+            }
+        }
         if (!tbody) return;
 
-        if (!Array.isArray(logs) || logs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No recent gate activity</td></tr>';
+        const rows = attendanceTailgateOnly && Array.isArray(logs) ? logs.filter(l => l.tailgate_flag) : logs;
+        if (!Array.isArray(rows) || rows.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-slate-500">${attendanceTailgateOnly ? 'No tailgate incidents in recent activity' : 'No recent gate activity'}</td></tr>`;
             return;
         }
 
-        tbody.innerHTML = logs.map(l => {
+        tbody.innerHTML = rows.map(l => {
             const isTailgate = l.tailgate_flag;
             const isOverride = l.direction === 'override' || (l.member_name && l.member_name.includes('STAFF MANUAL'));
             const isWalkIn = l.member_name && l.member_name.startsWith('Walk-In:');
@@ -3754,7 +3807,10 @@ async function loadAttendanceLogs() {
 
             let flagBadge = '<span class="text-slate-500 text-[10px]">Normal</span>';
             if (isTailgate) {
-                flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>';
+                const attrib = l.linked_member_id
+                    ? `<div class="text-[9px] text-red-300/70 font-mono mt-0.5">via ${escapeHtml(l.linked_member_id)}${l.person_count ? ` · ${l.person_count}p` : ''}</div>`
+                    : (l.person_count ? `<div class="text-[9px] text-red-300/70 font-mono mt-0.5">${l.person_count}p in ROI</div>` : '');
+                flagBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>${attrib}<button onclick="resolveTailgateIncident('${l.id}')" title="Mark reviewed (manager/owner)" class="mt-1 px-2 py-0.5 rounded text-[9px] bg-slate-800 hover:bg-emerald-950 text-slate-300 hover:text-emerald-300 border border-slate-700 font-semibold transition">Resolve</button>`;
             } else if (isInterbranchVisitor) {
                 flagBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-purple-950 text-purple-300 border border-purple-800 font-bold" title="Home: ${interMember.home_gym_name}"><span>📍 Inter-Branch Visitor</span><span class="font-mono text-[9px]">[${interMember.home_gym_name}]</span></span>`;
             } else if (isOverride) {

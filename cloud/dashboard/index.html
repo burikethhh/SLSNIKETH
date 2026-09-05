@@ -280,6 +280,45 @@
             </div>
         </div>
 
+        <!-- 3b. Tailgate Security Console (Phase B: fleet incidents + per-branch policy) -->
+        <div class="glass-panel p-5 space-y-4 border border-red-900/40">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <div class="icon-box bg-red-950/80 border border-red-500/30 text-red-300">
+                        <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-red-100 brand">Tailgate Security Console</h2>
+                        <p class="text-xs text-red-400/60">Piggyback incidents synced from terminals · acknowledge to clear · policy lands on next terminal sync</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span id="ceo-security-unacked" class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-red-950 text-red-300 border border-red-800">0 unacked</span>
+                    <button onclick="fetchIncidents()" class="px-3 py-1.5 rounded-lg text-xs bg-red-900/40 hover:bg-red-800/60 text-red-200 border border-red-500/20 transition">Refresh</button>
+                </div>
+            </div>
+
+            <div id="ceo-security-branches" class="flex flex-wrap gap-2 text-xs"></div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-xs border-collapse">
+                    <thead>
+                        <tr class="border-b border-red-900/40 text-red-400">
+                            <th class="pb-2">Time</th>
+                            <th class="pb-2">Branch</th>
+                            <th class="pb-2">Piggybacked Entry</th>
+                            <th class="pb-2">Persons</th>
+                            <th class="pb-2">Status</th>
+                            <th class="pb-2 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="security-incidents-tbody" class="divide-y divide-red-900/20">
+                        <tr><td colspan="6" class="py-6 text-center text-red-400/50">Loading tailgate incidents...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- 3. Fleet Release & Auto-Updater Scalability Controller -->
         <div class="glass-panel p-5 space-y-4 border border-purple-900/40">
             <div class="flex items-center justify-between border-b border-purple-900/40 pb-3">
@@ -665,7 +704,7 @@
         }
 
         async function refreshAllData() {
-            await Promise.all([fetchGyms(), fetchLicenses(), fetchReleases()]);
+            await Promise.all([fetchGyms(), fetchLicenses(), fetchIncidents(), fetchReleases()]);
         }
 
         let ownerHierarchy = [];
@@ -738,6 +777,7 @@
 
                     renderOwnersHierarchy();
                     updateMetrics();
+                    renderSecurityBranches();
                 }
             } catch (e) {
                 console.error("Failed to fetch owners hierarchy:", e);
@@ -1089,6 +1129,117 @@
 
             const revokedCount = storedLicenses.filter(l => l.is_revoked).length + disabledGymIds.size;
             document.getElementById('stat-disabled-count').innerText = `${revokedCount} Revoked`;
+        }
+
+        // --- Phase B: Tailgate Security Console ---
+        let ceoIncidents = [];
+        let ceoBreachByGym7d = {};
+
+        async function fetchIncidents() {
+            try {
+                const res = await fetch('/api/v1/admin/incidents?limit=50', { headers: getAdminHeaders() });
+                if (res.status === 401) { promptAdminKey(); return; }
+                if (res.ok) {
+                    const data = await res.json();
+                    ceoIncidents = data.incidents || [];
+                    const badge = document.getElementById('ceo-security-unacked');
+                    if (badge) badge.innerText = `${data.unacked ?? 0} unacked`;
+                    renderIncidents();
+                }
+            } catch (e) {
+                console.error("Failed to fetch tailgate incidents:", e);
+            }
+            try {
+                const res = await fetch('/api/v1/analytics/fleet', { headers: getAdminHeaders() });
+                if (res.ok) {
+                    const data = await res.json();
+                    ceoBreachByGym7d = data.security_breach_by_gym_7d || {};
+                    renderSecurityBranches();
+                }
+            } catch (e) {
+                console.error("Failed to fetch fleet breach overview:", e);
+            }
+        }
+
+        function renderIncidents() {
+            const tbody = document.getElementById('security-incidents-tbody');
+            if (!tbody) return;
+            if (ceoIncidents.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="py-6 text-center text-red-400/50">No tailgate incidents synced yet.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = ceoIncidents.map(inc => {
+                const when = new Date(inc.timestamp).toLocaleString();
+                const acked = inc.acknowledged
+                    ? `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">ACKED${inc.acknowledged_by ? ` by ${ceoEscape(inc.acknowledged_by)}` : ''}</span>`
+                    : `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-red-950 text-red-300 border border-red-800 animate-pulse">OPEN</span>`;
+                return `
+                    <tr class="hover:bg-red-950/20 transition ${inc.acknowledged ? 'opacity-50' : ''}">
+                        <td class="py-2.5 text-red-300/80 font-mono text-[11px]">${ceoEscape(when)}</td>
+                        <td class="py-2.5 font-semibold text-red-100">${ceoEscape(inc.gym_name)}</td>
+                        <td class="py-2.5 text-red-300 text-[11px]">${inc.linked_member_id ? `admitted <span class="font-mono">${ceoEscape(inc.linked_member_id)}</span>` : '<span class="text-slate-500">unattributed</span>'}</td>
+                        <td class="py-2.5 font-mono text-[11px]">${inc.person_count ?? '?'}</td>
+                        <td class="py-2.5">${acked}</td>
+                        <td class="py-2.5 text-right">${inc.acknowledged ? '' : `<button onclick="ackIncident('${jsAttr(inc.id)}')" class="px-2 py-1 rounded text-[10px] font-bold bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 transition">Acknowledge</button>`}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        async function ackIncident(id) {
+            try {
+                const res = await fetch(`/api/v1/admin/incidents/${encodeURIComponent(id)}/ack`, {
+                    method: 'POST',
+                    headers: getAdminHeaders()
+                });
+                if (res.ok) await fetchIncidents();
+                else alert("Acknowledge failed: " + res.statusText);
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        // Per-branch 7d breach chips + remote tailgate enable/disable. Policy
+        // lands on the terminal at its next sync (≤30s idle cadence).
+        function renderSecurityBranches() {
+            const wrap = document.getElementById('ceo-security-branches');
+            if (!wrap || !ownerHierarchy) return;
+            const chips = [];
+            ownerHierarchy.forEach(o => (o.branches || []).forEach(b => {
+                const n = ceoBreachByGym7d[b.gym_id] || 0;
+                chips.push(`
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] border ${n > 0 ? 'bg-red-950/60 text-red-200 border-red-800' : 'bg-purple-950/40 text-purple-300 border-purple-800/40'}">
+                        <b>${ceoEscape(b.name)}</b><span class="font-mono">${n}/7d</span>
+                        <button onclick="setGymTailgate('${jsAttr(b.gym_id)}', true)" title="Enable tailgate siren on this branch" class="px-1.5 rounded bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 font-bold">ON</button>
+                        <button onclick="setGymTailgate('${jsAttr(b.gym_id)}', false)" title="Log-only mode: incidents still recorded, siren stays silent" class="px-1.5 rounded bg-slate-900 hover:bg-red-950 text-slate-300 border border-slate-700 font-bold">OFF</button>
+                    </span>
+                `);
+            }));
+            wrap.innerHTML = chips.length ? chips.join('') : '<span class="text-xs text-red-400/50">No branches yet.</span>';
+        }
+
+        async function setGymTailgate(gymId, enabled) {
+            try {
+                const res = await fetch(`/api/v1/admin/gyms/${encodeURIComponent(gymId)}/tailgate`, {
+                    method: 'POST',
+                    headers: getAdminHeaders(),
+                    body: JSON.stringify({ enabled: !!enabled, siren_cooldown_secs: 300 })
+                });
+                if (res.ok) showToasted(`Tailgate ${enabled ? 'enabled' : 'log-only'} for branch — applies on next terminal sync.`);
+                else alert("Policy update failed: " + res.statusText);
+            } catch (e) {
+                alert("Network error: " + e);
+            }
+        }
+
+        function showToasted(msg) {
+            try {
+                const el = document.createElement('div');
+                el.className = 'fixed bottom-4 right-4 px-4 py-2 rounded-lg text-xs font-bold bg-emerald-950 text-emerald-200 border border-emerald-700 shadow-2xl';
+                el.innerText = msg;
+                document.body.appendChild(el);
+                setTimeout(() => el.remove(), 4000);
+            } catch (e) { alert(msg); }
         }
 
         async function submitRegisterGym() {

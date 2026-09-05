@@ -11,6 +11,10 @@ pub struct CloudSyncWorker {
     pub db: Arc<Database>,
     pub license: Arc<LicenseManager>,
     pub cloud_url: String,
+    /// Phase D: shared with `AppContext.tailgate_policy` — the worker writes
+    /// the cloud's per-branch policy here on every successful push so gate
+    /// commands honor remote enable/cooldown without a restart.
+    pub policy_sink: Option<Arc<parking_lot::RwLock<gympos_shared::TailgatePolicy>>>,
 }
 
 impl CloudSyncWorker {
@@ -19,7 +23,13 @@ impl CloudSyncWorker {
             db,
             license,
             cloud_url: cloud_url.unwrap_or_else(|| "https://gympos-cloud.onrender.com".to_string()),
+            policy_sink: None,
         }
+    }
+
+    pub fn with_policy_sink(mut self, sink: Arc<parking_lot::RwLock<gympos_shared::TailgatePolicy>>) -> Self {
+        self.policy_sink = Some(sink);
+        self
     }
 
     /// Spawns the background synchronization loop with real-time kill-switch polling & inter-branch sync.
@@ -164,6 +174,13 @@ impl CloudSyncWorker {
                                         if !staff.is_empty() {
                                             let count = self.db.upsert_synced_staff(staff).unwrap_or(0);
                                             info!("Staff sync: Ingested {} staff accounts from Cloud Owner Portal", count);
+                                        }
+                                    }
+
+                                    // D2. Phase D: remote tailgate policy for this branch.
+                                    if let Some(ref policy) = body.tailgate_policy {
+                                        if let Some(ref sink) = self.policy_sink {
+                                            *sink.write() = policy.clone();
                                         }
                                     }
 

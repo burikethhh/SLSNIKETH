@@ -84,8 +84,11 @@ pub fn run() {
     let db_arc = Arc::new(db);
     let license_arc = Arc::new(license);
 
-    // Start background cloud sync loop
-    let sync_worker = CloudSyncWorker::new(db_arc.clone(), license_arc.clone(), None);
+    // Start background cloud sync loop (shares the tailgate policy handle so
+    // Phase-D remote enable/cooldown lands without a restart).
+    let tailgate_policy = Arc::new(parking_lot::RwLock::new(gympos_shared::TailgatePolicy::default()));
+    let sync_worker = CloudSyncWorker::new(db_arc.clone(), license_arc.clone(), None)
+        .with_policy_sink(tailgate_policy.clone());
     sync_worker.start_background_sync();
 
     // Background 60s janitor: purge expired walk-in profiles from memory
@@ -110,6 +113,8 @@ pub fn run() {
         face_engine: Arc::new(face_engine),
         person_counter: Arc::new(person_counter),
         pin_gate: Arc::new(std::sync::Mutex::new(commands::PinGate::default())),
+        tailgate_policy,
+        last_tailgate_alarm: Arc::new(std::sync::Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -157,6 +162,8 @@ pub fn run() {
             commands::process_face_scan,
             commands::log_tailgate_event,
             commands::list_recent_attendance,
+            commands::list_tailgate_incidents,
+            commands::resolve_tailgate_incident,
             commands::list_products,
             commands::create_product,
             commands::update_product,
