@@ -7,13 +7,18 @@ import { test, expect } from '@playwright/test';
 test.describe('desktop webview', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
-    // Wait for app init (switchView + loadMembers mock)
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(500);
+    // Unlock mock terminal session so nav clicks can proceed
+    await page.evaluate(() => {
+      (window as any).currentTerminalSession = { role: 'owner', display_name: 'Test Owner' };
+      (window as any).unlockTerminalUI?.();
+    });
+    await page.waitForTimeout(500);
   });
 
-  test('10 nav items render + inter-branch present', async ({ page }) => {
+  test('12 nav items render + inter-branch present', async ({ page }) => {
     const navItems = page.locator('.nav-item');
-    await expect(navItems).toHaveCount(10);
+    await expect(navItems).toHaveCount(12);
     await expect(page.locator('.nav-item', { hasText: 'Inter-Branch Sync' })).toBeVisible();
     await expect(page.locator('.nav-item', { hasText: 'Dashboard' }).first()).toBeVisible();
     await expect(page.locator('.nav-item', { hasText: 'Hardware Settings' })).toBeVisible();
