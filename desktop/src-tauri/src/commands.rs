@@ -427,8 +427,8 @@ pub fn process_walk_in(req: CreateWalkInRequest, state: State<'_, AppContext>) -
         .db
         .log_attendance(Some(&record.id), Some(&format!("Walk-In: {}", req.guest_name)), "in", Some(1.0), false);
 
-    // 4. Trigger magnetic lock unlock for 3 seconds
-    let _ = state.hardware.unlock_door(3000);
+    // 4. Trigger magnetic lock unlock for 3 seconds with Welcome LCD greeting
+    let _ = state.hardware.grant_entry(&req.guest_name, 3000);
 
     Ok(record)
 }
@@ -636,7 +636,11 @@ pub fn process_face_scan(
         let mut unlocked = false;
         if let Some(claims) = state.license.current_claims() {
             if claims.hardware_lock_enabled {
-                let _ = state.hardware.unlock_door(3000);
+                if direction == "out" {
+                    let _ = state.hardware.grant_exit(&m.member_name, 3000);
+                } else {
+                    let _ = state.hardware.grant_entry(&m.member_name, 3000);
+                }
                 unlocked = true;
             }
         }

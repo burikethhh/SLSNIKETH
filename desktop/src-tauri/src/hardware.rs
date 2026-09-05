@@ -202,6 +202,22 @@ impl HardwareManager {
         Ok(format!("Unlock command sent ({}s)", secs))
     }
 
+    pub fn grant_entry(&self, member_name: &str, duration_ms: u32) -> Result<String, String> {
+        let secs = std::cmp::max(1, duration_ms / 1000);
+        let clean_name: String = member_name.chars().take(16).collect();
+        let cmd = format!("WELCOME:{}|{}", clean_name, secs);
+        self.send_command(&cmd)?;
+        Ok(format!("Welcome sent for {} ({}s)", clean_name, secs))
+    }
+
+    pub fn grant_exit(&self, member_name: &str, duration_ms: u32) -> Result<String, String> {
+        let secs = std::cmp::max(1, duration_ms / 1000);
+        let clean_name: String = member_name.chars().take(16).collect();
+        let cmd = format!("BYE:{}|{}", clean_name, secs);
+        self.send_command(&cmd)?;
+        Ok(format!("Bye sent for {} ({}s)", clean_name, secs))
+    }
+
     pub fn trigger_alarm(&self, duration_ms: u32) -> Result<String, String> {
         let cmd = "ALERT_TAILGATE";
         self.send_command(cmd)?;

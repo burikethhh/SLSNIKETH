@@ -18,7 +18,15 @@
         Character 0: Lock icon
         Character 1: Unlock icon
         Character 2: Alert icon
-    - No push-buttons or external LED indicators required.
+    - Idle Screen:
+        Line 1: [Lock] GymPOS by SLS
+        Line 2:    Scan Face
+    - Verified Entry:
+        Line 1: [Unlock] Welcome
+        Line 2: <Member Name>
+    - Verified Exit:
+        Line 1: [Unlock] Bye
+        Line 2: <Member Name>
     - Continuous camera feeds with automated face detection & anti-tailgate
       verification handled upstream by the GymPOS PC host application.
     - Tailgate alarm arms automatically on every verified entry/exit.
@@ -29,25 +37,27 @@
         relay OFF = pinMode(INPUT)  → high impedance → locked
         relay ON  = OUTPUT + LOW    → pulls IN to GND → unlocked
 
-  Serial Commands (case-insensitive, \n terminated):
-    UNLOCK             → open solenoid 5s + success beep + LCD "Access Granted"
-    UNLOCK:<seconds>   → open solenoid for custom duration (in seconds or ms)
-    LOCK               → force-lock immediately
-    DENY               → triple beep + LCD "Access Denied"
-    DENY:<reason>      → triple beep + LCD shows reason text
-    BEEP               → single short beep
-    BEEP_LONG          → long 2-second warning beep
-    ALERT_TAILGATE     → rapid pulsing alarm (~9s) + LCD warning
-    ALARM              → alias for ALERT_TAILGATE
-    LCD:<line1>|<line2> → display custom text on LCD (| separates lines)
-    LCD_CLEAR          → clear LCD and return to idle screen
-    PING               → reply ACK:PONG (health check)
-    STATUS             → reply with current lock state (ACK:STATUS:LOCKED|UNLOCKED)
+  Serial Commands (case-insensitive command names, \n terminated):
+    WELCOME:<name>[|<sec>] → unlock + success beep + LCD "Welcome" / "<name>"
+    BYE:<name>[|<sec>]     → unlock + exit beep + LCD "Bye" / "<name>"
+    UNLOCK                 → open solenoid 5s + success beep + LCD "Access Granted"
+    UNLOCK:<seconds>       → open solenoid for custom duration (in seconds or ms)
+    LOCK                   → force-lock immediately + LCD "Door Locked"
+    DENY                   → triple beep + LCD "Access Denied"
+    DENY:<reason>          → triple beep + LCD shows reason text
+    BEEP                   → single short beep
+    BEEP_LONG              → long 2-second warning beep
+    ALERT_TAILGATE         → rapid pulsing alarm (~9s) + LCD warning
+    ALARM                  → alias for ALERT_TAILGATE
+    LCD:<line1>|<line2>    → display custom text on LCD (| separates lines)
+    LCD_CLEAR              → clear LCD and return to idle screen
+    PING                   → reply ACK:PONG (health check)
+    STATUS                 → reply with current lock state (ACK:STATUS:LOCKED|UNLOCKED)
 
   Messages Sent TO PC:
-    READY              → sent once on boot
-    ACK:<cmd>          → acknowledgement for every command
-    ACK:RELOCK         → auto-lock notification after unlock timer expires
+    READY                  → sent once on boot
+    ACK:<cmd>              → acknowledgement for every command
+    ACK:RELOCK             → auto-lock notification after unlock timer expires
 */
 
 #include <Arduino.h>
@@ -108,12 +118,12 @@ unsigned long lcdIdleAfter  = 0;       // auto-return to idle screen
 bool isLocked               = true;
 
 // ───────────── Custom LCD Characters ─────────
-// Lock icon
-byte lockChar[8] = {0b01110,0b10001,0b10001,0b11111,0b11011,0b11011,0b11111,0b00000};
-// Unlock icon
+// Lock icon (Character 0)
+byte lockChar[8]   = {0b01110,0b10001,0b10001,0b11111,0b11011,0b11011,0b11111,0b00000};
+// Unlock icon (Character 1)
 byte unlockChar[8] = {0b01110,0b10000,0b10000,0b11111,0b11011,0b11011,0b11111,0b00000};
-// Alert icon
-byte alertChar[8] = {0b00100,0b00100,0b01110,0b01110,0b11111,0b11111,0b00100,0b00000};
+// Alert icon (Character 2)
+byte alertChar[8]  = {0b00100,0b00100,0b01110,0b01110,0b11111,0b11111,0b00100,0b00000};
 
 // ───────────── Non-blocking Buzzer ───────────
 // Plays patterns without delay() so the main loop keeps running smoothly.
@@ -177,9 +187,9 @@ void lcdShowIdle() {
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->write(0);  // lock icon
-  lcd->print(" GYMPOS READY");
+  lcd->print(" GymPOS by SLS");
   lcd->setCursor(0, 1);
-  lcd->print("Scan face");
+  lcd->print("   Scan Face    ");
 }
 
 void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000) {
@@ -229,9 +239,43 @@ void unlockDoor(unsigned long ms) {
   Serial.println("ACK:UNLOCK");
 }
 
+void grantWelcome(const String& name, unsigned long ms) {
+  unlockUntil = millis() + ms;
+  setLocked(false);
+  buzzerStart(PAT_SUCCESS);
+  if (lcd) {
+    lcd->clear();
+    lcd->setCursor(0, 0);
+    lcd->write(1);  // unlock icon
+    lcd->print(" Welcome");
+    lcd->setCursor(0, 1);
+    String displayName = (name.length() > 0) ? name : "Member";
+    lcd->print(displayName.substring(0, 16));
+  }
+  lcdIdleAfter = millis() + ms + 1500;
+  Serial.println("ACK:WELCOME");
+}
+
+void grantBye(const String& name, unsigned long ms) {
+  unlockUntil = millis() + ms;
+  setLocked(false);
+  buzzerStart(PAT_EXIT);
+  if (lcd) {
+    lcd->clear();
+    lcd->setCursor(0, 0);
+    lcd->write(1);  // unlock icon
+    lcd->print(" Bye");
+    lcd->setCursor(0, 1);
+    String displayName = (name.length() > 0) ? name : "Member";
+    lcd->print(displayName.substring(0, 16));
+  }
+  lcdIdleAfter = millis() + ms + 1500;
+  Serial.println("ACK:BYE");
+}
+
 // ───────────── Helpers ───────────────────────
 unsigned long parseSeconds(const String& arg, unsigned long defaultMs) {
-  // Parse "UNLOCK:10" → 10000ms, "UNLOCK:3000" → 3000ms, fallback to defaultMs
+  // Parse "10" → 10000ms, "3000" → 3000ms, fallback to defaultMs
   if (arg.length() == 0) return defaultMs;
   long val = arg.toInt();
   if (val <= 0) return defaultMs;
@@ -245,24 +289,54 @@ unsigned long parseSeconds(const String& arg, unsigned long defaultMs) {
 
 // ───────────── Command Parser ────────────────
 void processSerialCommand(const String& cmdRaw) {
-  String cmd = cmdRaw;
-  cmd.trim();
-  cmd.toUpperCase();
-
-  if (cmd.length() == 0) return;
+  String trimmed = cmdRaw;
+  trimmed.trim();
+  if (trimmed.length() == 0) return;
 
   // Split on first ':' for parameterized commands
-  String base = cmd;
-  String arg  = "";
-  int colonIdx = cmd.indexOf(':');
-  if (colonIdx >= 0) {
-    base = cmd.substring(0, colonIdx);
-    arg  = cmd.substring(colonIdx + 1);
+  int colonIdx = trimmed.indexOf(':');
+  String base = (colonIdx >= 0) ? trimmed.substring(0, colonIdx) : trimmed;
+  base.trim();
+  base.toUpperCase();
+
+  String argRaw = (colonIdx >= 0) ? trimmed.substring(colonIdx + 1) : "";
+  argRaw.trim();
+
+  // ── WELCOME ── (WELCOME:John Doe or WELCOME:John Doe|3)
+  if (base == "WELCOME") {
+    int pipeIdx = argRaw.indexOf('|');
+    String name = (pipeIdx >= 0) ? argRaw.substring(0, pipeIdx) : argRaw;
+    name.trim();
+    unsigned long ms = (pipeIdx >= 0) ? parseSeconds(argRaw.substring(pipeIdx + 1), DEFAULT_UNLOCK_MS) : DEFAULT_UNLOCK_MS;
+    grantWelcome(name, ms);
+    return;
+  }
+
+  // ── BYE ── (BYE:John Doe or BYE:John Doe|3)
+  if (base == "BYE" || base == "GOODBYE") {
+    int pipeIdx = argRaw.indexOf('|');
+    String name = (pipeIdx >= 0) ? argRaw.substring(0, pipeIdx) : argRaw;
+    name.trim();
+    unsigned long ms = (pipeIdx >= 0) ? parseSeconds(argRaw.substring(pipeIdx + 1), DEFAULT_UNLOCK_MS) : DEFAULT_UNLOCK_MS;
+    grantBye(name, ms);
+    return;
   }
 
   // ── UNLOCK ──
   if (base == "UNLOCK") {
-    unsigned long ms = parseSeconds(arg, DEFAULT_UNLOCK_MS);
+    String argUpper = argRaw;
+    argUpper.toUpperCase();
+    if (argUpper.startsWith("IN:") || argUpper.startsWith("WELCOME:")) {
+      String name = argRaw.substring(argRaw.indexOf(':') + 1);
+      grantWelcome(name, DEFAULT_UNLOCK_MS);
+      return;
+    }
+    if (argUpper.startsWith("OUT:") || argUpper.startsWith("BYE:")) {
+      String name = argRaw.substring(argRaw.indexOf(':') + 1);
+      grantBye(name, DEFAULT_UNLOCK_MS);
+      return;
+    }
+    unsigned long ms = parseSeconds(argRaw, DEFAULT_UNLOCK_MS);
     unlockDoor(ms);
     return;
   }
@@ -284,11 +358,8 @@ void processSerialCommand(const String& cmdRaw) {
       lcd->setCursor(0, 0);
       lcd->print("  ACCESS DENIED");
       lcd->setCursor(0, 1);
-      if (arg.length() > 0) {
-        // Show reason from PC: DENY:Expired, DENY:Not a member, etc.
-        String reason = cmdRaw.substring(colonIdx + 1);
-        reason.trim();
-        lcd->print(reason.substring(0, 16));
+      if (argRaw.length() > 0) {
+        lcd->print(argRaw.substring(0, 16));
       } else {
         lcd->print("  Unauthorized");
       }
@@ -328,38 +399,36 @@ void processSerialCommand(const String& cmdRaw) {
 
   // ── LCD ── (LCD:Hello World|Line 2)
   if (base == "LCD") {
-    String raw = cmdRaw.substring(colonIdx + 1);
-    raw.trim();
-    int pipe = raw.indexOf('|');
-    String l1 = (pipe >= 0) ? raw.substring(0, pipe) : raw;
-    String l2 = (pipe >= 0) ? raw.substring(pipe + 1) : "";
+    int pipe = argRaw.indexOf('|');
+    String l1 = (pipe >= 0) ? argRaw.substring(0, pipe) : argRaw;
+    String l2 = (pipe >= 0) ? argRaw.substring(pipe + 1) : "";
     lcdShow(l1, l2, 8000);
     Serial.println("ACK:LCD");
     return;
   }
 
   // ── LCD_CLEAR ──
-  if (cmd == "LCD_CLEAR") {
+  if (base == "LCD_CLEAR") {
     lcdShowIdle();
     Serial.println("ACK:LCD_CLEAR");
     return;
   }
 
   // ── PING ──
-  if (cmd == "PING") {
+  if (base == "PING") {
     Serial.println("ACK:PONG");
     return;
   }
 
   // ── STATUS ──
-  if (cmd == "STATUS") {
+  if (base == "STATUS") {
     Serial.print("ACK:STATUS:");
     Serial.println(isLocked ? "LOCKED" : "UNLOCKED");
     return;
   }
 
   Serial.print("ACK:UNKNOWN:");
-  Serial.println(cmd);
+  Serial.println(trimmed);
 }
 
 // ───────────── Setup ─────────────────────────
