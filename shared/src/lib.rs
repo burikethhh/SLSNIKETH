@@ -278,6 +278,10 @@ pub struct WalkInRecord {
     pub payment_method: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    /// Stored enrollment vector (None for code-only passes). Enables
+    /// renew-without-rescan: extend re-upserts this into the live store.
+    #[serde(default)]
+    pub face_vector: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -301,6 +305,29 @@ pub struct CameraConfig {
     pub roi_width: f32,
     pub roi_height: f32,
     pub roi_sensitivity: f32,
+    /// Phase E tunables (Hardware Settings → Recognition Tuning). All
+    /// `#[serde(default)]` so old saved configs keep working.
+    #[serde(default = "default_match_threshold")]
+    pub match_threshold: f32,
+    #[serde(default = "default_adapt_threshold")]
+    pub adapt_threshold: f32,
+    #[serde(default = "default_liveness_min_px")]
+    pub liveness_min_px: f32,
+    #[serde(default = "default_mog_sensitivity")]
+    pub mog_sensitivity: f32,
+}
+
+fn default_match_threshold() -> f32 {
+    0.62
+}
+fn default_adapt_threshold() -> f32 {
+    0.80
+}
+fn default_liveness_min_px() -> f32 {
+    0.5
+}
+fn default_mog_sensitivity() -> f32 {
+    0.5
 }
 
 impl Default for CameraConfig {
@@ -314,6 +341,10 @@ impl Default for CameraConfig {
             roi_width: 60.0,
             roi_height: 60.0,
             roi_sensitivity: 85.0,
+            match_threshold: default_match_threshold(),
+            adapt_threshold: default_adapt_threshold(),
+            liveness_min_px: default_liveness_min_px(),
+            mog_sensitivity: default_mog_sensitivity(),
         }
     }
 }

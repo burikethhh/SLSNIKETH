@@ -340,17 +340,20 @@ function syncAllCameraViewports() {
     };
 
     // Camera 1 (Entry Face Terminal)
+    bindViewport(document.getElementById('worker-cam1-entry'), null, streamCam1);
     bindViewport(document.getElementById('dash-cam1-entry'), document.getElementById('dash-cam1-standby'), streamCam1);
     bindViewport(document.getElementById('kiosk-cam1-entry'), document.getElementById('kiosk-cam1-standby'), streamCam1);
     bindViewport(document.getElementById('test-preview-cam1'), null, streamCam1);
     bindViewport(document.getElementById('reg-studio-video'), null, streamCam1);
 
     // Camera 2 (Exit Face Terminal)
+    bindViewport(document.getElementById('worker-cam2-exit'), null, streamCam2);
     bindViewport(document.getElementById('dash-cam2-exit'), document.getElementById('dash-cam2-standby'), streamCam2);
     bindViewport(document.getElementById('kiosk-cam2-exit'), document.getElementById('kiosk-cam2-standby'), streamCam2);
     bindViewport(document.getElementById('test-preview-cam2'), null, streamCam2);
 
     // Camera 3 (Anti-Tailgate Overhead Radar)
+    bindViewport(document.getElementById('worker-cam3-tailgate'), null, streamCam3);
     bindViewport(document.getElementById('dash-cam3-tailgate'), document.getElementById('dash-cam3-standby'), streamCam3);
     bindViewport(document.getElementById('kiosk-cam3-tailgate'), document.getElementById('kiosk-cam3-standby'), streamCam3);
     bindViewport(document.getElementById('test-preview-cam3'), null, streamCam3);
@@ -697,6 +700,9 @@ async function previewSelectedCamera(camNumber, deviceId) {
             streamCam3DeviceId = null;
             appSettings.camera_config.camera3_tailgate_device_id = deviceId;
         }
+        // Preview selection edits in-memory routing: flag unsaved until
+        // Save & Bind Routing persists it.
+        markRoutingDirty();
 
         // Brief delay to allow Windows UVC driver to free USB endpoint lock
         await new Promise(r => setTimeout(r, 100));
@@ -781,7 +787,11 @@ async function saveCameraRouting() {
             roi_y: 20.0,
             roi_width: 60.0,
             roi_height: 60.0,
-            roi_sensitivity: 85.0
+            roi_sensitivity: 85.0,
+            match_threshold: 0.62,
+            adapt_threshold: 0.80,
+            liveness_min_px: 0.5,
+            mog_sensitivity: 0.5
         };
     }
 
@@ -808,6 +818,7 @@ async function saveCameraRouting() {
 
         // Ensure all views are updated
         syncAllCameraViewports();
+        clearRoutingDirty();
 
         showHudToast("Camera Routing Saved", "All 3 camera assignments saved to database and live streams routed to Dashboard & Kiosks.", "success");
     } catch (e) {
@@ -817,7 +828,10 @@ async function saveCameraRouting() {
 
 // --- Turnstile ROI Zone Calibration ---
 
+let suppressRoutingDirty = false;
+
 function updateRoiPreview() {
+    if (!suppressRoutingDirty) markRoutingDirty();
     const x = parseFloat(document.getElementById('slider-roi-x').value) || 20;
     const y = parseFloat(document.getElementById('slider-roi-y').value) || 20;
     const w = parseFloat(document.getElementById('slider-roi-w').value) || 60;
@@ -837,7 +851,14 @@ function updateRoiPreview() {
         calibBox.style.height = `${h}%`;
     }
 
-    // Also reflect on dashboard and kiosk overhead overlays
+    // Also reflect on the test-preview box + dashboard and kiosk overlays
+    const testBox = document.getElementById('test-roi-box');
+    if (testBox) {
+        testBox.style.left = `${x}%`;
+        testBox.style.top = `${y}%`;
+        testBox.style.width = `${w}%`;
+        testBox.style.height = `${h}%`;
+    }
     const dashOverlay = document.getElementById('dash-roi-overlay');
     const kioskOverlay = document.getElementById('kiosk-roi-overlay');
     if (dashOverlay) {
@@ -860,7 +881,74 @@ function updateRoiSensitivityText() {
     document.getElementById('val-roi-sens').innerText = `${sens}% (${sensText})`;
 }
 
+function tuningCfg() {
+    const cfg = (appSettings.camera_config) || {};
+    return {
+        match_threshold: cfg.match_threshold ?? 0.62,
+        adapt_threshold: cfg.adapt_threshold ?? 0.80,
+        liveness_min_px: cfg.liveness_min_px ?? 0.5,
+        mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
+    };
+}
+
+function updateTuningTexts() {
+    const g = (id) => document.getElementById(id);
+    if (g('slider-match-thr') && g('val-match-thr')) g('val-match-thr').innerText = parseFloat(g('slider-match-thr').value).toFixed(2);
+    if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
+    if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
+    if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
+    markRoutingDirty();
+}
+
+function applyTuningToSliders(cfg) {
+    const t = {
+        match_threshold: cfg.match_threshold ?? 0.62,
+        adapt_threshold: cfg.adapt_threshold ?? 0.80,
+        liveness_min_px: cfg.liveness_min_px ?? 0.5,
+        mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
+    };
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('slider-match-thr', t.match_threshold);
+    set('slider-adapt-thr', t.adapt_threshold);
+    set('slider-live-px', t.liveness_min_px);
+    set('slider-mog-sens', t.mog_sensitivity);
+    updateTuningTextsSilent();
+    return t;
+}
+
+function updateTuningTextsSilent() {
+    const g = (id) => document.getElementById(id);
+    // Same labels as updateTuningTexts but without tripping the dirty flag
+    // during initial apply.
+    if (g('slider-match-thr') && g('val-match-thr')) g('val-match-thr').innerText = parseFloat(g('slider-match-thr').value).toFixed(2);
+    if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
+    if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
+    if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
+}
+
+// Dirty-dot: any routing/calibration/tuning edit marks the Hardware view
+// unsaved until Save & Bind / Save & Apply is pressed.
+function markRoutingDirty() {
+    const dot = document.getElementById('routing-dirty-dot');
+    if (dot) dot.classList.remove('hidden');
+    const btn = document.getElementById('btn-save-routing');
+    if (btn) btn.classList.add('ring-2', 'ring-amber-400');
+}
+
+function clearRoutingDirty() {
+    const dot = document.getElementById('routing-dirty-dot');
+    if (dot) dot.classList.add('hidden');
+    const btn = document.getElementById('btn-save-routing');
+    if (btn) btn.classList.remove('ring-2', 'ring-amber-400');
+}
+
 function applyRoiConfigToOverlays(cfg) {
+    suppressRoutingDirty = true;
+    try {
+        applyTuningToSliders(cfg);
+    } finally {
+        suppressRoutingDirty = false;
+    }
     const x = cfg.roi_x !== undefined ? cfg.roi_x : 20;
     const y = cfg.roi_y !== undefined ? cfg.roi_y : 20;
     const w = cfg.roi_width !== undefined ? cfg.roi_width : 60;
@@ -902,10 +990,20 @@ async function saveRoiCalibration() {
     appSettings.camera_config.roi_width = parseFloat(document.getElementById('slider-roi-w').value) || 60.0;
     appSettings.camera_config.roi_height = parseFloat(document.getElementById('slider-roi-h').value) || 60.0;
     appSettings.camera_config.roi_sensitivity = parseFloat(document.getElementById('slider-roi-sens').value) || 85.0;
+    const g = (id, fb) => {
+        const el = document.getElementById(id);
+        const v = el ? parseFloat(el.value) : NaN;
+        return Number.isFinite(v) ? v : fb;
+    };
+    appSettings.camera_config.match_threshold = g('slider-match-thr', 0.62);
+    appSettings.camera_config.adapt_threshold = g('slider-adapt-thr', 0.80);
+    appSettings.camera_config.liveness_min_px = g('slider-live-px', 0.5);
+    appSettings.camera_config.mog_sensitivity = g('slider-mog-sens', 0.5);
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
         applyRoiConfigToOverlays(appSettings.camera_config);
+        clearRoutingDirty();
         alert("Turnstile ROI Zone Calibration Successfully Saved!");
     } catch (e) {
         alert("Failed to save ROI calibration: " + e);
@@ -967,7 +1065,75 @@ function showHudToast(title, message, type = 'success') {
 
 let autoGateActive = true;
 let memberCooldownMap = new Map(); // tracks last verification time per member ID to prevent multi-scanning
-let autoScanIndex = 0;
+let autoScanBusy = false; // reentrancy guard — prevents overlapping scan ticks
+let autoScanCamToggle = false; // false = entry cam (in), true = exit cam (out)
+
+// --- Two-frame confirmation + liveness-lite (Phase A) ---
+// The ONNX pipeline is deterministic: a static photo yields bit-identical
+// embeddings frame after frame, while a live face always differs slightly
+// (sensor noise, micro-motion). So: first match only arms a pending state;
+// a second consecutive match for the SAME member confirms liveness when
+// either the embedding differs (cosine < 0.999) or the eyes moved (>= 0.5px).
+// Two identical frames in a row = static image: require a 3rd frame, deny
+// with "liveness failed" if still identical. State is per scan lane
+// ('cam1', 'cam2', 'btn-in', 'btn-out') so cameras never interfere.
+const liveConfirmState = {}; // key -> {member_id, vector, landmarks, strikes, ts}
+function livenessMinPx() {
+    const v = parseFloat(tuningCfg().liveness_min_px);
+    return Number.isFinite(v) ? v : 0.5;
+}
+
+function cosineOf(a, b) {
+    if (!a || !b || a.length !== b.length || a.length === 0) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+    }
+    if (na <= 1e-12 || nb <= 1e-12) return 0;
+    return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+function eyeDisplacement(lm1, lm2) {
+    // YuNet landmark order: [right eye, left eye, nose, right mouth, left mouth]
+    if (!lm1 || !lm2 || lm1.length < 2 || lm2.length < 2) return Infinity;
+    let sum = 0;
+    for (let i = 0; i < 2; i++) {
+        const dx = (lm1[i]?.x ?? 0) - (lm2[i]?.x ?? 0);
+        const dy = (lm1[i]?.y ?? 0) - (lm2[i]?.y ?? 0);
+        sum += Math.sqrt(dx * dx + dy * dy);
+    }
+    return sum / 2;
+}
+
+function confirmLiveMatch(key, memberId, vector, landmarks) {
+    const now = Date.now();
+    const st = liveConfirmState[key];
+    if (!st || st.member_id !== memberId || now - st.ts > 2000) {
+        liveConfirmState[key] = { member_id: memberId, vector, landmarks, strikes: 0, ts: now };
+        return 'wait';
+    }
+    const cos = cosineOf(st.vector, vector);
+    const disp = eyeDisplacement(st.landmarks, landmarks);
+    if (cos < 0.999 || disp >= livenessMinPx()) {
+        delete liveConfirmState[key];
+        return 'confirmed';
+    }
+    st.strikes += 1;
+    st.vector = vector;
+    st.landmarks = landmarks;
+    st.ts = now;
+    if (st.strikes >= 2) {
+        delete liveConfirmState[key];
+        return 'spoof';
+    }
+    return 'wait';
+}
+
+function clearLiveConfirm(key) {
+    delete liveConfirmState[key];
+}
 
 function toggleAutoGateMode() {
     autoGateActive = !autoGateActive;
@@ -984,180 +1150,476 @@ function toggleAutoGateMode() {
     }
 }
 
-async function startAutonomousBiometricEngine() {
-    setInterval(async () => {
-        if (!autoGateActive) return;
-
-        const now = Date.now();
-
-        // 1. Autonomous Face Scan Entry (Camera 1)
-        if (cachedMembers.length > 0 || cachedWalkIns.length > 0) {
-            // Find a member or walk-in who is not on cooldown
-            const allCandidates = [...cachedMembers.map(m => ({ 
-                                        id: m.id, 
-                                        name: `${m.first_name} ${m.last_name}`, 
-                                        vector: m.face_vectors[0], 
-                                        home_gym_name: m.home_gym_name || null,
-                                        type: 'member' 
-                                   })),
-                                   ...cachedWalkIns.map(w => ({ 
-                                        id: w.id, 
-                                        name: w.guest_name, 
-                                        vector: w.face_vector, 
-                                        home_gym_name: null,
-                                        type: 'walkin' 
-                                   }))];
-
-            if (allCandidates.length > 0) {
-                const candidate = allCandidates[autoScanIndex % allCandidates.length];
-                autoScanIndex++;
-
-                const lastSeen = memberCooldownMap.get(candidate.id) || 0;
-                // 15 seconds debounce per member
-                if (now - lastSeen > 15000) {
-                    let probe = candidate.vector;
-                    if (!probe || probe.length === 0) {
-                        const seed = candidate.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-                        probe = [];
-                        for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
-                    }
-
-                        const lastDir = memberCooldownMap.get(candidate.id + '_dir') || null;
-                        const scanDirection = lastDir === 'in' ? 'out' : 'in';
-
-                    try {
-                        const res = await invokeTauri('process_face_scan', {
-                            probeVector: probe,
-                            direction: scanDirection
-                        });
-
-                        if (res && res.passback_violation) {
-                            memberCooldownMap.set(candidate.id, now);
-                            showHudToast("Anti-Passback Blocked", res.message, "warn");
-                            return;
-                        }
-
-                        if (res && res.matched) {
-                            memberCooldownMap.set(candidate.id, now);
-                            memberCooldownMap.set(candidate.id + '_dir', scanDirection);
-                            
-                            // Visual HUD Feedback
-                            const lockEl = document.getElementById('telemetry-lock-state');
-                            if (lockEl) {
-                                lockEl.innerText = "UNLOCKED (AUTO ENTRY)";
-                                lockEl.className = "text-sm font-bold text-emerald-400 mt-1 animate-pulse";
-                                setTimeout(() => {
-                                    if (lockEl) {
-                                        lockEl.innerText = "LOCKED (STANDBY)";
-                                        lockEl.className = "text-sm font-bold text-emerald-400 mt-1";
-                                    }
-                                }, 3000);
-                            }
-
-                            const isCrossBranch = candidate.home_gym_name && candidate.home_gym_name !== appSettings.gym_name;
-                            const toastTitle = isCrossBranch ? "Inter-Branch Entry Verified" : "Auto Entry Verified";
-                            const branchInfo = isCrossBranch ? `<span class="text-amber-300 font-semibold">[Branch: ${candidate.home_gym_name}]</span> ` : '';
-
-                            showHudToast(
-                                toastTitle,
-                                `Welcome, <b>${res.member_name}</b>! ${branchInfo}Gate unlocked (3000ms).`,
-                                "success"
-                            );
-
-                            // Arm 1:1 Door-Open Anti-Tailgate Surveillance during 3.5s passage window
-                            armDoorOpenTailgateSurveillance(3500);
-
-                            await loadAttendanceLogs();
-                            await refreshDashboard();
-                        }
-                    } catch (e) {
-                        console.debug("Auto scan cycle:", e);
-                    }
-                }
-            }
-        }
-    }, 4500); // Evaluates auto passage stream every 4.5 seconds
-
-    // 2. Continuous Anti-Tailgate ROI Monitor (baseline heartbeat)
-    setInterval(async () => {
-        if (!autoGateActive) return;
-        // Periodic baseline interlock — monitors Camera 3 overhead feed health
-    }, 1000);
+/**
+ * Captures a JPEG frame from a live <video> element, downscaled to <=640px
+ * wide for ONNX model input. Returns base64 data-URL or null if video not ready.
+ */
+function captureVideoFrame(videoEl) {
+    if (!videoEl || !videoEl.videoWidth || videoEl.videoWidth === 0) return null;
+    const scale = Math.min(1, 640 / videoEl.videoWidth);
+    const w = Math.round(videoEl.videoWidth * scale);
+    const h = Math.round(videoEl.videoHeight * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    try { return canvas.toDataURL('image/jpeg', 0.85); } catch (e) { return null; }
 }
 
-// --- Door-Open 1:1 Anti-Tailgate Surveillance Engine ---
+/**
+ * Finds the first active (playing, has dimensions) video element from a
+ * list of candidate element IDs.
+ */
+function findActiveVideoElement(candidateIds) {
+    for (const id of candidateIds) {
+        const el = document.getElementById(id);
+        if (el && el.videoWidth > 0 && el.videoHeight > 0) return el;
+    }
+    return null;
+}
+
+/**
+ * Resolves the active capture source for a camera slot.
+ * Prioritizes the dedicated continuous worker video viewports (which never sleep or freeze),
+ * falling back to dashboard/kiosk video elements.
+ */
+function getCaptureElement(camNumber) {
+    const map = {
+        1: ['worker-cam1-entry', 'dash-cam1-entry', 'kiosk-cam1-entry', 'test-preview-cam1'],
+        2: ['worker-cam2-exit', 'dash-cam2-exit', 'kiosk-cam2-exit', 'test-preview-cam2'],
+        3: ['worker-cam3-tailgate', 'dash-cam3-tailgate', 'kiosk-cam3-tailgate', 'test-preview-cam3']
+    };
+    return findActiveVideoElement(map[camNumber] || []);
+}
+
+let autoScanCam1Busy = false;
+let autoScanCam2Busy = false;
+let autoScanCam3Busy = false;
 
 let activeDoorPassageWindow = false;
 let doorOpenFrameCount = 0;
+let suspiciousFrames = 0;
+let maxTailgateFrames = 21; // 7.5s at 350ms interval
+const TAILGATE_WINDOW_MS = 7500;
+const TAILGATE_TICK_MS = 350;
+const TAILGATE_SUSPICIOUS_NEEDED = 2; // consecutive multi-person ticks to alarm
 
-function armDoorOpenTailgateSurveillance(durationMs = 3500) {
+// --- Tailgate person tracker (B3): stable per-person IDs across ticks ---
+// Nearest-center matching on ROI box centers; tracks enter/exit + distinct
+// IDs seen inside the ROI during the window. Drawn on the cam3 overlay.
+const tailgateTracks = new Map(); // id -> {cx, cy, lastSeen, inRoi, everInRoi}
+let tailgateNextId = 1;
+const TRACK_MAX_DIST_PX = 90;
+const TRACK_STALE_MS = 1200;
+
+function updateTailgateTracks(boxes, frameW, frameH, roi) {
+    const now = Date.now();
+    const used = new Set();
+    let distinctInRoi = 0;
+    for (const b of boxes || []) {
+        const cx = b.cx ?? (b.x + b.w / 2);
+        const cy = b.cy ?? (b.y + b.h / 2);
+        let bestId = null, bestDist = TRACK_MAX_DIST_PX;
+        for (const [id, t] of tailgateTracks) {
+            if (used.has(id)) continue;
+            const d = Math.hypot(t.cx - cx, t.cy - cy);
+            if (d < bestDist) { bestDist = d; bestId = id; }
+        }
+        const inRoi = boxInRoi(b, cx, cy, roi, frameW, frameH);
+        if (bestId === null) {
+            bestId = 'P' + (tailgateNextId++);
+            tailgateTracks.set(bestId, { cx, cy, lastSeen: now, inRoi, everInRoi: inRoi });
+        } else {
+            const t = tailgateTracks.get(bestId);
+            t.cx = cx; t.cy = cy; t.lastSeen = now; t.inRoi = inRoi;
+            if (inRoi) t.everInRoi = true;
+        }
+        used.add(bestId);
+        if (inRoi) distinctInRoi++;
+    }
+    // Expire stale tracks (person left the scene).
+    for (const [id, t] of tailgateTracks) {
+        if (now - t.lastSeen > TRACK_STALE_MS) tailgateTracks.delete(id);
+    }
+    let everCount = 0;
+    for (const t of tailgateTracks.values()) {
+        if (t.everInRoi && now - t.lastSeen <= TRACK_STALE_MS) everCount++;
+    }
+    return { distinctInRoi, everCount, tracks: [...tailgateTracks.entries()].map(([id, t]) => ({ id, ...t })) };
+}
+
+function boxInRoi(b, cx, cy, roi, frameW, frameH) {
+    // roi in percent (0-100), box coords in original pixels.
+    const rx = (roi.x / 100) * frameW, ry = (roi.y / 100) * frameH;
+    const rw = (roi.w / 100) * frameW, rh = (roi.h / 100) * frameH;
+    const centerIn = cx >= rx && cx <= rx + rw && cy >= ry && cy <= ry + rh;
+    const intersects = b.x < rx + rw && b.x + b.w > rx && b.y < ry + rh && b.y + b.h > ry;
+    return centerIn || intersects; // locked rule: matches Rust count_and_locate_in_roi
+}
+
+function drawTailgateOverlay(tracks, roi, videoEl) {
+    // Overlay canvas sits atop the cam3 card (created on demand).
+    let canvas = document.getElementById('tailgate-track-overlay');
+    const host = videoEl ? videoEl.closest('.glass-panel') || videoEl.parentElement : null;
+    if (!canvas && host) {
+        canvas = document.createElement('canvas');
+        canvas.id = 'tailgate-track-overlay';
+        canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
+        const pos = window.getComputedStyle(host).position;
+        if (pos === 'static') host.style.position = 'relative';
+        host.appendChild(canvas);
+    }
+    if (!canvas || !videoEl || !videoEl.videoWidth) return;
+    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+    canvas.width = vw; canvas.height = vh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, vw, vh);
+    // ROI box (cyan).
+    ctx.strokeStyle = 'rgba(34,211,238,0.9)';
+    ctx.lineWidth = Math.max(2, vw / 320);
+    ctx.strokeRect((roi.x / 100) * vw, (roi.y / 100) * vh, (roi.w / 100) * vw, (roi.h / 100) * vh);
+    // Tracked persons: green = moving, amber = static, red = in ROI.
+    for (const t of tracks) {
+        const color = t.inRoi ? 'rgba(248,113,113,0.95)' : 'rgba(52,211,153,0.9)';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(2, vw / 320);
+        const bx = t.cx - 30, by = t.cy - 40;
+        ctx.strokeRect(bx, by, 60, 80);
+        ctx.fillStyle = color;
+        ctx.font = `bold ${Math.max(12, vw / 53)}px sans-serif`;
+        ctx.fillText(t.id + (t.inRoi ? ' ROI' : ''), bx, by - 4);
+    }
+}
+
+async function testTransitPassage() {
+    // Real single-frame count on the overhead feed (replaces the old blind
+    // 2s arm): reports persons + motion so routing can be verified live.
+    const out = document.getElementById('transit-test-result');
+    const say = (t) => { if (out) out.innerText = t; };
+    say('Capturing overhead frame…');
+    try {
+        const video = getCaptureElement(3);
+        if (!video) { say('No overhead video feed — check routing.'); return; }
+        const frame = captureVideoFrame(video);
+        if (!frame) { say('Frame capture failed.'); return; }
+        const cfg = appSettings.camera_config || {};
+        const res = await invokeTauri('count_persons_in_frame', {
+            imageBase64: frame,
+            roiX: cfg.roi_x ?? 20, roiY: cfg.roi_y ?? 20,
+            roiWidth: cfg.roi_width ?? 60, roiHeight: cfg.roi_height ?? 60,
+        });
+        const motion = res && res.motion_in_roi !== undefined
+            ? `, motion ${((res.motion_in_roi || 0) * 100).toFixed(0)}%` : '';
+        say(`Count: ${res ? res.person_count : '?'} person(s) in ROI${motion}. Boxes: ${res && res.boxes ? res.boxes.length : 0}.`);
+        const boxes = (res && res.boxes) || [];
+        const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+        const tracked = updateTailgateTracks(boxes, vw, vh, {
+            x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
+            w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
+        });
+        drawTailgateOverlay(tracked.tracks, {
+            x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
+            w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
+        }, video);
+    } catch (e) {
+        say('Count failed: ' + (e?.message || e));
+    }
+}
+
+function clearTailgateOverlay() {
+    tailgateTracks.clear();
+    const canvas = document.getElementById('tailgate-track-overlay');
+    if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+}
+
+function armDoorOpenTailgateSurveillance(durationMs = TAILGATE_WINDOW_MS) {
     activeDoorPassageWindow = true;
     doorOpenFrameCount = 0;
-    const sensitivity = (appSettings.camera_config && appSettings.camera_config.roi_sensitivity) || 85;
-    const evaluationIntervalMs = 250; // Evaluate every 250ms during open window
-    const maxFrames = Math.floor(durationMs / evaluationIntervalMs);
-    // Multi-person detection threshold: higher sensitivity = tighter tolerance
-    const violationThreshold = Math.max(2, Math.floor(maxFrames * (1 - sensitivity / 100) * 0.6));
-    let suspiciousFrames = 0;
+    suspiciousFrames = 0;
+    maxTailgateFrames = Math.max(6, Math.floor(durationMs / TAILGATE_TICK_MS));
+    console.debug(`[Security] 1:1 Anti-Tailgate Surveillance armed for ${durationMs}ms`);
+}
 
-    const evaluator = setInterval(async () => {
-        if (!activeDoorPassageWindow) {
-            clearInterval(evaluator);
-            return;
-        }
-        doorOpenFrameCount++;
+/**
+ * Universal Concurrent 3-Camera Vision Engine (SLS123 Parity):
+ * - Camera 1 (Entry Face Terminal): continuous face scan with direction 'in'
+ * - Camera 2 (Exit Face Terminal): continuous face scan with direction 'out'
+ * - Camera 3 (Overhead Tailgate Radar): continuous YOLOv8 person tracking in ROI zone
+ */
+async function startAutonomousBiometricEngine() {
+    // ── Loop 1: Camera 1 Entry Face Scanner (Direction 'in') — 650ms tick ──
+    setInterval(async () => {
+        if (!autoGateActive || autoScanCam1Busy) return;
+        autoScanCam1Busy = true;
+        try {
+            const video = getCaptureElement(1);
+            if (!video) return;
 
-        // Real overhead person-count via YOLOv8n (Task 5.4): capture Camera 3
-        // and count persons inside the calibrated ROI. person_count > 1
-        // means a second person tailgated through the open door.
-        const video = document.getElementById('kiosk-cam3-tailgate') || document.getElementById('dash-cam3-tailgate');
-        if (video && video.videoWidth > 0) {
+            const frame = captureVideoFrame(video);
+            if (!frame) return;
+
+            let scanRes;
             try {
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-                canvas.getContext('2d').drawImage(video, 0, 0);
-                const frame = canvas.toDataURL('image/jpeg', 0.7);
-                const cfg = appSettings.camera_config || {};
-                const res = await invokeTauri('count_persons_in_frame', {
-                    imageBase64: frame,
-                    roiX: cfg.roi_x ?? 20, roiY: cfg.roi_y ?? 20,
-                    roiWidth: cfg.roi_width ?? 60, roiHeight: cfg.roi_height ?? 60,
+                scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
+            } catch (e) {
+                return;
+            }
+            if (!scanRes || !scanRes.face_detected || !scanRes.vector) return;
+
+            let res;
+            try {
+                res = await invokeTauri('process_face_scan', {
+                    probeVector: scanRes.vector,
+                    direction: 'in'
                 });
-                if (res && res.person_count > 1) suspiciousFrames++;
-            } catch (e) { console.debug('tailgate frame count failed:', e); }
-        }
+            } catch (e) {
+                return;
+            }
 
-        if (doorOpenFrameCount >= maxFrames) {
-            clearInterval(evaluator);
-            activeDoorPassageWindow = false;
+            const now = Date.now();
+            if (res && res.matched) {
+                const matchedId = res.member_id || 'unknown';
+                // Two-frame confirmation + liveness: first sighting only arms
+                // pending state; unlock needs a second consecutive live match.
+                const confirm = confirmLiveMatch('cam1', matchedId, scanRes.vector, scanRes.landmarks);
+                if (confirm === 'wait') return;
+                if (confirm === 'spoof') {
+                    memberCooldownMap.set(matchedId, now);
+                    showHudToast("Liveness Check Failed", "Static image suspected — entry denied. Present a live face.", "danger");
+                    return;
+                }
+                const lastSeen = memberCooldownMap.get(matchedId) || 0;
+                if (now - lastSeen < 12000) return; // 12-second debounce
+                memberCooldownMap.set(matchedId, now);
 
-            if (suspiciousFrames >= violationThreshold) {
-                try {
-                    await invokeTauri('trigger_tailgate_alarm', {
-                        reason: `1:1 Turnstile ROI Multi-Occupancy Transit Violation (${suspiciousFrames}/${maxFrames} frames flagged)`
-                    });
+                // Telemetry Lock State HUD
+                const lockEl = document.getElementById('telemetry-lock-state');
+                if (lockEl) {
+                    lockEl.innerText = "UNLOCKED (AUTO ENTRY)";
+                    lockEl.className = "text-sm font-bold text-emerald-400 mt-1 animate-pulse";
+                    setTimeout(() => {
+                        if (lockEl) {
+                            lockEl.innerText = "LOCKED (STANDBY)";
+                            lockEl.className = "text-sm font-bold text-emerald-400 mt-1";
+                        }
+                    }, 3000);
+                }
 
-                    const banner = document.getElementById('tailgate-siren-banner');
-                    if (banner) {
-                        banner.classList.remove('hidden');
-                        // Auto-dismiss siren banner after 10 seconds
-                        setTimeout(() => { if (banner) banner.classList.add('hidden'); }, 10000);
-                    }
+                // Inter-branch detection
+                const matchedMember = cachedMembers.find(m => m.id === matchedId);
+                const homeGym = matchedMember?.home_gym_name || null;
+                const isCrossBranch = homeGym && homeGym !== appSettings.gym_name;
+                const toastTitle = isCrossBranch ? "Inter-Branch Entry Verified" : "Auto Entry Verified";
+                const branchInfo = isCrossBranch ? `<span class="text-amber-300 font-semibold">[Branch: ${escapeHtml(homeGym)}]</span> ` : '';
 
-                    showHudToast(
-                        "Anti-Tailgate Violation",
-                        `Multi-occupancy detected in Turnstile ROI during gate transit! ${suspiciousFrames} suspicious frames in ${maxFrames} evaluated. Hardware Siren Active!`,
-                        "danger"
-                    );
+                showHudToast(
+                    toastTitle,
+                    `Welcome, <b>${escapeHtml(res.member_name || 'Member')}</b>! ${branchInfo}Gate unlocked (3000ms). (${(scanRes.confidence * 100 | 0)}% conf)`,
+                    "success"
+                );
 
-                    await loadAttendanceLogs();
-                    await refreshDashboard();
-                } catch (e) {
-                    console.debug("Door-open tailgate alarm:", e);
+                // Arm 1:1 Door-Open Anti-Tailgate Surveillance for 6.0s (SLS123 standard)
+                armDoorOpenTailgateSurveillance();
+
+                await loadAttendanceLogs();
+                await refreshDashboard();
+            } else if (res && res.needs_reenroll) {
+                clearLiveConfirm('cam1');
+                showHudToast("Re-enrollment Needed", "Face gallery uses a legacy embedding width — re-scan this member in the Studio.", "warn");
+            } else if (res && res.passback_violation) {
+                const matchedId = res.member_id || 'unknown';
+                const lastSeen = memberCooldownMap.get(matchedId) || 0;
+                if (now - lastSeen > 8000) {
+                    memberCooldownMap.set(matchedId, now);
+                    showHudToast("Anti-Passback Blocked", res.message, "warn");
                 }
             }
+        } catch (e) {
+            console.debug("Cam 1 cycle error:", e);
+        } finally {
+            autoScanCam1Busy = false;
         }
-    }, evaluationIntervalMs);
+    }, 650);
+
+    // ── Loop 2: Camera 2 Exit Face Scanner (Direction 'out') — 650ms tick ──
+    setInterval(async () => {
+        if (!autoGateActive || autoScanCam2Busy) return;
+        autoScanCam2Busy = true;
+        try {
+            const video = getCaptureElement(2);
+            if (!video) return;
+
+            const frame = captureVideoFrame(video);
+            if (!frame) return;
+
+            let scanRes;
+            try {
+                scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
+            } catch (e) {
+                return;
+            }
+            if (!scanRes || !scanRes.face_detected || !scanRes.vector) return;
+
+            let res;
+            try {
+                res = await invokeTauri('process_face_scan', {
+                    probeVector: scanRes.vector,
+                    direction: 'out'
+                });
+            } catch (e) {
+                return;
+            }
+
+            const now = Date.now();
+            if (res && res.matched) {
+                const matchedId = res.member_id || 'unknown';
+                // Same two-frame confirmation + liveness as entry (per-lane state).
+                const confirm = confirmLiveMatch('cam2', matchedId, scanRes.vector, scanRes.landmarks);
+                if (confirm === 'wait') return;
+                if (confirm === 'spoof') {
+                    memberCooldownMap.set(matchedId, now);
+                    showHudToast("Liveness Check Failed", "Static image suspected — exit denied. Present a live face.", "danger");
+                    return;
+                }
+                const lastSeen = memberCooldownMap.get(matchedId) || 0;
+                if (now - lastSeen < 12000) return;
+                memberCooldownMap.set(matchedId, now);
+
+                const lockEl = document.getElementById('telemetry-lock-state');
+                if (lockEl) {
+                    lockEl.innerText = "UNLOCKED (AUTO EXIT)";
+                    lockEl.className = "text-sm font-bold text-blue-400 mt-1 animate-pulse";
+                    setTimeout(() => {
+                        if (lockEl) {
+                            lockEl.innerText = "LOCKED (STANDBY)";
+                            lockEl.className = "text-sm font-bold text-emerald-400 mt-1";
+                        }
+                    }, 3000);
+                }
+
+                showHudToast(
+                    "Auto Exit Verified",
+                    `Goodbye, <b>${escapeHtml(res.member_name || 'Member')}</b>! Exit gate unlocked. (${(scanRes.confidence * 100 | 0)}% conf)`,
+                    "exit"
+                );
+
+                // Exit opens the same 7.5s window: a tailgater can follow an
+                // exiting member just as easily as an entering one.
+                armDoorOpenTailgateSurveillance();
+
+                await loadAttendanceLogs();
+                await refreshDashboard();
+            } else if (res && res.needs_reenroll) {
+                clearLiveConfirm('cam2');
+                showHudToast("Re-enrollment Needed", "Face gallery uses a legacy embedding width — re-scan this member in the Studio.", "warn");
+            } else if (res && (res.passback_violation || res.account_hold || res.is_expired)) {
+                clearLiveConfirm('cam2');
+                const matchedId = res.member_id || 'unknown';
+                const lastSeen = memberCooldownMap.get(matchedId) || 0;
+                if (now - lastSeen > 8000) {
+                    memberCooldownMap.set(matchedId, now);
+                    showHudToast(res.passback_violation ? "Anti-Passback Blocked" : "Exit Denied", res.message, "warn");
+                }
+            }
+        } catch (e) {
+            console.debug("Cam 2 cycle error:", e);
+        } finally {
+            autoScanCam2Busy = false;
+        }
+    }, 650);
+
+    // ── Loop 3: Camera 3 Continuous Overhead Anti-Tailgate Radar (350ms tick) ──
+    // Economy: disarmed ticks run YOLO at most every 6th tick (~2.1s, overlay
+    // only); armed ticks run every tick. All three camera loops stay concurrent.
+    let cam3Economy = 0;
+    setInterval(async () => {
+        if (!autoGateActive || autoScanCam3Busy) return;
+        const armed = activeDoorPassageWindow;
+        if (!armed) {
+            cam3Economy++;
+            if (cam3Economy % 6 !== 1) return;
+        }
+        autoScanCam3Busy = true;
+        try {
+            const video = getCaptureElement(3);
+            if (!video) return;
+
+            const frame = captureVideoFrame(video);
+            if (!frame) return;
+
+            const cfg = appSettings.camera_config || {};
+            const roi = {
+                x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
+                w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
+            };
+            const res = await invokeTauri('count_persons_in_frame', {
+                imageBase64: frame,
+                roiX: roi.x,
+                roiY: roi.y,
+                roiWidth: roi.w,
+                roiHeight: roi.h,
+            });
+
+            // Tracker overlay (always, cheap JS-side): stable IDs + ROI box.
+            const boxes = (res && res.boxes) || [];
+            const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+            const tracked = updateTailgateTracks(boxes, vw, vh, roi);
+            drawTailgateOverlay(tracked.tracks, roi, video);
+
+            if (!activeDoorPassageWindow) return;
+            doorOpenFrameCount++;
+            // Alarm legs (motion-confirmed): 2+ in-ROI persons with ROI
+            // motion, OR 2+ distinct tracked IDs having entered the ROI.
+            const motion = (res && res.motion_in_roi) || 0;
+            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
+            const multiTracked = tracked.everCount >= 2;
+            if (multiStatic || multiTracked) {
+                suspiciousFrames++;
+                // Immediate trigger when multi-occupancy confirmed across 2 ticks
+                if (suspiciousFrames >= TAILGATE_SUSPICIOUS_NEEDED) {
+                    activeDoorPassageWindow = false;
+                    clearTailgateOverlay();
+                    try {
+                        await invokeTauri('trigger_tailgate_alarm', {
+                            reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`
+                        });
+
+                        const banner = document.getElementById('tailgate-siren-banner');
+                        if (banner) {
+                            banner.classList.remove('hidden');
+                            setTimeout(() => { if (banner) banner.classList.add('hidden'); }, 10000);
+                        }
+
+                        showHudToast(
+                            "Anti-Tailgate Violation",
+                            `Tailgating Detected! Multiple persons in Turnstile ROI during gate transit (${res.person_count} persons). Hardware Siren Active!`,
+                            "danger"
+                        );
+
+                        await loadAttendanceLogs();
+                        await refreshDashboard();
+                    } catch (e) {
+                        console.debug("Tailgate alarm trigger error:", e);
+                    }
+                }
+            }
+
+            if (doorOpenFrameCount >= maxTailgateFrames) {
+                activeDoorPassageWindow = false;
+                clearTailgateOverlay();
+            }
+        } catch (e) {
+            console.debug("Cam 3 tailgate cycle error:", e);
+        } finally {
+            autoScanCam3Busy = false;
+        }
+    }, 350);
 }
 
 // (loadAppSettings defined below in Theme & White-Label Branding Engine section)
@@ -1213,6 +1675,10 @@ async function handleHardwareButtonEvent(evt) {
     if (!isEntry && !isExit) return;
     const direction = isEntry ? 'in' : 'out';
     const label = isEntry ? 'ENTRY Camera Enabled (BTN 1)' : 'EXIT Camera Enabled (BTN 2)';
+    // The 7.5s tailgate window opens on EVERY button press up front —
+    // verified or not, entry or exit. Someone tailgating an unverified
+    // attempt is exactly what this catches.
+    armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS);
     showHudToast(label, isEntry ? 'Face the ENTRY camera — scanning…' : 'Face the EXIT camera — scanning…', 'success');
     // Highlight active camera card briefly
     try { highlightCameraCard(isEntry ? 'kiosk-cam1-entry' : 'kiosk-cam2-exit'); } catch (e) {}
@@ -1226,22 +1692,23 @@ function highlightCameraCard(videoId) {
     setTimeout(() => card.classList.remove('ring-2', 'ring-emerald-400', 'ring-offset-2', 'ring-offset-slate-950'), 1600);
 }
 
+async function captureScanFrame(camNumber) {
+    // Single capture path for button scans: worker-first viewport, 640px
+    // model-sized JPEG (matches captureVideoFrame, halves IPC vs full-res).
+    const video = getCaptureElement(camNumber);
+    if (!video) return null;
+    return captureVideoFrame(video);
+}
+
 async function doHardwareFaceScan(videoId, direction) {
-    // Prefer the kiosk video, fall back to dashboard or test preview mirrors
-    const candidates = [videoId, 'dash-cam1-entry', 'dash-cam2-exit', 'test-preview-cam1', 'test-preview-cam2']
-        .map(id => document.getElementById(id)).filter(Boolean);
-    const video = candidates.find(v => v.videoWidth > 0 && v.videoHeight > 0) || document.getElementById(videoId);
-    if (!video || !video.videoWidth || video.videoWidth === 0) {
+    const camNumber = direction === 'in' ? 1 : 2;
+    const laneKey = direction === 'in' ? 'btn-in' : 'btn-out';
+    const frame = await captureScanFrame(camNumber);
+    if (!frame) {
+        clearLiveConfirm(laneKey);
         showHudToast('Camera Not Ready', 'No video feed for ' + direction.toUpperCase() + ' scan. Check Hardware Settings.', 'warn');
         return;
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    let frame;
-    try { frame = canvas.toDataURL('image/jpeg', 0.85); } catch (e) { return; }
 
     let scanRes;
     try {
@@ -1251,32 +1718,61 @@ async function doHardwareFaceScan(videoId, direction) {
         return;
     }
     if (!scanRes || !scanRes.face_detected || !scanRes.vector) {
+        clearLiveConfirm(laneKey);
         showHudToast('No Face Detected', 'Center your face and try again, or press the button again.', 'warn');
         return;
     }
     try {
         const result = await invokeTauri('process_face_scan', { probeVector: scanRes.vector, direction: direction });
         if (result.passback_violation) {
+            clearLiveConfirm(laneKey);
             showHudToast('Anti-Passback Blocked', result.message, 'warn');
             return;
         }
         if (result.account_hold) {
+            clearLiveConfirm(laneKey);
             showHudToast('Account On Hold', result.message, 'danger');
             return;
         }
         if (result.is_expired) {
+            clearLiveConfirm(laneKey);
             showHudToast('Pass Expired', result.message, 'danger');
             return;
         }
         if (result.matched) {
+            const matchedId = result.member_id || 'unknown';
+            // Button scans are single-shot: seed this frame, capture a second
+            // frame ~650ms later, and apply the same 2-frame liveness
+            // confirmation as the autonomous loops.
+            confirmLiveMatch(laneKey, matchedId, scanRes.vector, scanRes.landmarks);
+            await new Promise(r => setTimeout(r, 650));
+            const frame2 = await captureScanFrame(camNumber);
+            if (frame2) {
+                try {
+                    const scan2 = await invokeTauri('scan_face_frame', { imageBase64: frame2 });
+                    if (scan2 && scan2.face_detected && scan2.vector) {
+                        const confirm = confirmLiveMatch(laneKey, matchedId, scan2.vector, scan2.landmarks);
+                        if (confirm === 'spoof') {
+                            showHudToast('Liveness Check Failed', 'Static image suspected — denied. Present a live face.', 'danger');
+                            return;
+                        }
+                        if (confirm !== 'confirmed') return;
+                    }
+                } catch (e) { /* second-frame failure: fall through to single-match unlock */ }
+            }
             const isCross = result.member_name && cachedMembers.find(m => `${m.first_name} ${m.last_name}` === result.member_name)?.home_gym_name;
             showHudToast(direction === 'in' ? 'Entry Verified' : 'Exit Verified',
-                `${result.member_name} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
-            if (direction === 'in') armDoorOpenTailgateSurveillance(3500);
+                `${escapeHtml(result.member_name || 'Member')} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
+            armDoorOpenTailgateSurveillance();
             await loadAttendanceLogs();
             await refreshDashboard();
         } else {
-            showHudToast('Not Recognized', result.message || 'Face not in member database.', 'warn');
+            clearLiveConfirm(laneKey);
+            if (result.needs_reenroll) {
+                showHudToast('Re-enrollment Needed', 'Face gallery uses a legacy embedding width — re-scan this member in the Studio.', 'warn');
+            } else {
+                showHudToast('Not Recognized', result.message || 'Face not in member database.', 'warn');
+            }
         }
     } catch (e) {
         showHudToast('Gate Error', String(e), 'danger');
@@ -1506,14 +2002,18 @@ let rescanMemberId = null;
 function startMemberRescan(id) {
     const m = cachedMembers.find(x => x.id === id);
     if (!m) return;
-    rescanMemberId = id;
     resetRegistrationStudio();
+    rescanMemberId = id;
     const fn = document.getElementById('reg-mem-first-name');
     const ln = document.getElementById('reg-mem-last-name');
+    const phn = document.getElementById('reg-mem-phone');
+    const em = document.getElementById('reg-mem-email');
     if (fn) { fn.value = m.first_name; fn.disabled = true; }
     if (ln) { ln.value = m.last_name; ln.disabled = true; }
+    if (phn) phn.value = m.phone || '';
+    if (em) em.value = m.email || '';
     const btn = document.getElementById('btn-complete-enroll');
-    if (btn) btn.querySelector('span').innerText = `Save New Face Scan (${m.id})`;
+    if (btn && btn.querySelector('span')) btn.querySelector('span').innerText = `Save New Face Scan (${m.id})`;
     switchView('register');
     showHudToast('Re-scan Mode', `Capture fresh angles for ${m.first_name} ${m.last_name}. Submit replaces their stored face vectors.`, 'info');
 }
@@ -1523,6 +2023,46 @@ function startMemberRescan(id) {
 let selectedRegAngle = 0;
 let capturedRegFrames = [null, null, null, null, null];
 let capturedRegVectors = [null, null, null, null, null];
+let capturedRegBoxes = [null, null, null, null, null];
+// Enrollment quality floors (Phase A): blur + face-size + distinct angles.
+const ENROLL_MIN_SHARPNESS = 30;
+const ENROLL_MIN_FACE_PX = 80;
+const ENROLL_MIN_DISTINCT_ANGLES = 3;
+const ENROLL_DISTINCT_COSINE = 0.98;
+
+function laplacianSharpness(srcCanvas) {
+    const w = 64, h = 64;
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    if (!x) return Infinity;
+    x.drawImage(srcCanvas, 0, 0, w, h);
+    let d;
+    try { d = x.getImageData(0, 0, w, h).data; } catch (e) { return Infinity; }
+    const gray = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+        gray[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+    }
+    let sum = 0, sum2 = 0, n = 0;
+    for (let y = 1; y < h - 1; y++) {
+        for (let xx = 1; xx < w - 1; xx++) {
+            const i = y * w + xx;
+            const lap = -4 * gray[i] + gray[i - 1] + gray[i + 1] + gray[i - w] + gray[i + w];
+            sum += lap; sum2 += lap * lap; n++;
+        }
+    }
+    const mean = sum / n;
+    return sum2 / n - mean * mean;
+}
+
+function countDistinctAngles(vectors) {
+    const accepted = [];
+    for (const v of vectors) {
+        if (!v) continue;
+        if (accepted.every(a => cosineOf(a, v) < ENROLL_DISTINCT_COSINE)) accepted.push(v);
+    }
+    return accepted.length;
+}
 
 const anglePrompts = [
     { label: "1. Frontal (0°)", guide: "Look straight at the camera", offset: 0.0 },
@@ -1608,6 +2148,15 @@ async function captureCurrentAngleSnapshot() {
     const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
 
     const badge = document.getElementById(`badge-angle-${selectedRegAngle}`);
+
+    // Blur gate (enrollment-time only): reject smeared frames before spending
+    // inference — Laplacian variance on a 64px grayscale copy.
+    const sharp = laplacianSharpness(canvas);
+    if (sharp < ENROLL_MIN_SHARPNESS) {
+        showError(`Too blurry (sharpness ${sharp.toFixed(0)} < ${ENROLL_MIN_SHARPNESS}). Hold still and recapture.`);
+        if (badge) { badge.innerText = "Blurry"; badge.className = "text-[9px] text-red-400 font-bold font-mono mt-0.5"; }
+        return;
+    }
     if (badge) {
         badge.innerText = "Scanning...";
         badge.className = "text-[9px] text-blue-400 font-bold font-mono mt-0.5";
@@ -1633,6 +2182,7 @@ async function captureCurrentAngleSnapshot() {
 
     capturedRegFrames[selectedRegAngle] = dataUrl;
     capturedRegVectors[selectedRegAngle] = result.vector;
+    capturedRegBoxes[selectedRegAngle] = result.box || null;
 
     // Update thumbnail card
     const thumb = document.getElementById(`thumb-angle-${selectedRegAngle}`);
@@ -1677,6 +2227,7 @@ function resetRegistrationStudio() {
     if (btn0 && btn0.querySelector('span')) btn0.querySelector('span').innerText = "Complete Registration & Sync Face Vectors";
     capturedRegFrames = [null, null, null, null, null];
     capturedRegVectors = [null, null, null, null, null];
+    capturedRegBoxes = [null, null, null, null, null];
     for (let i = 0; i < 5; i++) {
         const thumb = document.getElementById(`thumb-angle-${i}`);
         const ph = document.getElementById(`placeholder-angle-${i}`);
@@ -1710,24 +2261,26 @@ async function submitStudioRegistration() {
     const plan = document.getElementById('reg-mem-plan').value;
     const errorEl = document.getElementById('reg-error-msg');
 
-    if (!firstName || !lastName) {
-        errorEl.innerText = "Please enter First Name and Last Name";
-        return;
-    }
-    if (!phone) {
-        errorEl.innerText = "Please enter Phone Number";
-        return;
-    }
+    if (!rescanMemberId) {
+        if (!firstName || !lastName) {
+            errorEl.innerText = "Please enter First Name and Last Name";
+            return;
+        }
+        if (!phone) {
+            errorEl.innerText = "Please enter Phone Number";
+            return;
+        }
 
-    // Duplicate member check
-    const duplicate = cachedMembers.find(m =>
-        m.first_name.toLowerCase() === firstName.toLowerCase() &&
-        m.last_name.toLowerCase() === lastName.toLowerCase()
-    );
-    if (duplicate) {
-        errorEl.innerText = `A member named "${firstName} ${lastName}" already exists (ID: ${duplicate.id}). Use the Members view to edit their profile.`;
-        errorEl.className = "text-xs text-amber-400";
-        return;
+        // Duplicate member check
+        const duplicate = cachedMembers.find(m =>
+            m.first_name.toLowerCase() === firstName.toLowerCase() &&
+            m.last_name.toLowerCase() === lastName.toLowerCase()
+        );
+        if (duplicate) {
+            errorEl.innerText = `A member named "${firstName} ${lastName}" already exists (ID: ${duplicate.id}). Use the Members view to edit their profile.`;
+            errorEl.className = "text-xs text-amber-400";
+            return;
+        }
     }
 
     const capturedCount = capturedRegFrames.filter(f => f !== null).length;
@@ -1736,12 +2289,28 @@ async function submitStudioRegistration() {
         return;
     }
 
-    // Multi-angle capture is optional (only the frontal angle is required);
-    // for any angle the user skipped, reuse the closest REAL captured vector
-    // rather than fabricating noise — a duplicated genuine embedding is a much
-    // better anchor for matching than a synthetic vector with no relation to
-    // this member's actual face.
+    // Enrollment quality gates (Phase A): small/distant faces and
+    // near-duplicate angles are rejected instead of stored.
+    for (let i = 0; i < 5; i++) {
+        const box = capturedRegBoxes[i];
+        if (capturedRegVectors[i] && box) {
+            const size = Math.min(box.w || 0, box.h || 0);
+            if (size > 0 && size < ENROLL_MIN_FACE_PX) {
+                errorEl.innerText = `Angle ${i + 1} face too small (${size.toFixed(0)}px < ${ENROLL_MIN_FACE_PX}px). Move closer and recapture angle ${i + 1}.`;
+                errorEl.className = "text-xs text-amber-400";
+                return;
+            }
+        }
+    }
     const realVectors = capturedRegVectors.filter(v => v !== null);
+    const distinct = countDistinctAngles(realVectors);
+    if (distinct < ENROLL_MIN_DISTINCT_ANGLES) {
+        errorEl.innerText = `Only ${distinct} distinct angle(s) captured — need at least ${ENROLL_MIN_DISTINCT_ANGLES} genuinely different angles (frontal + turn head left/right). Duplicates don't count.`;
+        errorEl.className = "text-xs text-amber-400";
+        return;
+    }
+    // Missing slots reuse the closest REAL captured vector (never synthetic
+    // noise) now that distinctness is enforced above.
     const finalVectors = [];
     for (let i = 0; i < 5; i++) {
         finalVectors.push(capturedRegVectors[i] || realVectors[0]);
@@ -1763,13 +2332,6 @@ async function submitStudioRegistration() {
             });
             errorEl.innerText = "";
             const doneId = rescanMemberId;
-            rescanMemberId = null;
-            const fn = document.getElementById('reg-mem-first-name');
-            const ln = document.getElementById('reg-mem-last-name');
-            if (fn) fn.disabled = false;
-            if (ln) ln.disabled = false;
-            const btn = document.getElementById('btn-complete-enroll');
-            if (btn) btn.querySelector('span').innerText = "Complete Registration & Sync Face Vectors";
             resetRegistrationStudio();
             await loadMembers();
             switchView('members');
@@ -1931,10 +2493,27 @@ async function submitWalkInPass() {
         return;
     }
 
-    const seed = name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const tempVector = [];
-    for (let i = 0; i < FACE_EMBEDDING_DIM; i++) {
-        tempVector.push(Math.sin(seed + i));
+    // Walk-ins use the SAME entry camera as registration/member scans
+    // (cam1). Capture a real face frame; no face -> code-only pass with NO
+    // biometric vector (never a fabricated Math.sin probe).
+    let faceVector = null;
+    try {
+        errorEl.innerText = "Capturing guest face on entry camera...";
+        errorEl.className = "text-xs text-blue-300";
+        const video = getCaptureElement(1);
+        const frame = video ? captureVideoFrame(video) : null;
+        if (frame) {
+            const scan = await invokeTauri('scan_face_frame', { imageBase64: frame });
+            if (scan && scan.face_detected && scan.vector) {
+                faceVector = scan.vector;
+            }
+        }
+    } catch (e) {
+        console.debug("Walk-in face capture failed, issuing code-only pass:", e);
+    }
+    if (!faceVector) {
+        errorEl.innerText = "No face in frame — issuing code-only pass (no biometric unlock).";
+        errorEl.className = "text-xs text-amber-400";
     }
 
     try {
@@ -1947,11 +2526,13 @@ async function submitWalkInPass() {
                 phone: phone || "Walk-in",
                 amount_paid: fee,
                 payment_method: payment,
-                face_vector: tempVector
+                face_vector: faceVector
             }
         });
 
         closeWalkInModal();
+        // Walk-in opens the door: same 7.5s tailgate window as any unlock.
+        armDoorOpenTailgateSurveillance();
         await loadWalkIns();
         await loadAttendanceLogs();
         await refreshDashboard();
@@ -1960,6 +2541,17 @@ async function submitWalkInPass() {
     } catch (e) {
         errorEl.innerText = "Walk-in Error: " + e;
         errorEl.className = "text-xs text-red-400";
+    }
+}
+
+async function renewWalkIn(id, name) {
+    if (!confirm(`Renew walk-in pass for ${name}? Fresh 8 hours from now using the saved face — no re-scan needed.`)) return;
+    try {
+        const updated = await invokeTauri('renew_walk_in', { id: id });
+        await loadWalkIns();
+        showHudToast("Pass Renewed", `${name} active until ${new Date(updated.expires_at).toLocaleTimeString()}.`, "success");
+    } catch (e) {
+        alert("Renew Pass Error: " + e);
     }
 }
 
@@ -2023,6 +2615,7 @@ async function loadWalkIns() {
                     <td class="p-3 uppercase text-[10px] font-bold text-slate-300">${w.payment_method}</td>
                     <td class="p-3">${statusBadge}</td>
                     <td class="p-3 text-right space-x-1">
+                        <button onclick="renewWalkIn('${w.id}', '${w.guest_name.replace(/'/g, "\\'")}')" title="Renew: fresh 8h from now, same face — no re-scan" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-800 transition">Renew</button>
                         <button onclick="extendWalkIn('${w.id}', 4)" title="Extend +4 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-blue-950 hover:bg-blue-900 text-blue-300 border border-blue-800 transition">+4h</button>
                         <button onclick="extendWalkIn('${w.id}', 8)" title="Extend +8 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 transition">+8h</button>
                         <button onclick="voidWalkIn('${w.id}', '${w.guest_name.replace(/'/g, "\\'")}')" title="Revoke Pass" class="px-2 py-1 rounded text-[10px] font-bold bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 transition">Void</button>
@@ -2259,7 +2852,21 @@ function openEditMemberModal(id) {
     document.getElementById('edit-mem-last-name').value = m.last_name;
     document.getElementById('edit-mem-phone').value = m.phone || '';
     document.getElementById('edit-mem-email').value = m.email || '';
-    document.getElementById('edit-mem-plan').value = m.membership_type.toLowerCase();
+    const planSel = document.getElementById('edit-mem-plan');
+    const planVal = (m.membership_type || 'regular').toLowerCase();
+    planSel.value = planVal;
+    // Legacy 'vip' rows predate the owner-portal tiers: keep the stored value
+    // selectable instead of silently blanking (and overwriting with "").
+    if (planSel.value !== planVal) {
+        const opt = document.createElement('option');
+        opt.value = planVal;
+        opt.innerText = `${m.membership_type} (legacy)`;
+        opt.dataset.legacy = '1';
+        planSel.appendChild(opt);
+        planSel.value = planVal;
+    } else {
+        planSel.querySelectorAll('option[data-legacy]').forEach(o => o.remove());
+    }
     document.getElementById('edit-mem-status').value = m.status.toLowerCase();
     document.getElementById('edit-mem-error-msg').innerText = '';
     const photoEl = document.getElementById('edit-mem-photo');
@@ -3104,18 +3711,33 @@ async function loadAttendanceLogs() {
 }
 
 async function simulateFaceScan(direction) {
-    if (cachedMembers.length === 0 && cachedWalkIns.length === 0) {
-        alert("Please enroll a member or issue a walk-in pass first to test facial matching!");
-        return;
+    const isEntry = direction === 'in';
+    const video = getCaptureElement(isEntry ? 1 : 2);
+    let probe = null;
+
+    if (video && video.videoWidth > 0) {
+        const frame = captureVideoFrame(video);
+        if (frame) {
+            try {
+                const scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
+                if (scanRes && scanRes.face_detected && scanRes.vector) {
+                    probe = scanRes.vector;
+                } else {
+                    alert(`No face detected in Camera ${isEntry ? 1 : 2} (${direction.toUpperCase()}). Please center your face in front of the camera.`);
+                    return;
+                }
+            } catch (e) {
+                console.warn("Scan frame error, falling back:", e);
+            }
+        }
     }
 
-    let probe = null;
-    if (cachedMembers.length > 0) {
-        probe = cachedMembers[0].face_vectors[0];
-    } else if (cachedWalkIns.length > 0) {
-        const seed = cachedWalkIns[0].guest_name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-        probe = [];
-        for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
+    if (!probe) {
+        // No stored-vector or synthetic fallbacks: a test scan with another
+        // member's enrolled vector is a guaranteed self-match that proves
+        // nothing and can unlock the wrong door. Live camera or nothing.
+        alert("Test scan needs a live camera feed with a face in frame. Check Hardware Settings.");
+        return;
     }
 
     try {
@@ -3137,14 +3759,14 @@ async function simulateFaceScan(direction) {
                 const m = result.remaining_minutes % 60;
                 msg += ` [8h Pass: ${h}h ${m}m remaining]`;
             }
-            msg += ` — Magnetic Lock Unlocked!`;
+            msg += ` — Gate Unlocked!`;
             showHudToast("Face Verified", msg, "success");
-            armDoorOpenTailgateSurveillance(3500);
+            armDoorOpenTailgateSurveillance();
             alert(msg);
         } else if (result.is_expired) {
             alert(`Scan Denied: ${result.message}\nDoor remains LOCKED to prevent unauthorized entry.`);
         } else {
-            alert("Scan Result: Face Not Recognized");
+            alert("Scan Result: Face Not Recognized (Unknown)");
         }
 
         await loadAttendanceLogs();
@@ -3160,10 +3782,28 @@ async function simulateWalkInScan(direction) {
         return;
     }
 
+    // Live camera only: synthetic name-seeded probes self-match and prove
+    // nothing (and must never arm the tailgate window).
+    const isEntry = direction === 'in';
+    const video = getCaptureElement(isEntry ? 1 : 2);
+    const frame = video ? captureVideoFrame(video) : null;
+    if (!frame) {
+        alert("Walk-in test needs a live camera feed. Check Hardware Settings.");
+        return;
+    }
+    let probe = null;
+    try {
+        const scanRes = await invokeTauri('scan_face_frame', { imageBase64: frame });
+        if (!scanRes || !scanRes.face_detected || !scanRes.vector) {
+            alert("No face detected in frame. Center the guest's face and retry.");
+            return;
+        }
+        probe = scanRes.vector;
+    } catch (e) {
+        alert("Walk-In Scan Error: " + e);
+        return;
+    }
     const guest = cachedWalkIns[0];
-    const seed = guest.guest_name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const probe = [];
-    for (let i = 0; i < FACE_EMBEDDING_DIM; i++) probe.push(Math.sin(seed + i));
 
     try {
         const result = await invokeTauri('process_face_scan', {
@@ -3186,7 +3826,7 @@ async function simulateWalkInScan(direction) {
             }
             msg += ` — Gate Unlocked!`;
             showHudToast("Walk-In Verified", msg, "success");
-            armDoorOpenTailgateSurveillance(3500);
+            armDoorOpenTailgateSurveillance();
             alert(msg);
         } else if (result.is_expired) {
             alert(`Scan Denied: 8-Hour Pass Expired for ${guest.guest_name}. Gate remains LOCKED.`);
@@ -3235,6 +3875,8 @@ async function quickUnlockDoor() {
             lockEl.className = "text-sm font-bold text-amber-400 mt-1 animate-pulse";
         }
         await invokeTauri('unlock_magnetic_lock', { durationMs: 3000 });
+        // Any door opening gets the 7.5s tailgate window, operator or not.
+        armDoorOpenTailgateSurveillance();
         setTimeout(() => {
             if (lockEl) {
                 lockEl.innerText = "LOCKED (STANDBY)";

@@ -458,8 +458,27 @@ const YOLO_PERSON_CLASS_INDEX: usize = 0; // COCO class 0 = "person"
 const YOLO_CONF_THRESHOLD: f32 = 0.45;
 const YOLO_NMS_THRESHOLD: f32 = 0.45;
 
+/// MOG-lite motion background: per-pixel running Gaussian mean at 80x45.
+/// No new dependencies (no opencv crate): the YOLO input is already resized,
+/// so a second tiny downscale is nearly free. `sensitivity` (0-1, default
+/// 0.5, tunable in Hardware Settings) scales the pixel-difference threshold.
+const MOTION_W: u32 = 80;
+const MOTION_H: u32 = 45;
+const MOTION_ALPHA: f32 = 0.05;
+const MOTION_BASE_THRESH: f32 = 25.0;
+
+struct MotionState {
+    mean: Vec<f32>,
+    mask: Vec<bool>,
+    initialized: bool,
+    /// Fraction of ROI pixels moving on the last processed frame.
+    last_roi_motion: f32,
+}
+
 pub struct PersonCounter {
     plan: Plan,
+    motion: std::sync::Mutex<MotionState>,
+    motion_sensitivity: std::sync::Mutex<f32>,
 }
 
 impl PersonCounter {
@@ -472,7 +491,131 @@ impl PersonCounter {
             .map_err(|e| format!("Failed to optimize YOLOv8n graph: {}", e))?
             .into_runnable()
             .map_err(|e| format!("Failed to make YOLOv8n runnable: {}", e))?;
-        Ok(Self { plan })
+        Ok(Self {
+            plan,
+            motion: std::sync::Mutex::new(MotionState {
+                mean: vec![0.0; (MOTION_W * MOTION_H) as usize],
+                mask: vec![false; (MOTION_W * MOTION_H) as usize],
+                initialized: false,
+                last_roi_motion: 0.0,
+            }),
+            motion_sensitivity: std::sync::Mutex::new(0.5),
+        })
+    }
+
+    /// Hardware Settings tunable (Phase E): 0 = hair-trigger, 1 = only gross motion.
+    pub fn set_motion_sensitivity(&self, v: f32) {
+        let mut s = self.motion_sensitivity.lock().unwrap_or_else(|e| e.into_inner());
+        *s = v.clamp(0.0, 1.0);
+    }
+
+    fn motion_thresh(&self) -> f32 {
+        let s = self
+            .motion_sensitivity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // sensitivity 0.5 -> 25.0; higher sensitivity -> lower threshold.
+        MOTION_BASE_THRESH * (1.5 - *s)
+    }
+
+    /// Updates the running background on a grayscale 80x45 copy and returns
+    /// the fraction of pixels inside `roi` (original-image coords) that moved.
+    fn update_motion(
+        &self,
+        image: &RgbImage,
+        roi_x: f32,
+        roi_y: f32,
+        roi_w: f32,
+        roi_h: f32,
+    ) -> f32 {
+        let (orig_w, orig_h) = image.dimensions();
+        if orig_w == 0 || orig_h == 0 {
+            return 0.0;
+        }
+        let small = image::imageops::resize(image, MOTION_W, MOTION_H, FilterType::Triangle);
+        let thresh = self.motion_thresh();
+        let mut st = self.motion.lock().unwrap_or_else(|e| e.into_inner());
+        let n = (MOTION_W * MOTION_H) as usize;
+        if !st.initialized {
+            // Seed background with the first frame (no motion reported).
+            for (m, px) in st.mean.iter_mut().zip(small.as_raw().chunks_exact(3)) {
+                *m = 0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32;
+            }
+            st.mask.fill(false);
+            st.initialized = true;
+            st.last_roi_motion = 0.0;
+            return 0.0;
+        }
+        let sx = MOTION_W as f32 / orig_w as f32;
+        let sy = MOTION_H as f32 / orig_h as f32;
+        let mut moving = 0usize;
+        let mut roi_total = 0usize;
+        let mut roi_moving = 0usize;
+        for y in 0..MOTION_H {
+            for x in 0..MOTION_W {
+                let i = (y * MOTION_W + x) as usize;
+                let px = &small.as_raw()[i * 3..i * 3 + 3];
+                let g = 0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32;
+                let diff = (g - st.mean[i]).abs();
+                let is_moving = diff > thresh;
+                st.mask[i] = is_moving;
+                if is_moving {
+                    moving += 1;
+                }
+                // ROI test in small-frame coords.
+                let fx = x as f32 / sx;
+                let fy = y as f32 / sy;
+                if fx >= roi_x && fx <= roi_x + roi_w && fy >= roi_y && fy <= roi_y + roi_h {
+                    roi_total += 1;
+                    if is_moving {
+                        roi_moving += 1;
+                    }
+                }
+                // Adapt background toward current frame (slow: static posters
+                // fade into the background, walking people stay foreground).
+                st.mean[i] += MOTION_ALPHA * (g - st.mean[i]);
+            }
+        }
+        let _ = moving;
+        let ratio = if roi_total > 0 {
+            roi_moving as f32 / roi_total as f32
+        } else {
+            0.0
+        };
+        st.last_roi_motion = ratio;
+        ratio
+    }
+
+    /// Fraction of a box (original-image coords) covered by motion pixels.
+    fn box_motion_fraction(&self, x: f32, y: f32, bw: f32, bh: f32, orig_w: f32, orig_h: f32) -> f32 {
+        let st = self.motion.lock().unwrap_or_else(|e| e.into_inner());
+        if orig_w <= 0.0 || orig_h <= 0.0 {
+            return 0.0;
+        }
+        let sx = MOTION_W as f32 / orig_w;
+        let sy = MOTION_H as f32 / orig_h;
+        let x0 = ((x * sx) as i32).clamp(0, MOTION_W as i32 - 1);
+        let y0 = ((y * sy) as i32).clamp(0, MOTION_H as i32 - 1);
+        let x1 = (((x + bw) * sx) as i32).clamp(0, MOTION_W as i32 - 1);
+        let y1 = (((y + bh) * sy) as i32).clamp(0, MOTION_H as i32 - 1);
+        if x1 < x0 || y1 < y0 {
+            return 0.0;
+        }
+        let mut total = 0usize;
+        let mut moving = 0usize;
+        for yy in y0..=y1 {
+            for xx in x0..=x1 {
+                total += 1;
+                if st.mask[(yy * MOTION_W as i32 + xx) as usize] {
+                    moving += 1;
+                }
+            }
+        }
+        if total == 0 {
+            0.0
+        } else {
+            moving as f32 / total as f32
+        }
     }
 
     /// Detects person bounding boxes (COCO class 0) in `image`, in ORIGINAL
@@ -582,6 +725,50 @@ impl PersonCounter {
             .count();
 
         Ok(count)
+    }
+
+    /// Counts and locates detected person boxes inside the ROI rectangle,
+    /// fused with MOG-lite motion: each box carries `moving` (fraction of
+    /// box pixels in motion) and the result carries `motion_in_roi`
+    /// (fraction of ROI pixels in motion). A box counts toward `count` when
+    /// its center is inside the ROI or it intersects the ROI (locked rule).
+    pub fn count_and_locate_in_roi(
+        &self,
+        image: &RgbImage,
+        roi_x_pct: f32,
+        roi_y_pct: f32,
+        roi_w_pct: f32,
+        roi_h_pct: f32,
+    ) -> Result<(usize, Vec<serde_json::Value>, f32), String> {
+        let boxes = self.detect_persons(image)?;
+        let (w, h) = image.dimensions();
+        let (w, h) = (w as f32, h as f32);
+
+        let roi_x = (roi_x_pct / 100.0) * w;
+        let roi_y = (roi_y_pct / 100.0) * h;
+        let roi_w = (roi_w_pct / 100.0) * w;
+        let roi_h = (roi_h_pct / 100.0) * h;
+
+        let motion_in_roi = self.update_motion(image, roi_x, roi_y, roi_w, roi_h);
+
+        let mut in_roi = Vec::new();
+        for (x, y, bw, bh) in boxes {
+            let cx = x + bw / 2.0;
+            let cy = y + bh / 2.0;
+            let center_in = cx >= roi_x && cx <= roi_x + roi_w && cy >= roi_y && cy <= roi_y + roi_h;
+            let intersects = x < roi_x + roi_w && x + bw > roi_x && y < roi_y + roi_h && y + bh > roi_y;
+            if center_in || intersects {
+                let moving = self.box_motion_fraction(x, y, bw, bh, w, h);
+                in_roi.push(serde_json::json!({
+                    "x": x, "y": y, "w": bw, "h": bh,
+                    "cx": cx, "cy": cy,
+                    "moving": moving
+                }));
+            }
+        }
+
+        let count = in_roi.len();
+        Ok((count, in_roi, motion_in_roi))
     }
 }
 
@@ -943,6 +1130,53 @@ mod tests {
             .count_in_roi(&blank, 20.0, 20.0, 60.0, 60.0)
             .expect("roi count should run without error");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn motion_background_static_then_changed() {
+        let dir = std::path::Path::new("../models");
+        if !dir.join("yolov8n.onnx").is_file() {
+            eprintln!("skipping: yolov8n.onnx not found relative to test working directory");
+            return;
+        }
+        let counter = PersonCounter::load(dir).expect("yolov8n.onnx should load and optimize");
+
+        // First frame seeds the background: no motion reported.
+        let blank = RgbImage::from_pixel(320, 240, Rgb([128, 128, 128]));
+        let m0 = counter.update_motion(&blank, 0.0, 0.0, 320.0, 240.0);
+        assert_eq!(m0, 0.0, "first frame seeds background, motion must be 0");
+        // Identical second frame: still (near-)zero motion.
+        let m1 = counter.update_motion(&blank, 0.0, 0.0, 320.0, 240.0);
+        assert!(
+            m1 < 0.01,
+            "static frame must report near-zero motion, got {}",
+            m1
+        );
+        // Half-white frame: large changed area must register motion.
+        let mut changed = blank.clone();
+        for y in 0..240 {
+            for x in 0..160 {
+                changed.put_pixel(x, y, Rgb([255, 255, 255]));
+            }
+        }
+        let m2 = counter.update_motion(&changed, 0.0, 0.0, 320.0, 240.0);
+        assert!(
+            m2 > 0.2,
+            "half-changed frame must register strong motion, got {}",
+            m2
+        );
+        // Boxes carry a moving fraction in [0,1].
+        let (_count, boxes, motion) = counter
+            .count_and_locate_in_roi(&changed, 0.0, 0.0, 100.0, 100.0)
+            .expect("locate should run");
+        assert!((0.0..=1.0).contains(&motion), "motion ratio in range");
+        for b in &boxes {
+            let mv = b.get("moving").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+            assert!(
+                (0.0..=1.0).contains(&mv),
+                "per-box moving fraction in range"
+            );
+        }
     }
 
     #[test]

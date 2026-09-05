@@ -343,26 +343,37 @@ pub fn list_walk_ins(state: State<'_, AppContext>) -> Result<Vec<WalkInRecord>, 
 /// `process_face_scan` exactly as before, so no changes were needed to the
 /// matching engine in `face.rs`.
 #[tauri::command]
-pub fn scan_face_frame(image_base64: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
+pub async fn scan_face_frame(image_base64: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     check_license_active(&state)?;
 
-    let engine = state
-        .face_engine
-        .as_ref()
-        .as_ref()
-        .ok_or_else(|| "Face recognition engine unavailable: ONNX models failed to load at startup".to_string())?;
-
+    // Arc-clone the engine handle: heavy ONNX inference (YuNet +
+    // ArcFace/SFace on CPU) runs on the blocking pool so concurrent scan
+    // ticks never stall the webview IPC.
+    let engine_opt = state.face_engine.clone();
     let image = crate::vision::decode_base64_image(&image_base64)?;
 
-    let model = engine.recognizer_name();
-    match engine.detect_and_embed(&image)? {
+    let (model, embedding_dim, detected) = tauri::async_runtime::spawn_blocking(move || {
+        let engine = engine_opt
+            .as_ref()
+            .as_ref()
+            .ok_or_else(|| "Face recognition engine unavailable: ONNX models failed to load at startup".to_string())?;
+        let out = engine.detect_and_embed(&image)?;
+        Ok::<_, String>((engine.recognizer_name().to_string(), engine.embedding_dim(), out))
+    })
+    .await
+    .map_err(|e| format!("Face inference task failed: {}", e))??;
+    match detected {
         Some((face, embedding)) => Ok(json!({
             "face_detected": true,
             "confidence": face.score,
             "vector": embedding,
-            "embedding_dim": engine.embedding_dim(),
+            "embedding_dim": embedding_dim,
             "model": model,
-            "box": { "x": face.rect.0, "y": face.rect.1, "w": face.rect.2, "h": face.rect.3 }
+            "box": { "x": face.rect.0, "y": face.rect.1, "w": face.rect.2, "h": face.rect.3 },
+            // 5-point landmarks (eyes, nose, mouth corners) in ORIGINAL image
+            // pixels — powers the webview liveness check (eye displacement
+            // across confirmation frames defeats static photos).
+            "landmarks": face.landmarks.iter().map(|p| json!({"x": p[0], "y": p[1]})).collect::<Vec<_>>()
         })),
         None => Ok(json!({
             "face_detected": false,
@@ -377,7 +388,7 @@ pub fn scan_face_frame(image_base64: String, state: State<'_, AppContext>) -> Re
 /// tick by `armDoorOpenTailgateSurveillance` in the webview during the
 /// 3.5s door-open window; `person_count > 1` means tailgating.
 #[tauri::command]
-pub fn count_persons_in_frame(
+pub async fn count_persons_in_frame(
     image_base64: String,
     roi_x: f32,
     roi_y: f32,
@@ -386,14 +397,29 @@ pub fn count_persons_in_frame(
     state: State<'_, AppContext>,
 ) -> Result<serde_json::Value, String> {
     check_license_active(&state)?;
-    let counter = state
-        .person_counter
-        .as_ref()
-        .as_ref()
-        .ok_or_else(|| "Person counter unavailable: yolov8n.onnx failed to load".to_string())?;
+    let counter_opt = state.person_counter.clone();
+    // MOG sensitivity follows Hardware Settings (Recognition Tuning).
+    let mog_sensitivity = state
+        .db
+        .get_app_settings()
+        .ok()
+        .and_then(|s| s.camera_config)
+        .map(|c| c.mog_sensitivity)
+        .unwrap_or(0.5);
     let image = crate::vision::decode_base64_image(&image_base64)?;
-    let count = counter.count_in_roi(&image, roi_x, roi_y, roi_width, roi_height)?;
-    Ok(json!({ "person_count": count }))
+    // YOLO inference off the async path — tailgate ticks every 350ms must
+    // never queue behind each other on the Tauri worker.
+    let (count, boxes, motion_in_roi) = tauri::async_runtime::spawn_blocking(move || {
+        let counter = counter_opt
+            .as_ref()
+            .as_ref()
+            .ok_or_else(|| "Person counter unavailable: yolov8n.onnx failed to load".to_string())?;
+        counter.set_motion_sensitivity(mog_sensitivity);
+        counter.count_and_locate_in_roi(&image, roi_x, roi_y, roi_width, roi_height)
+    })
+    .await
+    .map_err(|e| format!("Person-count task failed: {}", e))??;
+    Ok(json!({ "person_count": count, "boxes": boxes, "motion_in_roi": motion_in_roi }))
 }
 
 #[tauri::command]
@@ -404,15 +430,25 @@ pub fn process_face_scan(
 ) -> Result<serde_json::Value, String> {
     check_license_active(&state)?;
 
-    // Threshold follows the embedding: 512-d ArcFace (InsightFace w600k_mbf)
-    // match >= 0.68 (FAR < 0.001%), legacy 128-d SFace >= 0.60.
+    // Threshold follows the embedding, tunable in Hardware Settings
+    // (Recognition Tuning): 512-d ArcFace defaults match >= 0.62 /
+    // adapt >= 0.80, legacy 128-d SFace a hair lower. Raised from 0.55/0.50
+    // after the accuracy review: genuine matches score ~0.8+, so the higher
+    // bar cuts the impostor tail without hurting real members.
+    let cfg = state
+        .db
+        .get_app_settings()
+        .ok()
+        .and_then(|s| s.camera_config)
+        .unwrap_or_default();
     let (match_threshold, adapt_threshold) = if probe_vector.len() >= 512 {
-        (0.68, 0.82)
+        (cfg.match_threshold, cfg.adapt_threshold)
     } else {
-        (0.60, 0.88)
+        ((cfg.match_threshold - 0.04).max(0.0), (cfg.adapt_threshold - 0.02).max(0.0))
     };
 
     let match_result = state.face_store.match_vector(&probe_vector, match_threshold);
+    let dim_mismatch = state.face_store.take_dim_mismatch();
 
     if let Some(m) = match_result {
         // Frozen / expired member accounts are denied at the gate (data retained for records)
@@ -462,8 +498,9 @@ pub fn process_face_scan(
             }));
         }
 
-        // Strict Anti-Passback Validation:
-        // Cannot scan IN if already inside ('in'); Cannot scan OUT if outside ('out' or none)
+        // Anti-Passback Validation:
+        // Cannot scan IN if already inside ('in').
+        // Egress (direction 'out') is ALWAYS permitted per safety standards and SLS123 access control.
         let last_direction = state.db.get_member_last_direction(&m.member_id).unwrap_or(None);
         if direction == "in" && last_direction.as_deref() == Some("in") {
             return Ok(json!({
@@ -471,15 +508,6 @@ pub fn process_face_scan(
                 "passback_violation": true,
                 "member_name": m.member_name,
                 "message": format!("Anti-Passback Denied: {} is already inside the gym. Must scan exit before entering again.", m.member_name),
-                "door_unlocked": false
-            }));
-        }
-        if direction == "out" && (last_direction.as_deref() == Some("out") || last_direction.is_none()) {
-            return Ok(json!({
-                "matched": true,
-                "passback_violation": true,
-                "member_name": m.member_name,
-                "message": format!("Anti-Passback Denied: {} is not currently checked in. Must scan entry first.", m.member_name),
                 "door_unlocked": false
             }));
         }
@@ -491,7 +519,9 @@ pub fn process_face_scan(
             .map_err(|e| e.to_string())?;
 
         // Adaptive continuous learning: slightly adapt stored profile on high
-        // confidence match (>= 0.82 ArcFace / >= 0.88 legacy SFace)
+        // confidence match (>= 0.80 ArcFace / >= 0.78 legacy SFace).
+        // adapt_profile enforces the drift guardrail internally (reverts +
+        // warns past cosine 0.90 from enrollment) and never touches walk-ins.
         if m.confidence >= adapt_threshold && !m.is_expired {
             state.face_store.adapt_profile(&m.member_id, &probe_vector, 0.05);
         }
@@ -516,23 +546,24 @@ pub fn process_face_scan(
             "member_name": m.member_name,
             "direction": direction,
             "confidence": (m.confidence * 100.0).round() / 100.0,
+            "match_margin": (m.match_margin * 100.0).round() / 100.0,
             "door_unlocked": unlocked,
             "remaining_minutes": remaining_mins,
             "log": log
         }))
     } else {
-        // Unknown face scan
-        let log = state
-            .db
-            .log_attendance(None, None, &direction, None, false)
-            .map_err(|e| e.to_string())?;
-
+        // Unknown face scan or cooldown-suppressed frame — do NOT spam attendance records!
+        // needs_reenroll distinguishes "legacy embedding width" from "stranger".
         Ok(json!({
             "matched": false,
             "is_expired": false,
-            "message": "Face not recognized",
-            "door_unlocked": false,
-            "log": log
+            "needs_reenroll": dim_mismatch,
+            "message": if dim_mismatch {
+                "Face gallery needs re-enrollment for the current recognizer".to_string()
+            } else {
+                "Face not recognized".to_string()
+            },
+            "door_unlocked": false
         }))
     }
 }
@@ -771,13 +802,44 @@ pub fn extend_walk_in(id: String, extra_hours: i64, state: State<'_, AppContext>
     require_manager(&state)?;
     let record = state.db.extend_walk_in(&id, extra_hours).map_err(|e| e.to_string())?;
 
-    // Update in-memory biometric expiry if present
+    // Refresh the live store from the DB vector so renew works even when the
+    // memory entry was purged (or never existed for code-only passes that
+    // later got a vector). No re-face-scan needed: staff just clicks Renew.
     let temp_id = format!("WALKIN-{}", record.id);
     if let Some(mut entry) = state.face_store.get_entry(&temp_id) {
         entry.expires_at = Some(record.expires_at);
         state.face_store.upsert_with_expiry(entry.member_id, entry.member_name, entry.vectors, entry.expires_at);
+    } else if let Some(vec) = record.face_vector.clone() {
+        state.face_store.upsert_with_expiry(
+            temp_id,
+            format!("Walk-In: {}", record.guest_name),
+            vec![vec],
+            Some(record.expires_at),
+        );
     }
 
+    Ok(record)
+}
+
+#[tauri::command]
+pub fn renew_walk_in(id: String, state: State<'_, AppContext>) -> Result<WalkInRecord, String> {
+    check_license_active(&state)?;
+    require_manager(&state)?;
+    let record = state.db.renew_walk_in(&id).map_err(|e| e.to_string())?;
+    // Same re-upsert logic as extend: revive the live entry from the stored
+    // vector when the memory entry is gone.
+    let temp_id = format!("WALKIN-{}", record.id);
+    if let Some(mut entry) = state.face_store.get_entry(&temp_id) {
+        entry.expires_at = Some(record.expires_at);
+        state.face_store.upsert_with_expiry(entry.member_id, entry.member_name, entry.vectors, entry.expires_at);
+    } else if let Some(vec) = record.face_vector.clone() {
+        state.face_store.upsert_with_expiry(
+            temp_id,
+            format!("Walk-In: {}", record.guest_name),
+            vec![vec],
+            Some(record.expires_at),
+        );
+    }
     Ok(record)
 }
 

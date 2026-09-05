@@ -9,8 +9,10 @@ use std::sync::Arc;
 /// before falling back to full multi-angle vector comparison (Task 5.3).
 /// Larger = safer (less chance of missing a match whose centroid ranks
 /// outside the top-K but whose specific angle vector would have matched)
-/// at a small extra cost; still O(K), not O(N).
-const HNSW_CANDIDATE_COUNT: usize = 8;
+/// at a small extra cost; still O(K), not O(N). Raised 8 -> 16 after the
+/// accuracy review: drifted/duplicated centroids can push the true member
+/// outside a tight top-8 at roster scale.
+const HNSW_CANDIDATE_COUNT: usize = 16;
 
 /// Wraps a member's centroid embedding for HNSW indexing. Distance is cosine
 /// distance (1 - cosine similarity), reusing the same SIMD-friendly dot
@@ -69,8 +71,16 @@ pub struct FaceEntry {
     pub member_name: String,
     pub vectors: Vec<Vec<f32>>, // Multi-angle anchors (front, left, right, up, down)
     pub centroid: Vec<f32>,     // Weighted mean embedding for rapid 1-to-N screening
+    pub enrolled_centroid: Vec<f32>, // Immutable enrollment snapshot: adapt drift guardrail
+    pub adapt_count: u32,       // Successful EMA adapts since enrollment (telemetry)
     pub expires_at: Option<DateTime<Utc>>, // None for regular members, Some(timestamp) for 8-hour walk-ins
 }
+
+/// Maximum allowed drift of the live centroid away from the enrollment
+/// snapshot, as cosine similarity. Breach reverts the adapt and flags the
+/// member for re-scan instead of letting bad lighting/glasses permanently
+/// pull the profile.
+const ADAPT_DRIFT_MIN_COSINE: f32 = 0.90;
 
 #[derive(Debug, Clone)]
 pub struct MatchResult {
@@ -80,6 +90,7 @@ pub struct MatchResult {
     pub matched_angle_index: usize,
     pub is_expired: bool,
     pub expires_at: Option<DateTime<Utc>>,
+    pub match_margin: f32, // best score minus runner-up: separation signal for calibration
 }
 
 /// Tracks the last successful match to prevent rapid duplicate hardware pulses
@@ -101,6 +112,9 @@ pub struct FaceVectorStore {
     /// better than rebuilding on every single write.
     index: Arc<RwLock<Option<HnswMap<CentroidPoint, String>>>>,
     index_dirty: Arc<AtomicBool>,
+    /// Set when the last `match_vector` skipped a candidate purely on
+    /// embedding-dimension mismatch. Drained via `take_dim_mismatch()`.
+    dim_mismatch_flag: Arc<AtomicBool>,
 }
 
 impl FaceVectorStore {
@@ -110,7 +124,15 @@ impl FaceVectorStore {
             last_match: Arc::new(Mutex::new(None)),
             index: Arc::new(RwLock::new(None)),
             index_dirty: Arc::new(AtomicBool::new(false)),
+            dim_mismatch_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Drains the dimension-mismatch signal set by the last `match_vector`
+    /// call. True means at least one candidate was skipped only because its
+    /// stored embedding width differs from the probe width.
+    pub fn take_dim_mismatch(&self) -> bool {
+        self.dim_mismatch_flag.swap(false, Ordering::AcqRel)
     }
 
     /// Rebuilds the HNSW centroid index from the current entries if it has
@@ -211,7 +233,9 @@ impl FaceVectorStore {
                 member_id,
                 member_name,
                 vectors,
-                centroid,
+                centroid: centroid.clone(),
+                enrolled_centroid: centroid,
+                adapt_count: 0,
                 expires_at,
             },
         );
@@ -219,21 +243,41 @@ impl FaceVectorStore {
         self.index_dirty.store(true, Ordering::Release);
     }
 
-    /// Adaptively updates the stored embedding when a member unlocks with high confidence (Continuous Learning)
-    pub fn adapt_profile(&self, member_id: &str, live_probe: &[f32], alpha: f32) {
+    /// Adaptively updates the stored embedding when a member unlocks with high confidence (Continuous Learning).
+    /// Guardrailed: after the EMA step the new centroid must still be within
+    /// ADAPT_DRIFT_MIN_COSINE of the enrollment snapshot, otherwise the adapt
+    /// is reverted (returns false) so bad lighting/glasses/beards cannot
+    /// permanently pull the profile. Returns true when the adapt stuck.
+    pub fn adapt_profile(&self, member_id: &str, live_probe: &[f32], alpha: f32) -> bool {
         let mut store = self.entries.write();
         if let Some(entry) = store.get_mut(member_id) {
             if !entry.centroid.is_empty() && entry.centroid.len() == live_probe.len() {
                 // Exponential Moving Average: centroid_new = (1 - alpha)*centroid_old + alpha*probe
-                for (c, p) in entry.centroid.iter_mut().zip(live_probe.iter()) {
+                let mut candidate = entry.centroid.clone();
+                for (c, p) in candidate.iter_mut().zip(live_probe.iter()) {
                     *c = (1.0 - alpha) * (*c) + alpha * (*p);
                 }
-                l2_normalize(&mut entry.centroid);
+                l2_normalize(&mut candidate);
+                let drift = if entry.enrolled_centroid.len() == candidate.len() && !entry.enrolled_centroid.is_empty() {
+                    cosine_similarity_fast(&candidate, &entry.enrolled_centroid)
+                } else {
+                    1.0
+                };
+                if drift < ADAPT_DRIFT_MIN_COSINE {
+                    tracing::warn!(
+                        "Adapt reverted for {}: drift cosine {:.3} below {:.2} — flag for re-scan",
+                        entry.member_name, drift, ADAPT_DRIFT_MIN_COSINE
+                    );
+                    return false;
+                }
+                entry.centroid = candidate;
+                entry.adapt_count = entry.adapt_count.saturating_add(1);
                 drop(store);
                 self.index_dirty.store(true, Ordering::Release);
-                return;
+                return true;
             }
         }
+        false
     }
 
     /// Get a cloned entry by member_id
@@ -304,6 +348,13 @@ impl FaceVectorStore {
         let store = self.entries.read();
         let mut best_match: Option<MatchResult> = None;
         let mut highest_score: f32 = threshold;
+        let mut runner_up: f32 = 0.0;
+        let mut best_member_id: Option<String> = None;
+        // Set when a candidate was skipped purely on embedding-dimension
+        // mismatch (e.g. legacy 128-d gallery vs 512-d probe). Surfaced via
+        // take_dim_mismatch() so the UI can say "needs re-enrollment"
+        // instead of the misleading "Face not recognized".
+        let mut dim_mismatch_seen = false;
 
         // Task 5.3: instead of a full O(N) scan over every enrolled member,
         // retrieve only the top-K nearest-by-centroid candidates from the
@@ -333,6 +384,39 @@ impl FaceVectorStore {
             };
             let is_expired = entry.expires_at.map_or(false, |exp| now > exp);
 
+            // Dimension-mismatch signal: entry stores a different embedding
+            // width than the probe (e.g. legacy 128-d gallery vs 512-d
+            // probe). cosine returns 0.0 for these, so flag it for the
+            // "needs re-enrollment" UX instead of silent non-match.
+            let entry_dim = entry.vectors.first().map(|v| v.len()).unwrap_or(0);
+            if entry_dim != 0 && entry_dim != probe.len() {
+                dim_mismatch_seen = true;
+            }
+
+            // Runner-up tracks the best score from a DIFFERENT member so the
+            // margin measures identification separation, not the winner's
+            // own angle gallery.
+            let mut note_score = |score: f32,
+                                  member_id: &str,
+                                  highest_score: &mut f32,
+                                  runner_up: &mut f32,
+                                  best_member_id: &mut Option<String>|
+             -> bool {
+                if score > *highest_score {
+                    if best_member_id.as_deref() != Some(member_id) {
+                        *runner_up = runner_up.max(*highest_score);
+                    }
+                    *highest_score = score;
+                    *best_member_id = Some(member_id.to_string());
+                    true
+                } else {
+                    if best_member_id.as_deref() != Some(member_id) {
+                        *runner_up = runner_up.max(score);
+                    }
+                    false
+                }
+            };
+
             // Fast Pre-screening via Centroid Vector
             let centroid_score = if !entry.centroid.is_empty() {
                 cosine_similarity_fast(&normalized_probe, &entry.centroid)
@@ -341,8 +425,13 @@ impl FaceVectorStore {
             };
 
             // If centroid matches well, update best match
-            if centroid_score > highest_score {
-                highest_score = centroid_score;
+            if note_score(
+                centroid_score,
+                &entry.member_id,
+                &mut highest_score,
+                &mut runner_up,
+                &mut best_member_id,
+            ) {
                 best_match = Some(MatchResult {
                     member_id: entry.member_id.clone(),
                     member_name: entry.member_name.clone(),
@@ -350,14 +439,20 @@ impl FaceVectorStore {
                     matched_angle_index: 0,
                     is_expired,
                     expires_at: entry.expires_at,
+                    match_margin: 0.0, // filled in below
                 });
             }
 
             // Full multi-angle vector comparison
             for (idx, target_vec) in entry.vectors.iter().enumerate() {
                 let score = cosine_similarity_fast(&normalized_probe, target_vec);
-                if score > highest_score {
-                    highest_score = score;
+                if note_score(
+                    score,
+                    &entry.member_id,
+                    &mut highest_score,
+                    &mut runner_up,
+                    &mut best_member_id,
+                ) {
                     best_match = Some(MatchResult {
                         member_id: entry.member_id.clone(),
                         member_name: entry.member_name.clone(),
@@ -365,9 +460,17 @@ impl FaceVectorStore {
                         matched_angle_index: idx,
                         is_expired,
                         expires_at: entry.expires_at,
+                        match_margin: 0.0, // filled in below
                     });
                 }
             }
+        }
+
+        if dim_mismatch_seen {
+            self.dim_mismatch_flag.store(true, Ordering::Release);
+        }
+        if let Some(ref mut m) = best_match {
+            m.match_margin = (m.confidence - runner_up).max(0.0);
         }
 
         // Duplicate-scan cooldown (atomic): if the same member was matched within 3 seconds, suppress
@@ -620,7 +723,7 @@ mod tests {
 
     #[test]
     fn test_hnsw_finds_correct_match_among_many_members() {
-        // With HNSW_CANDIDATE_COUNT == 8, a store with 50 members means most
+        // With HNSW_CANDIDATE_COUNT == 16, a store with 50 members means most
         // entries are NOT in every top-K candidate set by construction — this
         // proves the HNSW search itself (not just the fallback full-scan
         // path for tiny stores) is retrieving the right candidate.
@@ -646,6 +749,71 @@ mod tests {
             matched.confidence > 0.99,
             "exact match should score near 1.0, got {}",
             matched.confidence
+        );
+    }
+
+    #[test]
+    fn test_match_reports_margin_against_runner_up() {
+        // Two members: exact self-match must win with margin = best - second.
+        let store = FaceVectorStore::new();
+        let mut v1 = vec![0.0f32; 16];
+        v1[0] = 1.0;
+        let mut v2 = vec![0.0f32; 16];
+        v2[0] = 0.9;
+        v2[1] = 0.1;
+        store.upsert("MEM-A".to_string(), "Alice".to_string(), vec![v1.clone()]);
+        store.upsert("MEM-B".to_string(), "Bob".to_string(), vec![v2]);
+        let probe = store.get_entry("MEM-A").unwrap().vectors[0].clone();
+        let m = store.match_vector(&probe, 0.60).expect("exact match");
+        assert_eq!(m.member_id, "MEM-A");
+        assert!(
+            m.match_margin > 0.0,
+            "margin must be positive when a runner-up exists, got {}",
+            m.match_margin
+        );
+    }
+
+    #[test]
+    fn test_adapt_reverts_on_excessive_drift() {
+        // Enroll at one pole of the space, then try to drag the centroid to
+        // the opposite pole: drift guard must revert and return false.
+        let store = FaceVectorStore::new();
+        let mut v = vec![0.0f32; 16];
+        v[0] = 1.0;
+        store.upsert("MEM-A".to_string(), "Alice".to_string(), vec![v]);
+        let mut hostile = vec![0.0f32; 16];
+        hostile[5] = 1.0;
+        // Small alpha steps toward hostile stay within drift: allowed.
+        assert!(store.adapt_profile("MEM-A", &hostile, 0.01));
+        // A full jump to the hostile pole breaches cosine 0.90: reverted.
+        assert!(!store.adapt_profile("MEM-A", &hostile, 1.0));
+        // Centroid must still match the enrollment neighborhood.
+        let probe = store.get_entry("MEM-A").unwrap().vectors[0].clone();
+        let m = store.match_vector(&probe, 0.60).expect("still matches self");
+        assert_eq!(m.member_id, "MEM-A");
+    }
+
+    #[test]
+    fn test_dim_mismatch_flags_reenroll() {
+        // Legacy 128-d gallery vs 512-d probe: no match, but the mismatch
+        // flag must trip so the UI can say "needs re-enrollment".
+        let store = FaceVectorStore::new();
+        store.upsert(
+            "MEM-OLD".to_string(),
+            "Old".to_string(),
+            vec![vec![0.1f32; 128]],
+        );
+        // Non-flat probe (flat vectors are rejected by the quality gate
+        // before dimension checks run).
+        let probe: Vec<f32> = (0..512).map(|i| (i as f32 * 0.1).sin()).collect();
+        assert!(store.match_vector(&probe, 0.60).is_none());
+        assert!(
+            store.take_dim_mismatch(),
+            "dimension mismatch should have been flagged"
+        );
+        assert!(
+            !store.take_dim_mismatch(),
+            "flag must drain after one read"
         );
     }
 }

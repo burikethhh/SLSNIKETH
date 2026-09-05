@@ -149,11 +149,11 @@ impl Database {
                 coach_name TEXT NOT NULL,
                 member_id TEXT NOT NULL,
                 member_name TEXT NOT NULL,
-                scheduled_at TEXT NOT NULL,
+                session_date TEXT NOT NULL,
                 duration_minutes INTEGER NOT NULL DEFAULT 60,
                 status TEXT NOT NULL DEFAULT 'scheduled',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (coach_id) REFERENCES coaches(id)
+                FOREIGN KEY (coach_id) REFERENCES coaches(id) ON DELETE CASCADE,
+                FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE
             );
 
             CREATE TABLE IF NOT EXISTS local_staff_accounts (
@@ -436,19 +436,21 @@ impl Database {
             payment_method: req.payment_method.clone(),
             created_at: now,
             expires_at,
+            face_vector: req.face_vector.clone(),
         })
     }
 
     pub fn list_walk_ins(&self) -> Result<Vec<WalkInRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, guest_name, phone, amount_paid, payment_method, created_at, expires_at
+            "SELECT id, guest_name, phone, amount_paid, payment_method, created_at, expires_at, face_vector
              FROM walk_ins ORDER BY created_at DESC LIMIT 50",
         )?;
 
         let rows = stmt.query_map([], |row| {
             let created_str: String = row.get(5)?;
             let expires_str: String = row.get(6)?;
+            let vec_json: Option<String> = row.get(7).unwrap_or(None);
 
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -456,6 +458,8 @@ impl Database {
             let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
+            let face_vector: Option<Vec<f32>> = vec_json
+                .and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(WalkInRecord {
                 id: row.get(0)?,
@@ -465,6 +469,7 @@ impl Database {
                 payment_method: row.get(4)?,
                 created_at,
                 expires_at,
+                face_vector,
             })
         })?;
 
@@ -665,8 +670,13 @@ impl Database {
     }
 
     pub fn delete_member(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM members WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM coach_sessions WHERE member_id = ?1", params![id])?;
+        tx.execute("UPDATE attendance_logs SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        tx.execute("UPDATE transactions SET member_id = NULL WHERE member_id = ?1", params![id])?;
+        tx.execute("DELETE FROM members WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1599,8 +1609,11 @@ impl Database {
     }
 
     pub fn delete_coach(&self, id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM coaches WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM coach_sessions WHERE coach_id = ?1", params![id])?;
+        tx.execute("DELETE FROM coaches WHERE id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1669,11 +1682,31 @@ impl Database {
         let cur_dt = chrono::DateTime::parse_from_rfc3339(&cur_expires)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
-        let new_dt = cur_dt + Duration::hours(extra_hours);
+        // Renew semantics: an already-expired pass restarts from NOW instead
+        // of stacking hours onto a long-dead expiry.
+        let base = cur_dt.max(Utc::now());
+        let new_dt = base + Duration::hours(extra_hours);
 
         conn.execute("UPDATE walk_ins SET expires_at = ?1 WHERE id = ?2", params![new_dt.to_rfc3339(), id])?;
         drop(conn);
 
+        let walkins = self.list_walk_ins()?;
+        walkins.into_iter().find(|w| w.id == id).ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// Staff/manager Renew: fresh 8-hour pass from NOW reusing the stored
+    /// enrollment vector — no re-face-scan needed.
+    pub fn renew_walk_in(&self, id: &str) -> Result<WalkInRecord> {
+        let conn = self.conn.lock().unwrap();
+        let new_dt = Utc::now() + Duration::hours(8);
+        let changed = conn.execute(
+            "UPDATE walk_ins SET expires_at = ?1 WHERE id = ?2",
+            params![new_dt.to_rfc3339(), id],
+        )?;
+        if changed == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        drop(conn);
         let walkins = self.list_walk_ins()?;
         walkins.into_iter().find(|w| w.id == id).ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)
     }
@@ -1830,5 +1863,96 @@ impl Database {
             list.push(r?);
         }
         Ok(list)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_delete_member_cascades_foreign_keys() {
+        let db = Database::in_memory().unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        }
+
+        let req = CreateMemberRequest {
+            first_name: "Test".to_string(),
+            last_name: "Member".to_string(),
+            email: "test@example.com".to_string(),
+            phone: "1234567890".to_string(),
+            membership_type: "regular".to_string(),
+            face_vectors: vec![vec![0.1; 128]],
+            photo_data_url: None,
+        };
+
+        let member = db.create_member(&req).unwrap();
+        let member_id = member.id.clone();
+
+        // 1. Add attendance log referencing member
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO attendance_logs (id, member_id, member_name, direction, timestamp, confidence)
+                 VALUES ('ATT-1', ?1, 'Test Member', 'in', '2026-09-05T00:00:00Z', 0.95)",
+                params![member_id],
+            ).unwrap();
+        }
+
+        // 2. Add coach and session referencing member
+        let coach_req = CreateCoachRequest {
+            name: "Coach John".to_string(),
+            specialty: "Fitness".to_string(),
+            phone: "09171234567".to_string(),
+        };
+        let coach = db.create_coach(&coach_req).unwrap();
+        db.schedule_session(&coach.id, &coach.name, &member_id, "Test Member", "2026-09-06T10:00:00Z", 60).unwrap();
+
+        // 3. Test re-scan: update_member_vectors succeeds
+        let rescanned = db.update_member_vectors(&member_id, &[vec![0.2; 128]], None).unwrap();
+        assert_eq!(rescanned.face_vectors.len(), 1);
+        assert!((rescanned.face_vectors[0][0] - 0.2).abs() < 1e-5);
+
+        // 4. Test delete_member: must not fail with FOREIGN KEY constraint failed
+        db.delete_member(&member_id).unwrap();
+
+        // Verify member is gone
+        assert!(db.get_member_by_id(&member_id).unwrap().is_none());
+
+        // Verify attendance log remains for auditing but with member_id NULL
+        {
+            let conn = db.conn.lock().unwrap();
+            let att_member_id: Option<String> = conn.query_row(
+                "SELECT member_id FROM attendance_logs WHERE id = 'ATT-1'",
+                [],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(att_member_id, None);
+
+            // Verify coach session was deleted
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM coach_sessions WHERE member_id = ?1",
+                params![member_id],
+                |r| r.get(0),
+            ).unwrap();
+            assert_eq!(count, 0);
+        }
+
+        // 5. Test delete_coach: must not fail with FOREIGN KEY constraint
+        let other_req = CreateMemberRequest {
+            first_name: "Other".to_string(),
+            last_name: "Member".to_string(),
+            email: "other@example.com".to_string(),
+            phone: "9876543210".to_string(),
+            membership_type: "regular".to_string(),
+            face_vectors: vec![vec![0.1; 128]],
+            photo_data_url: None,
+        };
+        let other = db.create_member(&other_req).unwrap();
+        db.schedule_session(&coach.id, &coach.name, &other.id, "Other Member", "2026-09-07T10:00:00Z", 60).unwrap();
+        db.delete_coach(&coach.id).unwrap();
+        assert!(!db.list_coaches().unwrap().iter().any(|c| c.id == coach.id));
     }
 }

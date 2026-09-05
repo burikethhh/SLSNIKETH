@@ -44,6 +44,21 @@ pub fn run() {
         }
     }
 
+    // Real 60s janitor for expired walk-in vectors (purge_expired was
+    // previously documented but never scheduled anywhere).
+    {
+        let janitor_store = face_store.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let removed = janitor_store.purge_expired();
+                if removed > 0 {
+                    tracing::info!("Face janitor purged {} expired walk-in entries", removed);
+                }
+            }
+        });
+    }
+
     let face_engine = match vision::find_models_dir() {
         Some(dir) => match vision::FaceEngine::load(&dir) {
             Ok(engine) => {
@@ -133,6 +148,7 @@ pub fn run() {
             commands::process_walk_in,
             commands::list_walk_ins,
             commands::extend_walk_in,
+            commands::renew_walk_in,
             commands::void_walk_in,
             commands::scan_face_frame,
             commands::count_persons_in_frame,

@@ -633,7 +633,6 @@
                     <select id="member-tier-filter" onchange="filterMembersList()" class="input-dark w-44 shrink-0 text-xs" style="flex-shrink:0;width:11rem">
                         <option value="all">All Plans & Tiers</option>
                         <option value="regular">Regular Monthly</option>
-                        <option value="vip">Premium VIP</option>
                         <option value="student">Student Pass</option>
                     </select>
                     <select id="member-status-filter" onchange="filterMembersList()" class="input-dark w-36 shrink-0 text-xs" style="flex-shrink:0;width:9rem">
@@ -774,7 +773,6 @@
                             <label class="block text-[11px] font-semibold text-slate-400 mb-1">Membership Plan / Tier</label>
                             <select id="reg-mem-plan" class="input-dark w-full text-xs">
                                 <option value="regular">Regular Monthly (Full Access)</option>
-                                <option value="vip">Premium VIP (Multi-Branch + Locker)</option>
                                 <option value="student">Student Pass</option>
                                 <option value="coach">Trainer / Coach</option>
                                 <option value="staff">Staff / Admin</option>
@@ -1315,7 +1313,8 @@
                                 <svg class="w-3.5 h-3.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                 <span>Probe Active Cameras</span>
                             </button>
-                            <button onclick="saveCameraRouting()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
+                            <span id="routing-dirty-dot" class="hidden text-[10px] font-bold text-amber-300 bg-amber-950/60 border border-amber-700 rounded-full px-2 py-0.5">● Unsaved changes</span>
+                            <button id="btn-save-routing" onclick="saveCameraRouting()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                                 <span>Save & Bind Routing</span>
                             </button>
@@ -1452,9 +1451,10 @@
                                     </select>
                                 </div>
                                 <div class="flex gap-2">
-                                    <button onclick="armDoorOpenTailgateSurveillance(2000)" class="w-full py-1.5 rounded bg-purple-950/70 hover:bg-purple-900 text-purple-300 border border-purple-800 text-[11px] font-semibold transition">
+                                    <button onclick="testTransitPassage()" class="w-full py-1.5 rounded bg-purple-950/70 hover:bg-purple-900 text-purple-300 border border-purple-800 text-[11px] font-semibold transition">
                                         Test Transit Passage
                                     </button>
+                                    <div id="transit-test-result" class="text-[10px] font-mono text-slate-400 mt-1">Runs one real counted frame on the overhead feed.</div>
                                 </div>
                             </div>
                         </div>
@@ -1529,6 +1529,40 @@
                                     <span id="val-roi-sens" class="font-mono text-purple-400">85% (High Precision)</span>
                                 </div>
                                 <input type="range" id="slider-roi-sens" min="50" max="99" value="85" class="w-full accent-purple-500" oninput="updateRoiSensitivityText()">
+                            </div>
+
+                            <div class="pt-2 border-t border-slate-800">
+                                <div class="text-slate-200 font-bold mb-2">Recognition Tuning <span class="text-[10px] font-normal text-slate-500">(match, adapt, liveness, motion)</span></div>
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                            <span>Match Threshold:</span>
+                                            <span id="val-match-thr" class="font-mono text-purple-400">0.62</span>
+                                        </div>
+                                        <input type="range" id="slider-match-thr" min="0.50" max="0.75" step="0.01" value="0.62" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                            <span>Adapt Threshold:</span>
+                                            <span id="val-adapt-thr" class="font-mono text-purple-400">0.80</span>
+                                        </div>
+                                        <input type="range" id="slider-adapt-thr" min="0.60" max="0.90" step="0.01" value="0.80" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                            <span>Liveness Min Eye Move (px):</span>
+                                            <span id="val-live-px" class="font-mono text-purple-400">0.5</span>
+                                        </div>
+                                        <input type="range" id="slider-live-px" min="0" max="5" step="0.1" value="0.5" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                            <span>Motion (MOG) Sensitivity:</span>
+                                            <span id="val-mog-sens" class="font-mono text-purple-400">0.50</span>
+                                        </div>
+                                        <input type="range" id="slider-mog-sens" min="0" max="1" step="0.05" value="0.5" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1686,7 +1720,6 @@
                     <label class="block text-[11px] text-slate-300 mb-1">Membership Plan</label>
                     <select id="edit-mem-plan" class="input-dark">
                         <option value="regular">Regular Monthly</option>
-                        <option value="vip">Premium VIP</option>
                         <option value="student">Student Pass</option>
                     </select>
                 </div>
@@ -2084,6 +2117,13 @@
                 </div>
             </form>
         </div>
+    </div>
+
+    <!-- Dedicated Background Worker Viewports for Constant AI/Vision Processing -->
+    <div style="position: fixed; top: 0; left: 0; width: 1px; height: 1px; opacity: 0.001; pointer-events: none; z-index: -9999; overflow: hidden;">
+        <video id="worker-cam1-entry" autoplay playsinline muted></video>
+        <video id="worker-cam2-exit" autoplay playsinline muted></video>
+        <video id="worker-cam3-tailgate" autoplay playsinline muted></video>
     </div>
 
     <script src="static/js/app.js"></script>
