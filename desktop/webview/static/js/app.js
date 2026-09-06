@@ -1057,7 +1057,15 @@ function tuningCfg() {
         adapt_threshold: cfg.adapt_threshold ?? 0.80,
         liveness_min_px: cfg.liveness_min_px ?? 0.5,
         mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
+        scan_min_face_px: cfg.scan_min_face_px ?? 120,
     };
+}
+
+// Gate scan distance: the face box must be at least this wide (px) for a
+// scan to trigger — bigger face = closer person. Kills accidental triggers
+// from people walking past at range.
+function scanMinFacePx() {
+    return tuningCfg().scan_min_face_px;
 }
 
 function updateTuningTexts() {
@@ -1065,6 +1073,7 @@ function updateTuningTexts() {
     if (g('slider-match-thr') && g('val-match-thr')) g('val-match-thr').innerText = parseFloat(g('slider-match-thr').value).toFixed(2);
     if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
     if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
+    if (g('slider-scan-dist') && g('val-scan-dist')) g('val-scan-dist').innerText = parseFloat(g('slider-scan-dist').value).toFixed(0);
     if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
     markRoutingDirty();
 }
@@ -1075,11 +1084,13 @@ function applyTuningToSliders(cfg) {
         adapt_threshold: cfg.adapt_threshold ?? 0.80,
         liveness_min_px: cfg.liveness_min_px ?? 0.5,
         mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
+        scan_min_face_px: cfg.scan_min_face_px ?? 120,
     };
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
     set('slider-match-thr', t.match_threshold);
     set('slider-adapt-thr', t.adapt_threshold);
     set('slider-live-px', t.liveness_min_px);
+    set('slider-scan-dist', t.scan_min_face_px);
     set('slider-mog-sens', t.mog_sensitivity);
     updateTuningTextsSilent();
     return t;
@@ -1092,6 +1103,7 @@ function updateTuningTextsSilent() {
     if (g('slider-match-thr') && g('val-match-thr')) g('val-match-thr').innerText = parseFloat(g('slider-match-thr').value).toFixed(2);
     if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
     if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
+    if (g('slider-scan-dist') && g('val-scan-dist')) g('val-scan-dist').innerText = parseFloat(g('slider-scan-dist').value).toFixed(0);
     if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
 }
 
@@ -1167,6 +1179,7 @@ async function saveRoiCalibration() {
     appSettings.camera_config.match_threshold = g('slider-match-thr', 0.62);
     appSettings.camera_config.adapt_threshold = g('slider-adapt-thr', 0.80);
     appSettings.camera_config.liveness_min_px = g('slider-live-px', 0.5);
+    appSettings.camera_config.scan_min_face_px = g('slider-scan-dist', 120);
     appSettings.camera_config.mog_sensitivity = g('slider-mog-sens', 0.5);
 
     try {
@@ -1582,7 +1595,7 @@ async function startAutonomousBiometricEngine() {
             // + 80px minimum face size (too far/small = unreliable embedding).
             if ((scanRes.confidence ?? 0) < 0.5) return;
             const _bb1 = scanRes.box || {};
-            if (Math.min(_bb1.w || 0, _bb1.h || 0) < 80) return;
+            if (Math.min(_bb1.w || 0, _bb1.h || 0) < scanMinFacePx()) return;
 
             // Pre-match liveness: first sighting only arms pending state;
             // process_face_scan runs once, on the confirmed-live frame.
@@ -1688,7 +1701,7 @@ async function startAutonomousBiometricEngine() {
             // Live-scan quality floors (same as entry).
             if ((scanRes.confidence ?? 0) < 0.5) return;
             const _bb2 = scanRes.box || {};
-            if (Math.min(_bb2.w || 0, _bb2.h || 0) < 80) return;
+            if (Math.min(_bb2.w || 0, _bb2.h || 0) < scanMinFacePx()) return;
 
             // Pre-match liveness (per-lane state, deadlock-free).
             const live2 = checkLivePending('cam2', scanRes.vector, scanRes.landmarks, scanRes.box);
@@ -1810,23 +1823,20 @@ async function startAutonomousBiometricEngine() {
 
             if (!activeDoorPassageWindow) return;
             doorOpenFrameCount++;
-            // Alarm legs (OVERHEAD camera position): YOLO counts heads in the
-            // ROI — more than 1 person in a tick is suspicious, and 2
-            // consecutive suspicious ticks (700ms) confirm the alarm against
-            // single-frame YOLO ghosts. The old >=2% ROI-motion gate is gone:
-            // on a top-down view the pixel-churn fraction is tiny even with
-            // people in frame, and it suppressed valid multi-person hits.
-            // Tracked-ID leg (2+ distinct IDs entering the ROI) stays as an
-            // independent confirmation.
-            const multiCount = res && res.person_count > 1;
+            // Alarm legs: 2+ in-ROI persons WITH ROI motion (>=2% pixel churn,
+            // kills YOLO ghost false alarms on posters/shadows), OR 2+ distinct
+            // tracked IDs having entered the ROI (tracks imply movement).
+            // (Pure head-count mode returns when the new overhead camera unit
+            // is installed — the current unit needs the motion gate.)
+            const motion = (res && res.motion_in_roi) || 0;
+            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
             const multiTracked = tracked.everCount >= 2;
-            if (multiCount || multiTracked) {
+            if (multiStatic || multiTracked) {
                 suspiciousFrames++;
                 // Immediate trigger when multi-occupancy confirmed across 2 ticks
                 if (suspiciousFrames >= TAILGATE_SUSPICIOUS_NEEDED) {
                     activeDoorPassageWindow = false;
                     clearTailgateOverlay();
-                    const motion = (res && res.motion_in_roi) || 0;
                     try {
                         const alarmRes = await invokeTauri('trigger_tailgate_alarm', {
                             reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`,
@@ -1987,7 +1997,7 @@ async function doHardwareFaceScan(videoId, direction) {
     // Distance gate — the same quality floors the autonomous loops apply
     // BEFORE liveness: YuNet confidence and a minimum face size in pixels.
     const box1 = scanRes.box || {};
-    if ((scanRes.confidence ?? 0) < 0.5 || Math.min(box1.w ?? 0, box1.h ?? 0) < 80) {
+    if ((scanRes.confidence ?? 0) < 0.5 || Math.min(box1.w ?? 0, box1.h ?? 0) < scanMinFacePx()) {
         livePending[laneKey] = null;
         showHudToast('Move Closer', 'Step up to the camera so your face fills the frame, then press again.', 'warn');
         return;

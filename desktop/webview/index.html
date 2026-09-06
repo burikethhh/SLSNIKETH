@@ -1564,6 +1564,13 @@
                                     </div>
                                     <div>
                                         <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                            <span>Scan Distance (min face px):</span>
+                                            <span id="val-scan-dist" class="font-mono text-purple-400">120</span>
+                                        </div>
+                                        <input type="range" id="slider-scan-dist" min="80" max="400" step="5" value="120" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                                    </div>
+                                    <div>
+                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
                                             <span>Motion (MOG) Sensitivity:</span>
                                             <span id="val-mog-sens" class="font-mono text-purple-400">0.50</span>
                                         </div>

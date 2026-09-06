@@ -322,6 +322,11 @@ pub struct CameraConfig {
     pub adapt_threshold: f32,
     #[serde(default = "default_liveness_min_px")]
     pub liveness_min_px: f32,
+    /// Gate scan distance: minimum face size (px) in frame before a scan
+    /// triggers — the bigger the face box, the closer the person. Prevents
+    /// accidental triggers from people passing far from the camera.
+    #[serde(default = "default_scan_min_face_px")]
+    pub scan_min_face_px: f32,
     #[serde(default = "default_mog_sensitivity")]
     pub mog_sensitivity: f32,
 }
@@ -332,6 +337,10 @@ fn default_match_threshold() -> f32 {
 fn default_adapt_threshold() -> f32 {
     0.80
 }
+fn default_scan_min_face_px() -> f32 {
+    120.0
+}
+
 fn default_liveness_min_px() -> f32 {
     0.5
 }
@@ -353,6 +362,7 @@ impl Default for CameraConfig {
             match_threshold: default_match_threshold(),
             adapt_threshold: default_adapt_threshold(),
             liveness_min_px: default_liveness_min_px(),
+            scan_min_face_px: default_scan_min_face_px(),
             mog_sensitivity: default_mog_sensitivity(),
         }
     }
