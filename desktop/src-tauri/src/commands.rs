@@ -200,6 +200,8 @@ pub fn get_app_settings(state: State<'_, AppContext>) -> Result<AppSettings, Str
 pub fn save_app_settings(settings: AppSettings, state: State<'_, AppContext>) -> Result<AppSettings, String> {
     require_manager(&state)?;
     state.db.save_app_settings(&settings).map_err(|e| e.to_string())?;
+    // Re-brand the terminal LCD idle screen when the owner changes branding.
+    let _ = state.hardware.set_idle_screen(&settings.gym_name);
     Ok(settings)
 }
 
@@ -238,7 +240,16 @@ pub fn list_com_ports() -> Vec<String> {
 #[tauri::command]
 pub fn connect_com_port(port: String, baud: Option<u32>, state: State<'_, AppContext>) -> Result<String, String> {
     require_manager(&state)?;
-    state.hardware.connect(&port, baud.unwrap_or(115200))
+    let msg = state.hardware.connect(&port, baud.unwrap_or(115200))?;
+    // Brand the firmware LCD idle screen with the owner's gym name
+    // (persisted on the ESP32 in NVS).
+    let brand = state
+        .db
+        .get_app_settings()
+        .map(|s| s.gym_name)
+        .unwrap_or_else(|_| "GymPOS".to_string());
+    let _ = state.hardware.set_idle_screen(&brand);
+    Ok(msg)
 }
 
 #[tauri::command]

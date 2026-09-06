@@ -202,6 +202,21 @@ impl HardwareManager {
         }
     }
 
+    /// Push the owner-branded idle screen to the firmware LCD (v1.2.0+):
+    /// line 1 = brand (sanitized, ≤14 chars beside the lock icon), line 2 =
+    /// the call to action. The ESP32 persists it in NVS, so it survives
+    /// power cycles without the exe re-sending it.
+    pub fn set_idle_screen(&self, brand: &str) -> Result<String, String> {
+        let clean: String = brand
+            .chars()
+            .filter(|c| !matches!(c, '|' | ':' | '\n' | '\r'))
+            .take(14)
+            .collect();
+        let cmd = format!("IDLE:{}|Scan Face", clean);
+        self.send_command(&cmd)?;
+        Ok(format!("Idle screen set ({}).", clean))
+    }
+
     pub fn unlock_door(&self, duration_ms: u32) -> Result<String, String> {
         let secs = std::cmp::max(1, duration_ms / 1000);
         let cmd = format!("UNLOCK:{}", secs);

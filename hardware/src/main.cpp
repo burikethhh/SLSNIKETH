@@ -32,10 +32,12 @@
     - Tailgate alarm arms automatically on every verified entry/exit.
 
   Relay Control:
-    - By default, LOCK_PIN is -1 for direct-wired relay power paths.
-    - If a GPIO pin is defined (LOCK_PIN >= 0):
-        relay OFF = pinMode(INPUT)  → high impedance → locked
-        relay ON  = OUTPUT + LOW    → pulls IN to GND → unlocked
+    - The onboard relay's driver input is broken out on the header as "Rel".
+      Jumper Rel → GPIO3 (LOCK_PIN): relay OFF (locked) = pin floating/INPUT,
+      relay ON (unlocked) = pin OUTPUT+LOW (active-LOW driver, matches the
+      relay_direct test convention). Wire the maglock through the COM/NO
+      screw terminal.
+    - Override at build time with -D LOCK_PIN=<gpio> (-1 = logical only).
 
   Serial Commands (case-insensitive command names, \n terminated):
     WELCOME:<name>[|<sec>] → unlock + success beep + LCD "Welcome" / "<name>"
@@ -50,9 +52,12 @@
     ALERT_TAILGATE         → rapid pulsing alarm (5s default) + LCD warning
     ALERT_TAILGATE:<ms>    → pulsing alarm for a custom duration (1s..15s)
     ALARM                  → alias for ALERT_TAILGATE
+    IDLE:<line1>|<line2>   → owner-branded idle screen, persisted in NVS
     LCD:<line1>|<line2>    → display custom text on LCD (| separates lines)
     LCD_CLEAR              → clear LCD and return to idle screen
-    LCD_REINIT             → rescan all pins for the LCD and re-init
+    LCD_REINIT             → re-probe the LCD on SDA=4/SCL=5 and re-init
+    FINDRELAY              → diagnostic: cycle candidate GPIOs, LCD shows which
+    STOPRELAY              → stop the relay finder
     PING                   → reply ACK:PONG (health check)
     STATUS                 → reply with current lock state (ACK:STATUS:LOCKED|UNLOCKED)
     VERSION                → reply ACK:VERSION:<fw-version>
@@ -71,6 +76,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 
 // ───────────── Firmware Version ──────────────
@@ -80,7 +86,10 @@
 // 1.1.1  — fixed-field-wiring LCD probe (SDA=5/SCL=4): removed the all-pins
 //          auto-scanner that drove the buzzer line and the USB pads (18/19)
 // 1.1.2  — LCD probe tolerates a swapped SDA/SCL orientation
-static const char* FW_VERSION = "1.1.2";
+// 1.2.0  — owner-branded idle screen (IDLE:<l1>|<l2>, NVS-persisted)
+// 1.2.1  — FINDRELAY/STOPRELAY diagnostic: identify the onboard relay's
+//          driver GPIO by ear (LCD shows the live candidate)
+static const char* FW_VERSION = "1.2.1";
 
 // ───────────── Lock Configuration ─────────────
 // All locks are direct-wired to board relay COM/NC (no ESP GPIO pin needed).
@@ -165,6 +174,12 @@ byte lockChar[8]   = {0b01110,0b10001,0b10001,0b11111,0b11011,0b11011,0b11111,0b
 byte unlockChar[8] = {0b01110,0b10000,0b10000,0b11111,0b11011,0b11011,0b11111,0b00000};
 // Alert icon (Character 2)
 byte alertChar[8]  = {0b00100,0b00100,0b01110,0b01110,0b11111,0b11111,0b00100,0b00000};
+
+// ───────────── Branded Idle Screen ───────────
+// Line 1 is the owner's brand (set by the GymPOS exe via IDLE:<l1>|<l2> and
+// persisted in NVS so it survives power cycles); line 2 is the call to action.
+char idleLine1[17] = "GymPOS by SLS";
+char idleLine2[17] = "   Scan Face";
 
 // ───────────── Non-blocking Buzzer ───────────
 // Plays patterns without delay() so the main loop keeps running smoothly.
@@ -258,6 +273,58 @@ void initWatchdog() {
   esp_task_wdt_add(NULL);  // watch the current (loopTask) task
 }
 
+// ───────────── LCD Helper Prototypes ─────────
+void lcdShowIdle();
+void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs);
+
+// ───────────── Relay Pin Identifier ──────────
+// One-shot field diagnostic: cycles candidate GPIOs (OUTPUT+LOW 1.2s = relay
+// ON per the active-LOW convention, then high-Z = relay OFF) and shows the
+// current candidate on the LCD, so the onboard relay's driver pin can be
+// identified by ear. STOPRELAY ends it; LOCK/UNLOCK/WELCOME/BYE also cancel.
+bool findRelayMode = false;
+int  findRelayIdx = 0;
+unsigned long findRelayUntil = 0;
+bool findRelayActive = false;
+static const int RELAY_CANDIDATES[] = {4, 0, 1, 2};
+
+void stopRelayFinder() {
+  if (!findRelayMode) return;
+  findRelayMode = false;
+  for (int p : RELAY_CANDIDATES) pinMode(p, INPUT);  // release all candidates
+  lcdShowIdle();
+}
+
+void startRelayFinder() {
+  findRelayMode = true;
+  findRelayIdx = 0;
+  findRelayActive = false;
+  findRelayUntil = millis();  // tick immediately
+  Serial.println("ACK:FINDRELAY");
+}
+
+void findRelayTick() {
+  if (!findRelayMode) return;
+  unsigned long now = millis();
+  if ((long)(now - findRelayUntil) < 0) return;
+  findRelayActive = !findRelayActive;
+  int pin = RELAY_CANDIDATES[findRelayIdx];
+  char l1[17], l2[17];
+  snprintf(l1, sizeof(l1), "RELAY? GPIO%d", pin);
+  if (findRelayActive) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);   // active-LOW: relay energizes (CLICK)
+    snprintf(l2, sizeof(l2), ">> ON — listen");
+    findRelayUntil = now + 1200;
+  } else {
+    pinMode(pin, INPUT);      // high-Z: relay OFF
+    snprintf(l2, sizeof(l2), "off");
+    findRelayUntil = now + 1300;
+    findRelayIdx = (findRelayIdx + 1) % (int)(sizeof(RELAY_CANDIDATES) / sizeof(RELAY_CANDIDATES[0]));
+  }
+  lcdShow(l1, l2, 0);
+}
+
 // ───────────── LCD Helpers ───────────────────
 void lcdShowIdle();
 
@@ -298,9 +365,30 @@ void lcdShowIdle() {
   lcd->clear();
   lcd->setCursor(0, 0);
   lcd->write(0);  // lock icon
-  lcd->print(" GymPOS by SLS");
+  lcd->print(" ");
+  lcd->print(idleLine1);
   lcd->setCursor(0, 1);
-  lcd->print("   Scan Face    ");
+  lcd->print(idleLine2);
+}
+
+void setIdleScreen(String line1, String line2) {
+  line1.replace("|", " ");
+  line1.replace(':', ' ');
+  line1.trim();
+  line2.replace("|", " ");
+  line2.replace(':', ' ');
+  line2.trim();
+  if (line1.length() == 0) line1 = "GymPOS by SLS";
+  if (line2.length() == 0) line2 = "Scan Face";
+  line1.toCharArray(idleLine1, sizeof(idleLine1));
+  line2.toCharArray(idleLine2, sizeof(idleLine2));
+  // Persist so the brand survives power cycles without the exe re-sending it.
+  Preferences prefs;
+  prefs.begin("gympos", false);
+  prefs.putString("idle1", idleLine1);
+  prefs.putString("idle2", idleLine2);
+  prefs.end();
+  if (lcd) lcdShowIdle();
 }
 
 void lcdShow(const String& line1, const String& line2, unsigned long autoIdleMs = 5000) {
@@ -536,6 +624,28 @@ void processSerialCommand(const String& cmdRaw) {
     return;
   }
 
+  // ── FINDRELAY / STOPRELAY ── (field diagnostic: identify the onboard
+  // relay's driver GPIO by ear — the LCD shows which candidate is live)
+  if (base == "FINDRELAY") {
+    startRelayFinder();
+    return;
+  }
+  if (base == "STOPRELAY") {
+    stopRelayFinder();
+    Serial.println("ACK:STOPRELAY");
+    return;
+  }
+
+  // ── IDLE ── (IDLE:<brand>|Scan Face — owner-branded idle screen, NVS-persisted)
+  if (base == "IDLE") {
+    int pipe = argRaw.indexOf('|');
+    String l1 = (pipe >= 0) ? argRaw.substring(0, pipe) : argRaw;
+    String l2 = (pipe >= 0) ? argRaw.substring(pipe + 1) : "";
+    setIdleScreen(l1, l2);
+    Serial.println("ACK:IDLE");
+    return;
+  }
+
   // ── PING ──
   if (base == "PING") {
     Serial.println("ACK:PONG");
@@ -572,7 +682,16 @@ void setup() {
   Serial.setTimeout(50);
   Serial.printf("\nGymPOS Controller v%s booting...\n", FW_VERSION);
 
-  // Probe the I2C LCD on the fixed field wiring (SDA=5/SCL=4).
+  // Load the owner-branded idle screen from NVS (defaults if never set).
+  Preferences prefs;
+  prefs.begin("gympos", true);
+  String idle1 = prefs.getString("idle1", "GymPOS by SLS");
+  String idle2 = prefs.getString("idle2", "Scan Face");
+  prefs.end();
+  idle1.toCharArray(idleLine1, sizeof(idleLine1));
+  idle2.toCharArray(idleLine2, sizeof(idleLine2));
+
+  // Probe the I2C LCD on the fixed field wiring (SDA=4/SCL=5, swap-tolerant).
   // NOTE: this runs BEFORE the startup chirp — the probe blocks the loop (no
   // buzzerTick), so any pattern started here would hold the buzzer solid
   // until it finishes.
@@ -600,6 +719,9 @@ void loop() {
 
   // ── Non-blocking buzzer tick ──
   buzzerTick();
+
+  // ── Relay-pin finder (field diagnostic) ──
+  findRelayTick();
 
   // ── Auto-relock after unlock timer ──
   if (unlockUntil > 0 && (long)(now - unlockUntil) >= 0) {
