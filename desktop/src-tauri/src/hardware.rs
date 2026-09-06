@@ -202,6 +202,19 @@ impl HardwareManager {
         }
     }
 
+    /// Show "ACCESS DENIED / <reason>" on the gate LCD + triple beep
+    /// (firmware DENY:<reason>). Reason is sanitized for the serial protocol
+    /// and truncated to the LCD's 16-column width.
+    pub fn deny(&self, reason: &str) -> Result<String, String> {
+        let clean: String = reason
+            .chars()
+            .filter(|c| !matches!(c, '|' | ':' | '\n' | '\r'))
+            .take(16)
+            .collect();
+        self.send_command(&format!("DENY:{}", clean))?;
+        Ok(format!("Deny shown ({})", clean))
+    }
+
     /// Push the owner-branded idle screen to the firmware LCD (v1.2.0+):
     /// line 1 = brand (sanitized, ≤14 chars beside the lock icon), line 2 =
     /// the call to action. The ESP32 persists it in NVS, so it survives

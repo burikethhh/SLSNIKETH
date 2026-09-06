@@ -630,6 +630,7 @@ pub fn process_face_scan(
         // Frozen / expired member accounts are denied at the gate (data retained for records)
         if let Ok(Some(status)) = state.db.get_member_status(&m.member_id) {
             if status != "active" {
+                let _ = state.hardware.deny(&status.to_uppercase());
                 let log = state
                     .db
                     .log_attendance(
@@ -663,6 +664,7 @@ pub fn process_face_scan(
                     false,
                 )
                 .map_err(|e| e.to_string())?;
+            let _ = state.hardware.deny("PASS EXPIRED");
 
             return Ok(json!({
                 "matched": false,
@@ -674,16 +676,27 @@ pub fn process_face_scan(
             }));
         }
 
-        // Anti-Passback Validation:
-        // Cannot scan IN if already inside ('in').
-        // Egress (direction 'out') is ALWAYS permitted per safety standards and SLS123 access control.
+        // Anti-Passback Validation (STRICT ALTERNATION):
+        // scan IN requires the last scan to have been OUT (or none), and scan
+        // OUT requires the last scan to have been IN — one person cannot spam
+        // the same camera twice in a row. Nobody inside is ever trapped: to
+        // be inside, your last scan was 'in', so your scan-out is always
+        // accepted.
         let last_direction = state.db.get_member_last_direction(&m.member_id).unwrap_or(None);
-        if direction == "in" && last_direction.as_deref() == Some("in") {
+        let last = last_direction.as_deref();
+        if last == Some(direction.as_str()) {
+            let place = if direction == "in" { "INSIDE" } else { "OUTSIDE" };
+            let _ = state.hardware.deny(&format!("ALREADY {}", place));
             return Ok(json!({
                 "matched": true,
                 "passback_violation": true,
                 "member_name": m.member_name,
-                "message": format!("Anti-Passback Denied: {} is already inside the gym. Must scan exit before entering again.", m.member_name),
+                "message": format!(
+                    "Anti-Passback Denied: {} is already {} the gym. Must scan {} first.",
+                    m.member_name,
+                    if direction == "in" { "inside" } else { "outside" },
+                    if direction == "in" { "OUT" } else { "IN" }
+                ),
                 "door_unlocked": false
             }));
         }
