@@ -6,11 +6,11 @@
   RFID is handled by external USB reader on the PC side.
 
   Pin Wiring (Field Connections):
-    GPIO18  → LCD SDA           (software I2C, Wire.begin(18, 19))
-    GPIO19  → LCD SCL           (software I2C)
-    GPIO9   → 5V Buzzer         (active HIGH)
-    5V      → LCD VCC & Buzzer VCC
-    GND     → Common Ground
+    GPIO4   → LCD SDA           (software I2C, Wire.begin(4, 5))
+    GPIO5   → LCD SCL           (software I2C)
+    GPIO10  → Buzzer            (active HIGH, other lead to GND)
+    5V      → LCD VCC
+    GND     → Common Ground (LCD + Buzzer)
 
   Hardware Notes:
     - LCD is a standard 4-pin I2C backpack: SDA, SCL, GND, and 5V only (no LED pin).
@@ -75,10 +75,12 @@
 
 // ───────────── Firmware Version ──────────────
 // 1.0.0  — original direct-wired relay build
-// 1.1.0  — dynamic I2C pin/address scan for the LCD, buzzer moved off the
-//          GPIO9 strapping pin, VERSION command, ALERT_TAILGATE:<ms>,
-//          task watchdog
-static const char* FW_VERSION = "1.1.0";
+// 1.1.0  — buzzer moved off the GPIO9 strapping pin, VERSION command,
+//          ALERT_TAILGATE:<ms>, task watchdog
+// 1.1.1  — fixed-field-wiring LCD probe (SDA=5/SCL=4): removed the all-pins
+//          auto-scanner that drove the buzzer line and the USB pads (18/19)
+// 1.1.2  — LCD probe tolerates a swapped SDA/SCL orientation
+static const char* FW_VERSION = "1.1.2";
 
 // ───────────── Lock Configuration ─────────────
 // All locks are direct-wired to board relay COM/NC (no ESP GPIO pin needed).
@@ -88,7 +90,8 @@ static const char* FW_VERSION = "1.1.0";
 #endif
 
 // ───────────── Pin Configuration ─────────────
-// Standard 4-pin I2C LCD backpack: SDA, SCL, GND, 5V
+// Field wiring (verified): 4-pin I2C LCD backpack — SDA=GPIO4, SCL=GPIO5.
+// The boot-time probe also tolerates a swapped SDA/SCL orientation.
 #ifndef LCD_SDA_PIN
 static const int LCD_SDA_PIN    = 4;   // I2C SDA (Wire.begin(4, 5))
 #endif
@@ -96,10 +99,18 @@ static const int LCD_SDA_PIN    = 4;   // I2C SDA (Wire.begin(4, 5))
 static const int LCD_SCL_PIN    = 5;   // I2C SCL
 #endif
 #ifndef BUZZER_PIN
-static const int BUZZER_PIN     = 10;  // 5V active buzzer on safe GPIO10 (NOT GPIO9 strapping pin)
+static const int BUZZER_PIN     = 10;  // active buzzer on safe GPIO10 (NOT GPIO9 strapping pin)
 #endif
 
-// ───────────── I2C Pin & Address Auto-Detection ─────────────
+// ───────────── I2C LCD Probe (fixed field wiring) ─────────────
+// Field wiring is FIXED: SDA=GPIO5, SCL=GPIO4, buzzer=GPIO10. The old
+// auto-scanner that swept every pin pair is gone for good reason — it drove
+// the buzzer line as I2C (squeal) and tickled the C3's USB pins GPIO18/19,
+// ACKing a phantom "LCD" at 0x3F and re-routing all LCD traffic to the USB
+// pads. We now probe only the known pins for the two common addresses; if
+// nothing ACKs, the LCD object is still created so commands stay safe.
+static const uint8_t LCD_CANDIDATE_ADDRS[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
+
 struct I2cResult {
   int sda;
   int scl;
@@ -109,63 +120,32 @@ struct I2cResult {
 int activeSdaPin = LCD_SDA_PIN;
 int activeSclPin = LCD_SCL_PIN;
 
-static I2cResult scanAllPinsForLcd() {
-  Serial.println("Auto-scanning board pins for I2C LCD backpack...");
-  const uint8_t candidateAddrs[] = {0x27, 0x3F, 0x26, 0x38, 0x20};
-
-  // Priority pin pairs (ESP32-C3 hardware default 4/5 first, then 6/7, 18/19)
-  const int priorityPairs[][2] = {
-    {4, 5},   {5, 4},
-    {6, 7},   {7, 6},
-    {18, 19}, {19, 18},
-    {8, 9},   {9, 8},
-    {0, 1},   {1, 0},
-    {2, 3},   {3, 2},
-    {10, 18}, {18, 10}
+// Probe the fixed field pins for a backpack, trying the documented
+// orientation (SDA=5/SCL=4) first and then the swapped one — a swapped
+// SDA/SCL otherwise never ACKs and looks exactly like a missing panel.
+static I2cResult probeLcdOnFixedPins() {
+  const int orientations[][2] = {
+    {LCD_SDA_PIN, LCD_SCL_PIN},   // documented: SDA=4, SCL=5
+    {LCD_SCL_PIN, LCD_SDA_PIN},   // swapped tolerance
   };
-
-  for (auto& pair : priorityPairs) {
-    int sda = pair[0];
-    int scl = pair[1];
+  for (auto& o : orientations) {
     Wire.end();
-    Wire.setPins(sda, scl);
-    Wire.begin(sda, scl);
-    Wire.setTimeOut(30);
+    Wire.setPins(o[0], o[1]);
+    Wire.begin(o[0], o[1]);
+    Wire.setTimeOut(50);
     Wire.setClock(100000);
-    for (uint8_t a : candidateAddrs) {
+    for (uint8_t a : LCD_CANDIDATE_ADDRS) {
       Wire.beginTransmission(a);
       if (Wire.endTransmission() == 0) {
-        Serial.printf("  >>> SUCCESS: I2C LCD found on SDA=GPIO%d, SCL=GPIO%d, Addr=0x%02X <<<\n", sda, scl, a);
-        return {sda, scl, a};
+        activeSdaPin = o[0];
+        activeSclPin = o[1];
+        Serial.printf("  LCD found on SDA=GPIO%d, SCL=GPIO%d, Addr=0x%02X\n", o[0], o[1], a);
+        return {o[0], o[1], a};
       }
     }
   }
-
-  // Full sweep across all GPIO header pins
-  const int allHeaderPins[] = {4, 5, 6, 7, 18, 19, 8, 9, 0, 1, 2, 3, 10};
-  const int count = sizeof(allHeaderPins) / sizeof(allHeaderPins[0]);
-  for (int i = 0; i < count; i++) {
-    for (int j = 0; j < count; j++) {
-      if (i == j) continue;
-      int sda = allHeaderPins[i];
-      int scl = allHeaderPins[j];
-      Wire.end();
-      Wire.setPins(sda, scl);
-      Wire.begin(sda, scl);
-      Wire.setTimeOut(15);
-      Wire.setClock(100000);
-      for (uint8_t a : candidateAddrs) {
-        Wire.beginTransmission(a);
-        if (Wire.endTransmission() == 0) {
-          Serial.printf("  >>> SUCCESS: I2C LCD found on SDA=GPIO%d, SCL=GPIO%d, Addr=0x%02X <<<\n", sda, scl, a);
-          return {sda, scl, a};
-        }
-      }
-    }
-  }
-
-  Serial.println("  No I2C device ACKed on any pin pair. Defaulting to SDA=4, SCL=5, Addr=0x27");
-  return {4, 5, 0x27};
+  Serial.printf("  No LCD ACKed on SDA=%d/SCL=%d (or swapped) — defaulting to 0x27 (check wiring/power)\n",
+                LCD_SDA_PIN, LCD_SCL_PIN);  return {LCD_SDA_PIN, LCD_SCL_PIN, 0x27};
 }
 
 // ───────────── Peripherals ───────────────────
@@ -550,7 +530,7 @@ void processSerialCommand(const String& cmdRaw) {
 
   // ── LCD_REINIT ──
   if (base == "LCD_REINIT") {
-    I2cResult res = scanAllPinsForLcd();
+    I2cResult res = probeLcdOnFixedPins();
     initLcdHardware(res.sda, res.scl, res.addr);
     Serial.printf("ACK:LCD_REINIT:SDA=%d:SCL=%d:ADDR=0x%02X\n", res.sda, res.scl, res.addr);
     return;
@@ -592,12 +572,16 @@ void setup() {
   Serial.setTimeout(50);
   Serial.printf("\nGymPOS Controller v%s booting...\n", FW_VERSION);
 
-  // Immediate audible feedback that MCU has booted
-  buzzerStart(PAT_STARTUP);
-
-  // Automatically probe all board pins for the I2C LCD backpack
-  I2cResult res = scanAllPinsForLcd();
+  // Probe the I2C LCD on the fixed field wiring (SDA=5/SCL=4).
+  // NOTE: this runs BEFORE the startup chirp — the probe blocks the loop (no
+  // buzzerTick), so any pattern started here would hold the buzzer solid
+  // until it finishes.
+  I2cResult res = probeLcdOnFixedPins();
   initLcdHardware(res.sda, res.scl, res.addr);
+
+  // Startup chirp plays cleanly now: loop() starts right after and drives
+  // the rest of the pattern via buzzerTick().
+  buzzerStart(PAT_STARTUP);
 
   // Watchdog goes live LAST: the boot-time I2C pin sweep can legitimately
   // take >10s with no LCD connected, and the steady-state loop is what the

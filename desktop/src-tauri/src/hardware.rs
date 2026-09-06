@@ -54,7 +54,7 @@ impl HardwareManager {
         let mut port_guard = self.port.lock();
         let mut name_guard = self.connected_port_name.lock();
 
-        let serial = serialport::new(port_name, baud_rate)
+        let mut serial = serialport::new(port_name, baud_rate)
             .timeout(Duration::from_millis(500))
             .open()
             .map_err(|e| format!("Failed to open COM port {}: {}", port_name, e))?;
