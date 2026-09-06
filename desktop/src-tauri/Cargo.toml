@@ -1,6 +1,6 @@
 [package]
 name = "gympos-desktop"
-version = "0.2.2"
+version = "0.2.3"
 description = "GymPOS SaaS Local Desktop Client"
 authors = ["GymPOS Team"]
 edition = "2021"
