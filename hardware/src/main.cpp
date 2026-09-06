@@ -78,6 +78,7 @@
 #include <LiquidCrystal_I2C.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 
 // ───────────── Firmware Version ──────────────
 // 1.0.0  — original direct-wired relay build
@@ -89,7 +90,7 @@
 // 1.2.0  — owner-branded idle screen (IDLE:<l1>|<l2>, NVS-persisted)
 // 1.2.1  — FINDRELAY/STOPRELAY diagnostic: identify the onboard relay's
 //          driver GPIO by ear (LCD shows the live candidate)
-static const char* FW_VERSION = "1.2.1";
+static const char* FW_VERSION = "1.2.2"; // peak-load stagger, reset-reason telemetry
 
 // ───────────── Lock Configuration ─────────────
 // All locks are direct-wired to board relay COM/NC (no ESP GPIO pin needed).
@@ -195,7 +196,20 @@ const int* buzzerPattern  = nullptr;
 int        buzzerStep     = 0;
 unsigned long buzzerUntil = 0;
 
+const int* buzzerPending  = nullptr;   // pattern waiting to start (peak-load stagger)
+unsigned long buzzerStartAt = 0;
+
+// Start a pattern DELAYED without blocking: the relay coil's inrush and the
+// buzzer's draw never hit the rail in the same instant (brownout shaving).
+void buzzerStartDelayed(const int* pattern, unsigned long delayMs) {
+  buzzerPending = pattern;
+  buzzerStartAt = millis() + delayMs;
+  buzzerPattern = nullptr;
+  buzzerUntil = 0;
+}
+
 void buzzerStart(const int* pattern) {
+  buzzerPending = nullptr;
   buzzerPattern = pattern;
   buzzerStep = 0;
   int dur = pattern[0];
@@ -209,6 +223,14 @@ void buzzerStart(const int* pattern) {
 }
 
 void buzzerTick() {
+  if (!buzzerPattern && buzzerPending) {
+    if ((long)(millis() - buzzerStartAt) >= 0) {
+      const int* p = buzzerPending;
+      buzzerPending = nullptr;
+      buzzerStart(p);
+    }
+    return;
+  }
   if (!buzzerPattern) return;
   if ((long)(millis() - buzzerUntil) < 0) return;  // overflow-safe check
 
@@ -411,7 +433,7 @@ void setLocked(bool locked) {
 void unlockDoor(unsigned long ms) {
   unlockUntil = millis() + ms;
   setLocked(false);
-  buzzerStart(PAT_SUCCESS);
+  buzzerStartDelayed(PAT_SUCCESS, 120);
   if (lcd) {
     lcd->clear();
     lcd->setCursor(0, 0);
@@ -429,7 +451,7 @@ void unlockDoor(unsigned long ms) {
 void grantWelcome(const String& name, unsigned long ms) {
   unlockUntil = millis() + ms;
   setLocked(false);
-  buzzerStart(PAT_SUCCESS);
+  buzzerStartDelayed(PAT_SUCCESS, 120);
   if (lcd) {
     lcd->clear();
     lcd->setCursor(0, 0);
@@ -446,7 +468,7 @@ void grantWelcome(const String& name, unsigned long ms) {
 void grantBye(const String& name, unsigned long ms) {
   unlockUntil = millis() + ms;
   setLocked(false);
-  buzzerStart(PAT_EXIT);
+  buzzerStartDelayed(PAT_EXIT, 120);
   if (lcd) {
     lcd->clear();
     lcd->setCursor(0, 0);
@@ -658,6 +680,22 @@ void processSerialCommand(const String& cmdRaw) {
 }
 
 // ───────────── Setup ─────────────────────────
+// Human-readable reset cause for the boot line — BROWNOUT in the field log
+// means the power rail sagged (siren/relay spike on a weak supply).
+static const char* resetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON";
+    case ESP_RST_SW:        return "SW_RESET";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_INT_WDT:   return "INT_WDT";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT";
+    case ESP_RST_WDT:       return "OTHER_WDT";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    default:                return "UNKNOWN";
+  }
+}
+
 void setup() {
   // Pin modes
   pinMode(BUZZER_PIN, OUTPUT);
@@ -668,7 +706,7 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.setTimeout(50);
-  Serial.printf("\nGymPOS Controller v%s booting...\n", FW_VERSION);
+  Serial.printf("\nGymPOS Controller v%s booting... (last reset: %s)\n", FW_VERSION, resetReasonName(esp_reset_reason()));
 
   // Load the owner-branded idle screen from NVS (defaults if never set).
   Preferences prefs;
@@ -695,7 +733,7 @@ void setup() {
   // watchdog exists to protect.
   initWatchdog();
 
-  Serial.printf("READY:fw=%s\n", FW_VERSION);
+  Serial.printf("READY:fw=%s,reset=%s\n", FW_VERSION, resetReasonName(esp_reset_reason()));
 }
 
 // ───────────── Main Loop ─────────────────────
