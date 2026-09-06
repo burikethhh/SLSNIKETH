@@ -49,20 +49,36 @@ impl HardwareManager {
     /// Espressif native USB-Serial/JTAG — the adapters every ESP32 board uses.
     const AUTO_CONNECT_VIDS: [u16; 4] = [0x0403, 0x10C4, 0x1A86, 0x303A];
 
-    /// ALL USB serial ports whose adapter VID matches a known ESP32 bridge
-    /// (FTDI, SiLabs CP210x, WCH CH34x, Espressif native). With 3+ USB
-    /// devices plugged in, the auto-connect tries each and keeps the one
-    /// that actually answers as a GymPOS controller.
+    /// USB serial ports whose adapter VID matches a known ESP32 bridge
+    /// (FTDI, SiLabs CP210x, WCH CH34x, Espressif native), sorted by how
+    /// strongly the USB identity looks like THE field controller. The
+    /// ESP32-C3 does not always answer PING (it can boot silent after a
+    /// flasher session — components must be detached on this rig), so the
+    /// driver identity IS the detection: identical adapter, identical port.
     pub fn find_esp_ports(&self) -> Vec<String> {
-        let mut out = Vec::new();
+        let mut scored: Vec<(u8, String)> = Vec::new();
         for p in serialport::available_ports().unwrap_or_default() {
             if let SerialPortType::UsbPort(info) = &p.port_type {
-                if Self::AUTO_CONNECT_VIDS.contains(&info.vid) {
-                    out.push(p.port_name);
+                if !Self::AUTO_CONNECT_VIDS.contains(&info.vid) {
+                    continue;
                 }
+                let mut score: u8 = 1;
+                if info.vid == 0x0403 && info.pid == 0x6001 {
+                    score = 4; // the field FTDI FT232 adapter (verified rig)
+                } else if info.vid == 0x10C4 {
+                    score = 3; // CP210x — common on C3 devkits
+                }
+                if let Some(m) = &info.manufacturer {
+                    let m = m.to_lowercase();
+                    if m.contains("ftdi") || m.contains("silicon labs") || m.contains("wch") || m.contains("espressif") {
+                        score = score.saturating_add(1);
+                    }
+                }
+                scored.push((score, p.port_name));
             }
         }
-        out
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.into_iter().map(|(_, name)| name).collect()
     }
 
     pub fn connect(&self, port_name: &str, baud_rate: u32) -> Result<String, String> {
@@ -86,39 +102,39 @@ impl HardwareManager {
         let _ = serial.write_data_terminal_ready(false);
         let _ = serial.write_request_to_send(false);
 
-        // Identity check: with several USB-serial devices plugged in, a
-        // whitelisted port may belong to something else (second adapter,
-        // RFID reader). A real GymPOS controller answers PING with
-        // ACK:PONG in milliseconds; two attempts because the DTR edge
-        // above can land during the chip's own boot.
-        let mut verified = false;
+        // Best-effort identity check: a running controller answers PING with
+        // ACK:PONG — but a C3 mid-boot (or wedged in download mode after a
+        // flasher session) stays silent, so silence must NOT reject the port.
+        // Port identity is decided by USB VID/driver (see find_esp_ports
+        // scoring); this PING only enriches the log.
+        let mut responded = false;
         for _ in 0..2 {
             if serial.write_all(b"PING\n").and_then(|_| serial.flush()).is_err() {
                 break;
             }
-            let deadline = std::time::Instant::now() + Duration::from_millis(450);
+            let deadline = std::time::Instant::now() + Duration::from_millis(400);
             let mut buf = [0u8; 256];
             while std::time::Instant::now() < deadline {
                 match serial.read(&mut buf) {
                     Ok(0) => std::thread::sleep(Duration::from_millis(20)),
                     Ok(n) => {
                         if String::from_utf8_lossy(&buf[..n]).contains("ACK:PONG") {
-                            verified = true;
+                            responded = true;
                             break;
                         }
                     }
                     Err(_) => {}
                 }
             }
-            if verified {
+            if responded {
                 break;
             }
         }
-        if !verified {
-            return Err(format!(
-                "Port {} answered no PING — not a GymPOS controller (or still booting).",
+        if !responded {
+            tracing::debug!(
+                "Port {} is silent at PING (booting or wedged) — keeping it as the controller candidate.",
                 port_name
-            ));
+            );
         }
 
         // Clone the handle for the background EVT reader so line reads never

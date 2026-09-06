@@ -296,7 +296,7 @@ let probedDevicesCache = [];
  * Uses bandwidth-safe 640x480 constraints so that 3 simultaneous USB webcams
  * do not saturate the Windows USB 2.0/3.0 root hub isochronous transfer bandwidth.
  */
-async function getStreamForDevice(deviceId) {
+async function getStreamForDevice(deviceId, lane = 'entry') {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
         return {
             stream: null,
@@ -307,19 +307,41 @@ async function getStreamForDevice(deviceId) {
     // Windows UVC bandwidth optimization: 640x480 uncompressed YUY2 is ~147Mbps.
     // Three 640x480 cameras can stream simultaneously on a single USB root hub
     // without triggering NotReadableError (USB isochronous bandwidth starvation).
-    const attempts = [
-        deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30, max: 30 } }
-            : { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: "user" },
-        // Fallback for bandwidth-constrained hubs (360p / 24fps)
-        deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } }
-            : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } },
-        // Minimum viable fallback
-        deviceId
-            ? { deviceId: { exact: deviceId } }
-            : { video: true }
-    ];
+    // Bandwidth strategy (USB HUB BANDWIDTH LIMIT/CONFLICT fix): cheap UVC
+    // cameras stream UNCOMPRESSED YUY2 at 640p (~140+ Mbps each on the shared
+    // 480 Mbps USB 2.0 segment — 3 cams = guaranteed conflict even when every
+    // cable goes straight into the PC, because all ports share one controller
+    // segment). Requesting 720p24 forces the camera into MJPEG (~20-40 Mbps
+    // each, ~10x smaller); captureVideoFrame downsizes to <=640px for the
+    // model anyway, so inference is unchanged. Falls back progressively.
+    // Per-lane bandwidth strategy (fixes USB HUB BANDWIDTH LIMIT/CONFLICT):
+    // - entry/exit (face recognition): 720p24 forces UVC cameras into MJPEG
+    //   (~10x smaller than uncompressed YUY2 on the shared 480Mbps segment)
+    // - tailgate (overhead YOLO counting, 320x320 input): tiny 480x270@12
+    //   stream — a fraction of the bandwidth, plenty for head counting
+    let attempts;
+    if (lane === 'tailgate') {
+        attempts = [
+            deviceId
+                ? { deviceId: { exact: deviceId }, width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 12, max: 15 } }
+                : { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 12, max: 15 } },
+            deviceId
+                ? { deviceId: { exact: deviceId } }
+                : { video: true }
+        ];
+    } else {
+        attempts = [
+            deviceId
+                ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }
+                : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } },
+            deviceId
+                ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } }
+                : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } },
+            deviceId
+                ? { deviceId: { exact: deviceId } }
+                : { video: true }
+        ];
+    }
 
     let lastErr = null;
     for (const constraints of attempts) {
@@ -707,7 +729,7 @@ async function initCameraStreams() {
 
         // 1. Camera 1: Face Scan Entry
         if (!streamCam1 || !streamCam1.active) {
-            const res1 = await getStreamForDevice(cfg.camera1_entry_device_id);
+            const res1 = await getStreamForDevice(cfg.camera1_entry_device_id, 'entry');
             if (res1.stream) {
                 streamCam1 = res1.stream;
                 streamCam1DeviceId = (res1.recovered && res1.recoveredDeviceId) ? res1.recoveredDeviceId : cfg.camera1_entry_device_id;
@@ -731,7 +753,7 @@ async function initCameraStreams() {
         // 2. Camera 2: Face Scan Exit
         if (!streamCam2 || !streamCam2.active) {
             if (cfg.camera2_exit_device_id && cfg.camera2_exit_device_id !== cfg.camera1_entry_device_id) {
-                const res2 = await getStreamForDevice(cfg.camera2_exit_device_id);
+                const res2 = await getStreamForDevice(cfg.camera2_exit_device_id, 'exit');
                 if (res2.stream) {
                     streamCam2 = res2.stream;
                     streamCam2DeviceId = cfg.camera2_exit_device_id;
@@ -757,7 +779,7 @@ async function initCameraStreams() {
         if (!streamCam3 || !streamCam3.active) {
             let gotDedicatedCam3 = false;
             if (cfg.camera3_tailgate_device_id && cfg.camera3_tailgate_device_id !== cfg.camera1_entry_device_id && cfg.camera3_tailgate_device_id !== cfg.camera2_exit_device_id) {
-                const res3 = await getStreamForDevice(cfg.camera3_tailgate_device_id);
+                const res3 = await getStreamForDevice(cfg.camera3_tailgate_device_id, 'tailgate');
                 if (res3.stream) {
                     streamCam3 = res3.stream;
                     streamCam3DeviceId = cfg.camera3_tailgate_device_id;
@@ -776,7 +798,7 @@ async function initCameraStreams() {
                     const usedIds = [streamCam1DeviceId, streamCam2DeviceId].filter(Boolean);
                     const freeDev = vdevs.find(d => !usedIds.includes(d.deviceId));
                     if (freeDev) {
-                        const altRes = await getStreamForDevice(freeDev.deviceId);
+                        const altRes = await getStreamForDevice(freeDev.deviceId, 'tailgate');
                         if (altRes.stream) {
                             streamCam3 = altRes.stream;
                             streamCam3DeviceId = freeDev.deviceId;
@@ -865,7 +887,8 @@ async function previewSelectedCamera(camNumber, deviceId) {
         }
 
         if (!streamToUse) {
-            const res = await getStreamForDevice(deviceId);
+            const lane = camNumber === 3 ? 'tailgate' : (camNumber === 2 ? 'exit' : 'entry');
+            const res = await getStreamForDevice(deviceId, lane);
             if (res.error) {
                 setCameraSlotFeedback(camNumber, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot run 3 webcams on the same USB hub. Move this camera directly to a different PC USB port (not the hub), or choose the laptop webcam.");
                 showHudToast("USB Hub Limit Exceeded", "Windows cannot run 3 webcams on the same USB hub. Move one camera to another PC USB port, or choose the laptop webcam.", "danger");
