@@ -313,8 +313,8 @@ async function getStreamForDevice(deviceId) {
             : { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 30, max: 30 }, facingMode: "user" },
         // Fallback for bandwidth-constrained hubs (360p / 24fps)
         deviceId
-            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } }
-            : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 } },
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } }
+            : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } },
         // Minimum viable fallback
         deviceId
             ? { deviceId: { exact: deviceId } }
