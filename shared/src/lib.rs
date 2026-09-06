@@ -411,7 +411,9 @@ pub struct TailgatePolicy {
 
 impl Default for TailgatePolicy {
     fn default() -> Self {
-        Self { enabled: true, siren_cooldown_secs: 300 }
+        // 15s cooldown: every genuine incident blasts the full 5s siren while
+        // still damping buzzer-stuck spam; the CEO dashboard can tune it.
+        Self { enabled: true, siren_cooldown_secs: 15 }
     }
 }
 

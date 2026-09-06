@@ -1210,7 +1210,7 @@
                 const res = await adminFetch(`/api/v1/admin/gyms/${encodeURIComponent(gymId)}/tailgate`, {
                     method: 'POST',
                     headers: getAdminHeaders(),
-                    body: JSON.stringify({ enabled: !!enabled, siren_cooldown_secs: 300 })
+                    body: JSON.stringify({ enabled: !!enabled, siren_cooldown_secs: 15 })
                 });
                 if (res.ok) showToasted(`Tailgate ${enabled ? 'enabled' : 'log-only'} for branch — applies on next terminal sync.`);
                 else alert("Policy update failed: " + res.statusText);

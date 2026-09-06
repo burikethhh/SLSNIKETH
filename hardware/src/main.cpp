@@ -230,25 +230,13 @@ void buzzerTick() {
 }
 
 // ───────────── Tailgate Alarm ────────────────
-// Same 200ms-on/100ms-off pulse shape as the old fixed pattern, generated
-// dynamically for the requested duration so the host (whose siren length is
-// policy-controlled from the cloud) can size the alarm.
-static int dynAlertPattern[(15000 / 300) + 2];  // worst case: 50 pulses + terminator
+// NONSTOP solid tone for the requested duration (the host sends 5000ms) —
+// one unbroken blast reads unmistakably as an alarm, per field feedback.
+static int dynAlertPattern[2];
 
 void startTailgateAlarm(unsigned long ms) {
-  const unsigned long stepOn = 200, stepOff = 100;
-  const int maxSteps = (int)(sizeof(dynAlertPattern) / sizeof(dynAlertPattern[0])) - 1;
-  int n = 0;
-  unsigned long total = 0;
-  while (total + stepOn + stepOff <= ms && n + 2 <= maxSteps) {
-    dynAlertPattern[n++] = (int)stepOn;
-    dynAlertPattern[n++] = -(int)stepOff;
-    total += stepOn + stepOff;
-  }
-  if (total < ms && n < maxSteps) {  // trailing partial pulse
-    dynAlertPattern[n++] = (int)(ms - total);
-  }
-  dynAlertPattern[n] = 0;
+  dynAlertPattern[0] = (int)ms;   // solid ON for the whole duration
+  dynAlertPattern[1] = 0;
   buzzerStart(dynAlertPattern);
 }
 
