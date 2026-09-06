@@ -218,10 +218,14 @@ impl HardwareManager {
         Ok(format!("Bye sent for {} ({}s)", clean_name, secs))
     }
 
+    /// Trigger the tailgate alarm. The firmware (v1.1.0+) honors the duration
+    /// (clamped 1s..15s); older firmware ignores it and plays its fixed ~9s
+    /// pattern, so the siren length is safe on both.
     pub fn trigger_alarm(&self, duration_ms: u32) -> Result<String, String> {
-        let cmd = "ALERT_TAILGATE";
-        self.send_command(cmd)?;
-        Ok(format!("Alarm strobe & buzzer triggered ({}ms)", duration_ms))
+        let ms = duration_ms.clamp(1000, 15000);
+        let cmd = format!("ALERT_TAILGATE:{}", ms);
+        self.send_command(&cmd)?;
+        Ok(format!("Alarm strobe & buzzer triggered ({}ms)", ms))
     }
 
     /// Returns (is_connected, port_name)

@@ -47,22 +47,38 @@
     DENY:<reason>          → triple beep + LCD shows reason text
     BEEP                   → single short beep
     BEEP_LONG              → long 2-second warning beep
-    ALERT_TAILGATE         → rapid pulsing alarm (~9s) + LCD warning
+    ALERT_TAILGATE         → rapid pulsing alarm (5s default) + LCD warning
+    ALERT_TAILGATE:<ms>    → pulsing alarm for a custom duration (1s..15s)
     ALARM                  → alias for ALERT_TAILGATE
     LCD:<line1>|<line2>    → display custom text on LCD (| separates lines)
     LCD_CLEAR              → clear LCD and return to idle screen
+    LCD_REINIT             → rescan all pins for the LCD and re-init
     PING                   → reply ACK:PONG (health check)
     STATUS                 → reply with current lock state (ACK:STATUS:LOCKED|UNLOCKED)
+    VERSION                → reply ACK:VERSION:<fw-version>
 
   Messages Sent TO PC:
-    READY                  → sent once on boot
+    READY:fw=<version>     → sent once on boot
     ACK:<cmd>              → acknowledgement for every command
     ACK:RELOCK             → auto-lock notification after unlock timer expires
+
+  Watchdog:
+    The loop task is watched by the ESP32 task watchdog (10s). An I2C/LCD
+    lockup can never brick the door controller — the board reboots fail-SECURE
+    (locked), because unlock state is never persisted across a reboot.
 */
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <esp_task_wdt.h>
+
+// ───────────── Firmware Version ──────────────
+// 1.0.0  — original direct-wired relay build
+// 1.1.0  — dynamic I2C pin/address scan for the LCD, buzzer moved off the
+//          GPIO9 strapping pin, VERSION command, ALERT_TAILGATE:<ms>,
+//          task watchdog
+static const char* FW_VERSION = "1.1.0";
 
 // ───────────── Lock Configuration ─────────────
 // All locks are direct-wired to board relay COM/NC (no ESP GPIO pin needed).
@@ -179,14 +195,6 @@ static const int PAT_EXIT[]        = {80, -60, 80, 0};             // two short 
 static const int PAT_STARTUP[]     = {60, -40, 80, -40, 100, 0};   // ascending chirp (boot)
 static const int PAT_BEEP[]        = {150, 0};                     // single short beep
 static const int PAT_BEEP_LONG[]   = {2000, 0};                    // single long 2-sec warning beep
-static const int PAT_HEAVY_ALERT[] = {                             // ~9s rapid pulsing (tailgate alarm)
-  200,-100,200,-100,200,-100,200,-100,200,-100,
-  200,-100,200,-100,200,-100,200,-100,200,-100,
-  200,-100,200,-100,200,-100,200,-100,200,-100,
-  200,-100,200,-100,200,-100,200,-100,200,-100,
-  200,-100,200,-100,200,-100,200,-100,200,-100,
-  200,-100,200,-100,200,-100,200,-100,200,-100, 0
-};
 
 const int* buzzerPattern  = nullptr;
 int        buzzerStep     = 0;
@@ -224,6 +232,50 @@ void buzzerTick() {
     digitalWrite(BUZZER_PIN, LOW);
     buzzerUntil = millis() + (unsigned long)(-dur);
   }
+}
+
+// ───────────── Tailgate Alarm ────────────────
+// Same 200ms-on/100ms-off pulse shape as the old fixed pattern, generated
+// dynamically for the requested duration so the host (whose siren length is
+// policy-controlled from the cloud) can size the alarm.
+static int dynAlertPattern[(15000 / 300) + 2];  // worst case: 50 pulses + terminator
+
+void startTailgateAlarm(unsigned long ms) {
+  const unsigned long stepOn = 200, stepOff = 100;
+  const int maxSteps = (int)(sizeof(dynAlertPattern) / sizeof(dynAlertPattern[0])) - 1;
+  int n = 0;
+  unsigned long total = 0;
+  while (total + stepOn + stepOff <= ms && n + 2 <= maxSteps) {
+    dynAlertPattern[n++] = (int)stepOn;
+    dynAlertPattern[n++] = -(int)stepOff;
+    total += stepOn + stepOff;
+  }
+  if (total < ms && n < maxSteps) {  // trailing partial pulse
+    dynAlertPattern[n++] = (int)(ms - total);
+  }
+  dynAlertPattern[n] = 0;
+  buzzerStart(dynAlertPattern);
+}
+
+// ───────────── Watchdog ──────────────────────
+// The loop task is watched by the ESP32 task watchdog: an I2C/LCD lockup
+// reboots the board instead of bricking the door controller. Reboot state is
+// fail-SECURE — boot always starts locked.
+static const uint32_t WDT_TIMEOUT_MS = 10000;
+
+void initWatchdog() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
+  esp_task_wdt_config_t cfg = {};
+  cfg.timeout_ms = WDT_TIMEOUT_MS;
+  cfg.idle_core_mask = 0;
+  cfg.trigger_panic = true;
+  if (esp_task_wdt_init(&cfg) == ESP_ERR_INVALID_STATE) {
+    esp_task_wdt_reconfigure(&cfg);  // core already initialized it — adjust timeout
+  }
+#else
+  esp_task_wdt_init((WDT_TIMEOUT_MS + 999) / 1000, true);
+#endif
+  esp_task_wdt_add(NULL);  // watch the current (loopTask) task
 }
 
 // ───────────── LCD Helpers ───────────────────
@@ -460,9 +512,12 @@ void processSerialCommand(const String& cmdRaw) {
     return;
   }
 
-  // ── ALERT_TAILGATE / ALARM ── (~9s rapid buzzer alert)
+  // ── ALERT_TAILGATE / ALARM ── (rapid buzzer pulse; 5s default, optional ms)
   if (base == "ALERT_TAILGATE" || base == "ALARM") {
-    buzzerStart(PAT_HEAVY_ALERT);
+    unsigned long ms = parseSeconds(argRaw, 5000UL);
+    if (ms < 1000) ms = 1000;
+    if (ms > 15000) ms = 15000;
+    startTailgateAlarm(ms);
     if (lcd) {
       lcd->clear();
       lcd->setCursor(0, 0);
@@ -471,7 +526,7 @@ void processSerialCommand(const String& cmdRaw) {
       lcd->setCursor(0, 1);
       lcd->print("Multiple entries!");
     }
-    lcdIdleAfter = millis() + 9000;
+    lcdIdleAfter = millis() + ms;
     Serial.println("ACK:ALERT_TAILGATE");
     return;
   }
@@ -507,6 +562,12 @@ void processSerialCommand(const String& cmdRaw) {
     return;
   }
 
+  // ── VERSION ──
+  if (base == "VERSION") {
+    Serial.printf("ACK:VERSION:%s\n", FW_VERSION);
+    return;
+  }
+
   // ── STATUS ──
   if (base == "STATUS") {
     Serial.print("ACK:STATUS:");
@@ -529,7 +590,7 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.setTimeout(50);
-  Serial.println("\nGymPOS Controller Booting...");
+  Serial.printf("\nGymPOS Controller v%s booting...\n", FW_VERSION);
 
   // Immediate audible feedback that MCU has booted
   buzzerStart(PAT_STARTUP);
@@ -538,12 +599,20 @@ void setup() {
   I2cResult res = scanAllPinsForLcd();
   initLcdHardware(res.sda, res.scl, res.addr);
 
-  Serial.println("READY");
+  // Watchdog goes live LAST: the boot-time I2C pin sweep can legitimately
+  // take >10s with no LCD connected, and the steady-state loop is what the
+  // watchdog exists to protect.
+  initWatchdog();
+
+  Serial.printf("READY:fw=%s\n", FW_VERSION);
 }
 
 // ───────────── Main Loop ─────────────────────
 void loop() {
   unsigned long now = millis();
+
+  // ── Watchdog feed ──
+  esp_task_wdt_reset();
 
   // ── Non-blocking buzzer tick ──
   buzzerTick();

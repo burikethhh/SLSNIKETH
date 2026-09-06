@@ -739,7 +739,7 @@ pub fn process_face_scan(
 
 #[tauri::command]
 pub fn log_tailgate_event(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
-    let _ = state.hardware.trigger_alarm(4000);
+    let _ = state.hardware.trigger_alarm(5000);
     let log = state
         .db
         .log_tailgate_incident(None, "⚠️ Tailgate Intrusion", None)

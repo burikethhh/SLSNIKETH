@@ -47,6 +47,9 @@ def test_hardware(port='COM8', baud=115200):
     # Test 1: PING
     results['PING'] = send_and_expect("PING", "ACK:PONG")
 
+    # Test 1b: VERSION (firmware >= 1.1.0 reports its version)
+    results['VERSION'] = send_and_expect("VERSION", "ACK:VERSION:")
+
     # Test 2: STATUS
     results['STATUS'] = send_and_expect("STATUS", "ACK:STATUS:")
 
