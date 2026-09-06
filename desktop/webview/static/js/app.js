@@ -1682,7 +1682,7 @@ async function startAutonomousBiometricEngine() {
                 memberCooldownMap.set(matchedId, now);
 
                 // Telemetry Lock State HUD
-                const lockEl = document.getElementById('telemetry-lock-state');
+                const lockEl = null; // telemetry HUD element removed
                 if (lockEl) {
                     lockEl.innerText = "UNLOCKED (AUTO ENTRY)";
                     lockEl.className = "text-sm font-bold text-emerald-400 mt-1 animate-pulse";
@@ -1786,7 +1786,7 @@ async function startAutonomousBiometricEngine() {
                 if (now - lastSeen < 12000) return;
                 memberCooldownMap.set(matchedId, now);
 
-                const lockEl = document.getElementById('telemetry-lock-state');
+                const lockEl = null; // telemetry HUD element removed
                 if (lockEl) {
                     lockEl.innerText = "UNLOCKED (AUTO EXIT)";
                     lockEl.className = "text-sm font-bold text-blue-400 mt-1 animate-pulse";
@@ -2186,6 +2186,8 @@ function applyBrandingToUI(settings) {
     const rateInput = document.getElementById('setting-walkin-rate');
     const walkinFeeInput = document.getElementById('walkin-fee');
 
+    const favicon = document.getElementById('app-favicon');
+    if (favicon && settings.logo_data_url) favicon.href = settings.logo_data_url;
     if (titleEl) titleEl.innerText = settings.gym_name || "Titan Fitness & Performance";
     if (htmlTitle) htmlTitle.innerText = `${settings.gym_name || "Titan Fitness"} — SaaS Access Control`;
     if (nameInput) nameInput.value = settings.gym_name || "Titan Fitness & Performance";
@@ -2899,8 +2901,9 @@ async function submitWalkInPass() {
         console.debug("Walk-in face capture failed, issuing code-only pass:", e);
     }
     if (!faceVector) {
-        errorEl.innerText = "No face in frame — issuing code-only pass (no biometric unlock).";
+        errorEl.innerText = "No face in frame — pass NOT issued. Position the guest and press Scan Face again.";
         errorEl.className = "text-xs text-amber-400";
+        return;
     }
 
     try {
@@ -3005,6 +3008,7 @@ async function loadWalkIns() {
                         <button onclick="renewWalkIn('${w.id}', '${w.guest_name.replace(/'/g, "\\'")}')" title="Renew: fresh 8h from now, same face — no re-scan" class="px-2 py-1 rounded text-[10px] font-bold bg-purple-950 hover:bg-purple-900 text-purple-300 border border-purple-800 transition">Renew</button>
                         <button onclick="extendWalkIn('${w.id}', 4)" title="Extend +4 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-blue-950 hover:bg-blue-900 text-blue-300 border border-blue-800 transition">+4h</button>
                         <button onclick="extendWalkIn('${w.id}', 8)" title="Extend +8 Hours" class="px-2 py-1 rounded text-[10px] font-bold bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 transition">+8h</button>
+                        <button onclick="const h = parseInt(prompt('Extend pass by how many hours? (1-72)', '12') || '0', 10); if (h >= 1 && h <= 72) extendWalkIn('${w.id}', h); else if (h) alert('Enter 1-72 hours.');" title="Custom extend duration" class="px-2 py-1 rounded text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">+N</button>
                         <button onclick="voidWalkIn('${w.id}', '${w.guest_name.replace(/'/g, "\\'")}')" title="Revoke Pass" class="px-2 py-1 rounded text-[10px] font-bold bg-red-950 hover:bg-red-900 text-red-300 border border-red-800 transition">Void</button>
                     </td>
                 </tr>
@@ -3021,12 +3025,22 @@ async function loadMembers() {
     try {
         const members = await invokeTauri('list_members');
         cachedMembers = members;
+        refreshMemberTierFilter();
         const vectorCountEl = document.getElementById('sidebar-vector-count');
         if (vectorCountEl) vectorCountEl.innerText = `${members.length} loaded`;
         filterMembersList();
     } catch (e) {
         console.error("Load members error:", e);
     }
+}
+
+function refreshMemberTierFilter() {
+    const sel = document.getElementById('member-tier-filter');
+    if (!sel) return;
+    const current = sel.value;
+    const types = [...new Set((cachedMembers || []).map(m => (m.membership_type || 'regular').toLowerCase()))].sort();
+    sel.innerHTML = '<option value="all">All Plans</option>' + types.map(t => `<option value="${t}">${t}</option>`).join('');
+    sel.value = types.includes(current) ? current : 'all';
 }
 
 function filterMembersList() {
@@ -3045,7 +3059,7 @@ function filterMembersList() {
     });
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
         return;
     }
 
@@ -3362,6 +3376,10 @@ function getProductIcon(category) {
 }
 
 function filterPosCategory(category) {
+    // Pills carry data-category now — innerText matching broke on 'Drinks & Shakes'
+    document.querySelectorAll('#pos-category-pills [data-category]').forEach(p => {
+        p.classList.toggle('active', p.dataset.category === category);
+    });
     currentPosCategory = category;
     document.querySelectorAll('.pos-cat-pill').forEach(btn => {
         if (btn.innerText.toLowerCase().includes(category) || (category === 'all' && btn.innerText.includes('All'))) {
@@ -3615,7 +3633,7 @@ function renderCart() {
         const gross = total;
         const off = Math.round(gross * disc.pct) / 100;
         if (totalEl) totalEl.innerHTML = `<span class="line-through text-slate-500 text-sm mr-2">₱${gross.toFixed(2)}</span>₱${(gross - off).toFixed(2)}`;
-        container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">Discount (${disc.label}): −$${off.toFixed(2)}</div>`);
+        container.insertAdjacentHTML('beforeend', `<div class="text-[11px] text-emerald-400 font-semibold text-right">Discount (${disc.label}): −₱${off.toFixed(2)}</div>`);
     } else if (totalEl) {
         totalEl.innerText = `₱${total.toFixed(2)}`;
     }
@@ -3733,7 +3751,7 @@ async function checkoutCart(paymentMethod) {
 
 async function loadEndOfDay() {
     const dateInput = document.getElementById('eod-date-input');
-    const day = (dateInput && dateInput.value) || new Date().toISOString().slice(0, 10);
+    const day = (dateInput && dateInput.value) || new Date().toLocaleDateString('en-CA');
     const body = document.getElementById('eod-summary-body');
     if (body) body.innerHTML = '<div class="text-center text-slate-500 py-6">Loading closing report...</div>';
     try {
@@ -4342,7 +4360,7 @@ async function quickUnlockDoor() {
     if (reason === null) return; // Staff cancelled — do nothing
 
     const btn = document.getElementById('btn-quick-unlock');
-    const lockEl = document.getElementById('telemetry-lock-state');
+    const lockEl = null; // telemetry HUD element removed
     try {
         btn.classList.add('opacity-50');
         if (lockEl) {
@@ -4630,8 +4648,11 @@ async function pasteLicenseFromClipboard() {
     }
 }
 
+let terminalLoginInFlight = false;
 async function submitTerminalLogin(e) {
     if (e) e.preventDefault();
+    if (terminalLoginInFlight) return; // Enter-key + button double-fire guard
+    terminalLoginInFlight = true;
 
     const email      = (document.getElementById('terminal-login-email')?.value || '').trim();
     const password   = document.getElementById('terminal-login-pass')?.value || '';
@@ -4686,6 +4707,7 @@ async function submitTerminalLogin(e) {
         console.error("Terminal activation error:", msg);
         showTerminalLoginError(msg);
     } finally {
+        terminalLoginInFlight = false;
         if (btn) {
             btn.disabled = false;
             btn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"></path></svg> Activate &amp; Unlock Terminal`;

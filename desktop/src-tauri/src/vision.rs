@@ -625,6 +625,17 @@ impl PersonCounter {
     /// Detects person bounding boxes (COCO class 0) in `image`, in ORIGINAL
     /// image coordinates.
     pub fn detect_persons(&self, image: &RgbImage) -> Result<Vec<(f32, f32, f32, f32)>, String> {
+        self.detect_persons_with_threshold(image, YOLO_CONF_THRESHOLD)
+    }
+
+    /// YOLO person detection with a caller-tunable confidence floor — the
+    /// Hardware Settings "Optical Anti-Tailgate Sensitivity" slider maps here
+    /// (higher sensitivity % = lower threshold = more detections).
+    pub fn detect_persons_with_threshold(
+        &self,
+        image: &RgbImage,
+        conf_threshold: f32,
+    ) -> Result<Vec<(f32, f32, f32, f32)>, String> {
         let (orig_w, orig_h) = image.dimensions();
         if orig_w == 0 || orig_h == 0 {
             return Ok(Vec::new());
@@ -673,7 +684,7 @@ impl PersonCounter {
                 }
             }
 
-            if best_class != YOLO_PERSON_CLASS_INDEX || best_score < YOLO_CONF_THRESHOLD {
+            if best_class != YOLO_PERSON_CLASS_INDEX || best_score < conf_threshold {
                 continue;
             }
 
@@ -743,8 +754,9 @@ impl PersonCounter {
         roi_y_pct: f32,
         roi_w_pct: f32,
         roi_h_pct: f32,
+        conf_threshold: f32,
     ) -> Result<(usize, Vec<serde_json::Value>, f32), String> {
-        let boxes = self.detect_persons(image)?;
+        let boxes = self.detect_persons_with_threshold(image, conf_threshold)?;
         let (w, h) = image.dimensions();
         let (w, h) = (w as f32, h as f32);
 

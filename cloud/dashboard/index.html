@@ -95,7 +95,7 @@
                     <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path></svg>
                     <span id="admin-auth-badge">CEO: Sign In</span>
                 </button>
-                <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300">
+                <div id="cloud-health-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300">
                     <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
                     <span>Axum Engine: Online</span>
                 </div>
@@ -394,13 +394,14 @@
                             <th class="pb-2">Rollout</th>
                             <th class="pb-2">Binary Hash</th>
                             <th class="pb-2">Enforcement</th>
+                            <th class="pb-2">Notes</th>
                             <th class="pb-2">Published At</th>
                             <th class="pb-2 text-right">Asset Link</th>
                         </tr>
                     </thead>
                     <tbody id="releases-tbody" class="divide-y divide-purple-900/20">
                         <tr>
-                            <td colspan="7" class="py-4 text-center text-purple-400/50">No releases deployed yet. Use 'Publish New Release' to seed updates.</td>
+                            <td colspan="8" class="py-4 text-center text-purple-400/50">No releases deployed yet. Use 'Publish New Release' to seed updates.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -483,6 +484,10 @@
             <p class="text-xs text-purple-300/80">
                 Sign in with your CEO email and password to authorize fleet licensing and remote kill-switch commands.
             </p>
+            <div id="ceo-register-name-wrap" class="hidden">
+                <label class="block text-xs text-purple-300 mb-1">Display Name</label>
+                <input id="ceo-register-name" class="input-dark w-full text-sm mb-2" placeholder="e.g. Gym Avenue CEO">
+            </div>
             <div>
                 <label class="block text-xs text-purple-300 mb-1">CEO Email</label>
                 <input type="email" id="input-ceo-email" class="input-dark text-sm" placeholder="ceo@yourcompany.com" autocomplete="username">
@@ -492,7 +497,8 @@
                 <input type="password" id="input-ceo-password" class="input-dark text-sm" placeholder="••••••••" autocomplete="current-password">
             </div>
             <div id="ceo-auth-error" class="text-xs text-red-400 min-h-[1rem]"></div>
-            <div class="flex justify-end gap-2 pt-2">
+            <div class="flex justify-between items-center pt-2 gap-2">
+                <button onclick="toggleCeoRegister()" class="text-[10px] text-purple-400 hover:text-purple-200 underline">First-time setup? Create account</button>
                 <button id="ceo-auth-submit" onclick="saveAdminKey()" class="btn-purple px-4 py-2 rounded-lg text-xs font-bold">Sign In as CEO</button>
             </div>
         </div>
@@ -621,10 +627,6 @@
 
         let ceoAuthMode = 'login';
 
-        function switchCeoTab(mode) {
-            ceoAuthMode = 'login';
-        }
-
         function promptAdminKey() {
             const em = document.getElementById('input-ceo-email');
             if (em && getAdminEmail()) em.value = getAdminEmail();
@@ -638,14 +640,26 @@
             if (err) err.innerText = msg;
         }
 
+        let ceoAuthIsRegister = false;
+        function toggleCeoRegister() {
+            ceoAuthIsRegister = !ceoAuthIsRegister;
+            const nameWrap = document.getElementById('ceo-register-name-wrap');
+            const btn = document.getElementById('ceo-auth-submit');
+            if (nameWrap) nameWrap.classList.toggle('hidden', !ceoAuthIsRegister);
+            if (btn) btn.innerText = ceoAuthIsRegister ? 'Create CEO Account' : 'Sign In';
+            ceoAuthError('');
+        }
+
         async function saveAdminKey() {
             const email = document.getElementById('input-ceo-email').value.trim().toLowerCase();
             const password = document.getElementById('input-ceo-password').value;
             if (!email || !email.includes('@')) { ceoAuthError('Enter a valid CEO email address.'); return; }
             if (password.length < 8) { ceoAuthError('Password must be at least 8 characters.'); return; }
 
-            const url = '/api/v1/auth/ceo-login';
-            const body = { email: email, password: password };
+            const url = ceoAuthIsRegister ? '/api/v1/auth/ceo-register' : '/api/v1/auth/ceo-login';
+            const body = ceoAuthIsRegister
+                ? { email: email, password: password, display_name: (document.getElementById('ceo-register-name')?.value || email.split('@')[0]) }
+                : { email: email, password: password };
 
             try {
                 const res = await fetch(url, {
@@ -663,7 +677,7 @@
                     document.getElementById('admin-auth-badge').innerText = `CEO: ${data.display_name || data.ceo_email || email}`;
                     document.getElementById('input-ceo-password').value = '';
                     await refreshAllData();
-                    alert(isRegister ? 'CEO account created — signed in!' : 'CEO session authorized!');
+                    alert(ceoAuthIsRegister ? 'CEO account created — signed in!' : 'CEO session authorized!');
                 } else {
                     ceoAuthError(data.error || `Sign in failed (${res.status}).`);
                 }
@@ -1104,16 +1118,27 @@
             }).join('');
         }
 
+        let lastFleetAnalytics = null;
+
         function updateMetrics() {
             document.getElementById('stat-total-gyms').innerText = registeredGyms.length;
 
-            let mrr = 0;
-            registeredGyms.forEach(g => {
-                if (g.tier.toLowerCase() === 'ultra') mrr += 349;
-                else if (g.tier.toLowerCase() === 'pro') mrr += 199;
-                else mrr += 99;
-            });
-            document.getElementById('stat-mrr').innerText = `₱${mrr.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+            // Server-truth metrics from /analytics/fleet (single source of
+            // truth — no more client-side tier price recomputation).
+            if (lastFleetAnalytics) {
+                if (lastFleetAnalytics.mrr_formatted) {
+                    document.getElementById('stat-mrr').innerText = lastFleetAnalytics.mrr_formatted;
+                }
+                if (lastFleetAnalytics.revoked_or_disabled !== undefined) {
+                    const local = storedLicenses.filter(l => l.is_revoked).length;
+                    document.getElementById('stat-disabled-count').innerText =
+                        `${lastFleetAnalytics.revoked_or_disabled + local} Revoked/Disabled`;
+                }
+                if (lastFleetAnalytics.total_cloud_members !== undefined) {
+                    const el = document.getElementById('stat-cloud-members');
+                    if (el) el.innerText = lastFleetAnalytics.total_cloud_members.toLocaleString('en-US');
+                }
+            }
 
             const revokedCount = storedLicenses.filter(l => l.is_revoked).length + disabledGymIds.size;
             document.getElementById('stat-disabled-count').innerText = `${revokedCount} Revoked`;
@@ -1140,6 +1165,7 @@
                 const res = await adminFetch('/api/v1/analytics/fleet', { headers: getAdminHeaders() });
                 if (res.ok) {
                     const data = await res.json();
+                    lastFleetAnalytics = data;
                     ceoBreachByGym7d = data.security_breach_by_gym_7d || {};
                     renderSecurityBranches();
                 }
@@ -1403,12 +1429,6 @@
             }
         }
 
-        async function renewGymLicense(gymId, gymName, tier) {
-            const gym = registeredGyms.find(g => g.id === gymId);
-            const ownerEmail = gym ? gym.owner_email : "owner@gym.com";
-            openIssueBranchKeyModal(gymId, gymName, ownerEmail, tier);
-        }
-
         async function toggleKillSwitch(gymId, disable) {
             try {
                 const res = await fetch('/api/v1/remote/disable', {
@@ -1478,6 +1498,8 @@
                             ? '<span class="text-[10px] font-bold text-red-400 bg-red-950/60 border border-red-800/60 px-2 py-0.5 rounded">MANDATORY</span>'
                             : '<span class="text-[10px] font-bold text-purple-300 bg-purple-950/60 border border-purple-800/60 px-2 py-0.5 rounded">OPTIONAL</span>'}
                     </td>
+                    <td class="py-3 text-[10px] text-purple-300/80 max-w-[180px] truncate" title="${(r.release_notes || '').replace(/"/g, '&quot;')}">${r.release_notes ? r.release_notes.substring(0, 40) + (r.release_notes.length > 40 ? '...' : '') : '—'}</td>
+                    </td>
                     <td class="py-3 text-[11px] text-purple-300">${new Date(r.created_at).toLocaleDateString()}</td>
                     <td class="py-3 text-right">
                         <a href="${/^https?:\/\//i.test(r.download_url) ? ceoEscape(r.download_url) : '#'}" target="_blank" rel="noopener noreferrer" class="px-2 py-1 rounded text-[11px] font-bold bg-purple-900/40 hover:bg-purple-800 text-purple-200 border border-purple-500/30">Download Asset</a>
@@ -1527,7 +1549,29 @@
             }
         }
 
+        async function pollCloudHealth() {
+            try {
+                const res = await fetch('/api/v1/health', { cache: 'no-store' });
+                const badge = document.getElementById('cloud-health-badge');
+                if (!badge) return;
+                if (res.ok) {
+                    badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-500/30 text-emerald-300';
+                    badge.querySelector('span:last-child').innerText = 'Axum Engine: Online';
+                } else {
+                    throw new Error('HTTP ' + res.status);
+                }
+            } catch (e) {
+                const badge = document.getElementById('cloud-health-badge');
+                if (badge) {
+                    badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold bg-red-950/60 border border-red-500/40 text-red-300';
+                    badge.querySelector('span:last-child').innerText = 'Axum Engine: OFFLINE';
+                }
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
+            pollCloudHealth();
+            setInterval(pollCloudHealth, 30000);
             const em = getAdminEmail();
             if (em && getAdminKey()) {
                 document.getElementById('admin-auth-badge').innerText = `CEO: ${em}`;

@@ -988,6 +988,16 @@ impl CloudDatabase {
             .await?;
             count += 1;
         }
+        // Full-replace semantics: the dashboards always push the COMPLETE
+        // catalog, so ids missing from the payload were deleted in the UI —
+        // prune them (guarded: an empty payload never wipes anything).
+        if !products.is_empty() {
+            sqlx::query("DELETE FROM cloud_products WHERE owner_email = $1 AND id <> ALL($2)")
+                .bind(owner_email)
+                .bind(products.iter().map(|p| p.id.clone()).collect::<Vec<String>>())
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(count)
     }
 
@@ -1043,6 +1053,13 @@ impl CloudDatabase {
             .execute(&self.pool)
             .await?;
             count += 1;
+        }
+        if !plans.is_empty() {
+            sqlx::query("DELETE FROM cloud_plans WHERE owner_email = $1 AND id <> ALL($2)")
+                .bind(owner_email)
+                .bind(plans.iter().map(|p| p.id.clone()).collect::<Vec<String>>())
+                .execute(&self.pool)
+                .await?;
         }
         Ok(count)
     }
@@ -1103,6 +1120,13 @@ impl CloudDatabase {
             .execute(&self.pool)
             .await?;
             count += 1;
+        }
+        if !promos.is_empty() {
+            sqlx::query("DELETE FROM cloud_promos WHERE owner_email = $1 AND code <> ALL($2)")
+                .bind(owner_email)
+                .bind(promos.iter().map(|p| p.code.clone()).collect::<Vec<String>>())
+                .execute(&self.pool)
+                .await?;
         }
         Ok(count)
     }

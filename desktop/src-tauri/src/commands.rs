@@ -612,13 +612,19 @@ pub async fn count_persons_in_frame(
     check_license_active(&state)?;
     let counter_opt = state.person_counter.clone();
     // MOG sensitivity follows Hardware Settings (Recognition Tuning).
-    let mog_sensitivity = state
-        .db
-        .get_app_settings()
-        .ok()
-        .and_then(|s| s.camera_config)
-        .map(|c| c.mog_sensitivity)
-        .unwrap_or(0.5);
+    let (mog_sensitivity, yolo_conf) = {
+        let cfg = state
+            .db
+            .get_app_settings()
+            .ok()
+            .and_then(|s| s.camera_config);
+        let mog = cfg.as_ref().map(|c| c.mog_sensitivity).unwrap_or(0.5);
+        // Optical Anti-Tailgate Sensitivity (50-99%): higher % = lower YOLO
+        // confidence floor = more detections. 85% (default) == 0.45.
+        let sens = cfg.as_ref().map(|c| c.roi_sensitivity).unwrap_or(85.0);
+        let conf = (0.45 + (85.0 - sens) * 0.005).clamp(0.30, 0.60);
+        (mog, conf)
+    };
     let image = crate::vision::decode_base64_image(&image_base64)?;
     // YOLO inference off the async path — tailgate ticks every 350ms must
     // never queue behind each other on the Tauri worker.
@@ -628,7 +634,7 @@ pub async fn count_persons_in_frame(
             .as_ref()
             .ok_or_else(|| "Person counter unavailable: yolov8n.onnx failed to load".to_string())?;
         counter.set_motion_sensitivity(mog_sensitivity);
-        counter.count_and_locate_in_roi(&image, roi_x, roi_y, roi_width, roi_height)
+        counter.count_and_locate_in_roi(&image, roi_x, roi_y, roi_width, roi_height, yolo_conf)
     })
     .await
     .map_err(|e| format!("Person-count task failed: {}", e))??;

@@ -202,7 +202,7 @@
                 <div class="mt-2 flex items-center text-xs text-slate-400">
                     <span class="text-emerald-400 font-semibold mr-1.5 flex items-center">
                         <svg class="w-3 h-3 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>
-                        +14.2%
+                        vs prior period
                     </span>
                     <span>vs last month (POS + Plans + Day Passes)</span>
                 </div>
@@ -768,8 +768,8 @@
                         <input id="staff-username-input" type="text" class="input-dark w-full" placeholder="e.g. maria_cashier">
                     </div>
                     <div>
-                        <label class="block text-slate-400 mb-1">Terminal PIN (4-6 Digits)</label>
-                        <input id="staff-pin-input" type="password" maxlength="6" class="input-dark w-full font-mono text-center tracking-widest text-sm" placeholder="••••">
+                        <label class="block text-slate-400 mb-1">Terminal PIN (4-8 Digits)</label>
+                        <input id="staff-pin-input" type="password" maxlength="8" class="input-dark w-full font-mono text-center tracking-widest text-sm" placeholder="••••">
                     </div>
                 </div>
                 <div class="grid grid-cols-2 gap-3">
@@ -1524,7 +1524,7 @@
                 }
             } catch (err) {
                 console.error(err);
-                alert('Saved locally in memory for offline demonstration.');
+                alert('FAILED to save products: ' + (err?.message || err) + '. Your edits are still in the editor — check the connection and push again.');
             }
         }
 
@@ -1645,7 +1645,7 @@
                 }
             } catch (err) {
                 console.error(err);
-                alert('Saved locally in memory for offline demonstration.');
+                alert('FAILED to save plans: ' + (err?.message || err) + '. Your edits are still in the editor — check the connection and push again.');
             }
         }
 
@@ -1751,7 +1751,16 @@
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${ownerSession.token}`
                     },
-                    body: JSON.stringify({ promos: cachedPromos })
+                    body: JSON.stringify({
+                        promos: cachedPromos.map(pr => ({
+                            ...pr,
+                            // date-only input yields YYYY-MM-DD, which the API
+                            // (DateTime<Utc>) rejects with 422 — send full ISO
+                            expires_at: pr.expires_at && /^\d{4}-\d{2}-\d{2}$/.test(pr.expires_at)
+                                ? pr.expires_at + 'T23:59:59Z'
+                                : pr.expires_at
+                        }))
+                    })
                 });
                 const data = await res.json();
                 if (res.ok) {
@@ -1761,12 +1770,29 @@
                 }
             } catch (err) {
                 console.error(err);
-                alert('Saved locally in memory for offline demonstration.');
+                alert('FAILED to save promos: ' + (err?.message || err) + '. Your edits are still in the editor — check the connection and push again.');
             }
         }
 
-        function testKeyHealth(gymId) {
-            alert(`Terminal Verified: Branch ${gymId} is active, HWID hardware lock validated, and last sync timestamp is within 7-day heartbeat window.`);
+        async function testKeyHealth(gymId) {
+            const branch = (currentAnalytics && currentAnalytics.branches || []).find(b => b.gym_id === gymId);
+            const key = branch && branch.license_key;
+            if (!key) { alert('No license key issued for this branch yet — nothing to verify.'); return; }
+            try {
+                const res = await fetch('/api/v1/licenses/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ license_key: key })
+                });
+                const data = await res.json();
+                if (!res.ok) { alert('Key check FAILED (HTTP ' + res.status + '): ' + (data.error || 'unknown error')); return; }
+                const st = data.status && (data.status.type || Object.keys(data.status)[0]);
+                const days = (data.status && data.status.days_remaining !== undefined) ? (' — ' + data.status.days_remaining + ' days left') : '';
+                const disabled = data.remote_disabled ? 'YES — contact the CEO office' : 'no';
+                alert('Key check for ' + ((data.claims && data.claims.gym_name) || gymId) + ' — Status: ' + st + days + ' — Remotely disabled: ' + disabled);
+            } catch (e) {
+                alert('Key check could not reach the server: ' + e);
+            }
         }
 
         let cachedStaff = [];
@@ -1929,7 +1955,7 @@
 
         async function resetStaffPin(staffId) {
             if (!ownerSession) return;
-            const newPin = prompt('Enter new 4-digit PIN for this staff member:');
+            const newPin = prompt('Enter the new PIN for this staff member (4-8 digits):');
             if (!newPin) return;
             if (newPin.length < 4 || newPin.length > 8 || !/^\d+$/.test(newPin)) {
                 alert('PIN must be 4 to 8 numeric digits.');

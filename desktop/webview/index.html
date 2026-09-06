@@ -967,10 +967,10 @@
                 <!-- Category Filters -->
                 <div class="flex items-center gap-2" id="pos-category-pills">
                     <button onclick="filterPosCategory('all')" class="pos-cat-pill active px-3 py-1 rounded-full text-xs font-semibold bg-blue-600 text-white transition">All Items</button>
-                    <button onclick="filterPosCategory('supplements')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Supplements</button>
-                    <button onclick="filterPosCategory('merch')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Apparel & Merch</button>
-                    <button onclick="filterPosCategory('beverages')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Drinks & Shakes</button>
-                    <button onclick="filterPosCategory('gear')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Lifting Gear</button>
+                    <button data-category="all" onclick="filterPosCategory('supplements')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Supplements</button>
+                    <button data-category="supplements" onclick="filterPosCategory('merch')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Apparel & Merch</button>
+                    <button data-category="merch" onclick="filterPosCategory('beverages')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Drinks & Shakes</button>
+                    <button data-category="beverages" onclick="filterPosCategory('gear')" class="pos-cat-pill px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">Lifting Gear</button>
                 </div>
 
                 <div class="grid grid-cols-3 gap-6">
@@ -989,7 +989,7 @@
                                     <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path></svg>
                                     <span>Current Cart</span>
                                 </h3>
-                                <button onclick="clearCart()" class="text-[11px] text-slate-400 hover:text-red-400">Clear</button>
+                                <button data-category="gear" onclick="clearCart()" class="text-[11px] text-slate-400 hover:text-red-400">Clear</button>
                             </div>
                             <div id="pos-cart-items" class="space-y-2 overflow-y-auto max-h-60 pr-1 text-xs">
                                 <div class="text-center text-slate-500 py-6">Cart is empty</div>
