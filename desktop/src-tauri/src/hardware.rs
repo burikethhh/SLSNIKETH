@@ -59,6 +59,13 @@ impl HardwareManager {
             .open()
             .map_err(|e| format!("Failed to open COM port {}: {}", port_name, e))?;
 
+        // The field FTDI adapter wires DTR → EN: an asserted DTR holds the
+        // ESP32 in reset while the port is open (observed live — the board
+        // booted only after DTR was released). Release both modem lines so
+        // the chip runs and answers commands.
+        let _ = serial.write_data_terminal_ready(false);
+        let _ = serial.write_request_to_send(false);
+
         // Clone the handle for the background EVT reader so line reads never
         // block command writes (which keep using the primary handle).
         let mut reader_port = serial
