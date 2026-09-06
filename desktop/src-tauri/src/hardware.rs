@@ -49,17 +49,20 @@ impl HardwareManager {
     /// Espressif native USB-Serial/JTAG — the adapters every ESP32 board uses.
     const AUTO_CONNECT_VIDS: [u16; 4] = [0x0403, 0x10C4, 0x1A86, 0x303A];
 
-    /// First USB serial port whose adapter VID matches a known ESP32 bridge.
-    /// Used by the auto-connect loop so plugging the controller in just works.
-    pub fn find_esp_port(&self) -> Option<String> {
+    /// ALL USB serial ports whose adapter VID matches a known ESP32 bridge
+    /// (FTDI, SiLabs CP210x, WCH CH34x, Espressif native). With 3+ USB
+    /// devices plugged in, the auto-connect tries each and keeps the one
+    /// that actually answers as a GymPOS controller.
+    pub fn find_esp_ports(&self) -> Vec<String> {
+        let mut out = Vec::new();
         for p in serialport::available_ports().unwrap_or_default() {
             if let SerialPortType::UsbPort(info) = &p.port_type {
                 if Self::AUTO_CONNECT_VIDS.contains(&info.vid) {
-                    return Some(p.port_name);
+                    out.push(p.port_name);
                 }
             }
         }
-        None
+        out
     }
 
     pub fn connect(&self, port_name: &str, baud_rate: u32) -> Result<String, String> {
@@ -82,6 +85,41 @@ impl HardwareManager {
         // the chip runs and answers commands.
         let _ = serial.write_data_terminal_ready(false);
         let _ = serial.write_request_to_send(false);
+
+        // Identity check: with several USB-serial devices plugged in, a
+        // whitelisted port may belong to something else (second adapter,
+        // RFID reader). A real GymPOS controller answers PING with
+        // ACK:PONG in milliseconds; two attempts because the DTR edge
+        // above can land during the chip's own boot.
+        let mut verified = false;
+        for _ in 0..2 {
+            if serial.write_all(b"PING\n").and_then(|_| serial.flush()).is_err() {
+                break;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(450);
+            let mut buf = [0u8; 256];
+            while std::time::Instant::now() < deadline {
+                match serial.read(&mut buf) {
+                    Ok(0) => std::thread::sleep(Duration::from_millis(20)),
+                    Ok(n) => {
+                        if String::from_utf8_lossy(&buf[..n]).contains("ACK:PONG") {
+                            verified = true;
+                            break;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            if verified {
+                break;
+            }
+        }
+        if !verified {
+            return Err(format!(
+                "Port {} answered no PING — not a GymPOS controller (or still booting).",
+                port_name
+            ));
+        }
 
         // Clone the handle for the background EVT reader so line reads never
         // block command writes (which keep using the primary handle).

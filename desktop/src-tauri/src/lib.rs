@@ -158,29 +158,35 @@ pub fn run() {
         last_tailgate_alarm: Arc::new(std::sync::Mutex::new(None)),
     };
 
-    // ESP32 auto-detect: every 3s, connect to the controller automatically
-    // when it appears on a USB serial port (VID whitelist: FTDI/CP210x/CH34x/
-    // Espressif), and push the owner-branded idle screen. Write failures
-    // auto-clear the connection, so unplugging self-heals on the next pass.
+    // ESP32 auto-detect: every 3s, try EVERY candidate USB serial port (VID
+    // whitelist: FTDI/CP210x/CH34x/Espressif). connect() PING-verifies each,
+    // so with any number of other USB devices plugged in, only the real
+    // controller is kept; the branded idle screen is pushed on success, and
+    // write failures auto-clear so unplugging self-heals on the next pass.
     {
         let hw = hardware.clone();
         let db = db_arc;
         std::thread::spawn(move || loop {
             if !hw.is_connected() {
-                if let Some(port) = hw.find_esp_port() {
+                let mut connected_port: Option<String> = None;
+                for port in hw.find_esp_ports() {
                     match hw.connect(&port, 115200) {
                         Ok(_) => {
-                            tracing::info!("ESP32 auto-connected on {}", port);
-                            let brand = db
-                                .get_app_settings()
-                                .map(|s| s.gym_name)
-                                .unwrap_or_else(|_| "GymPOS".to_string());
-                            let _ = hw.set_idle_screen(&brand);
+                            connected_port = Some(port);
+                            break;
                         }
                         Err(e) => {
-                            tracing::debug!("ESP32 auto-connect on {} failed: {}", port, e)
+                            tracing::debug!("ESP32 candidate {} rejected: {}", port, e)
                         }
                     }
+                }
+                if let Some(port) = connected_port {
+                    tracing::info!("ESP32 auto-connected on {}", port);
+                    let brand = db
+                        .get_app_settings()
+                        .map(|s| s.gym_name)
+                        .unwrap_or_else(|_| "GymPOS".to_string());
+                    let _ = hw.set_idle_screen(&brand);
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(3));
