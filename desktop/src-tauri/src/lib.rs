@@ -189,7 +189,7 @@ pub fn run() {
                     let _ = hw.set_idle_screen(&brand);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_secs(2));
         });
     }
 

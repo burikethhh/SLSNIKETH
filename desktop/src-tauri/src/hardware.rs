@@ -227,34 +227,43 @@ impl HardwareManager {
     }
 
     /// Send a serial command with connection health checking.
-    /// Auto-clears the connection on write failure (broken pipe, device disconnected).
+    /// Retries twice on transient write errors (USB power sags during the
+    /// siren/relay blast are exactly the "disconnects at a crucial time"
+    /// failure) and only auto-clears the connection after the final failure.
     pub fn send_command(&self, cmd: &str) -> Result<(), String> {
-        let mut port_guard = self.port.lock();
-        if let Some(port) = port_guard.as_mut() {
-            let formatted = format!("{}\n", cmd.trim());
-            match port.write_all(formatted.as_bytes()) {
-                Ok(_) => {
-                    if let Err(e) = port.flush() {
-                        // Flush failure indicates connection degradation
-                        tracing::warn!("ESP32 flush error (connection may be degraded): {}", e);
+        let formatted = format!("{}\n", cmd.trim());
+        let mut last_err = String::new();
+        for attempt in 0..3 {
+            let mut port_guard = self.port.lock();
+            match port_guard.as_mut() {
+                Some(port) => {
+                    match port.write_all(formatted.as_bytes()).and_then(|_| port.flush()) {
+                        Ok(_) => return Ok(()),
+                        Err(e) => {
+                            last_err = format!("attempt {}: {}", attempt + 1, e);
+                            tracing::warn!(
+                                "ESP32 write failed ({}), {}",
+                                e,
+                                if attempt < 2 { "retrying" } else { "auto-clearing connection" }
+                            );
+                            std::thread::sleep(Duration::from_millis(80));
+                        }
                     }
-                    Ok(())
                 }
-                Err(e) => {
-                    // Write failure: device likely disconnected — auto-clear connection
-                    tracing::warn!("ESP32 write failed, auto-disconnecting: {}", e);
-                    *port_guard = None;
-                    drop(port_guard);
-                    let mut name_guard = self.connected_port_name.lock();
-                    *name_guard = None;
-                    drop(name_guard);
-                    self.stop_evt_reader();
-                    Err(format!("Hardware disconnected during write: {}. Port auto-cleared.", e))
+                None => {
+                    return Err("No active hardware COM port connection".to_string());
                 }
             }
-        } else {
-            Err("No active hardware COM port connection".to_string())
         }
+        // All retries failed — device likely disconnected: auto-clear so the
+        // UI shows NotConnected and the auto-detect loop can re-attach.
+        *self.port.lock() = None;
+        *self.connected_port_name.lock() = None;
+        self.stop_evt_reader();
+        Err(format!(
+            "Hardware disconnected during write ({}). Port auto-cleared — reconnecting automatically.",
+            last_err
+        ))
     }
 
     /// Show "ACCESS DENIED / <reason>" on the gate LCD + triple beep
