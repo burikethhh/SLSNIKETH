@@ -144,10 +144,11 @@ pub fn run() {
         None
     };
 
+    let hardware = HardwareManager::new();
     let app_context = AppContext {
-        db: db_arc,
+        db: db_arc.clone(),
         license: license_arc,
-        hardware: HardwareManager::new(),
+        hardware: hardware.clone(),
         face_store,
         session: Arc::new(parking_lot::RwLock::new(initial_session)),
         face_engine: Arc::new(face_engine),
@@ -156,6 +157,35 @@ pub fn run() {
         tailgate_policy,
         last_tailgate_alarm: Arc::new(std::sync::Mutex::new(None)),
     };
+
+    // ESP32 auto-detect: every 3s, connect to the controller automatically
+    // when it appears on a USB serial port (VID whitelist: FTDI/CP210x/CH34x/
+    // Espressif), and push the owner-branded idle screen. Write failures
+    // auto-clear the connection, so unplugging self-heals on the next pass.
+    {
+        let hw = hardware.clone();
+        let db = db_arc;
+        std::thread::spawn(move || loop {
+            if !hw.is_connected() {
+                if let Some(port) = hw.find_esp_port() {
+                    match hw.connect(&port, 115200) {
+                        Ok(_) => {
+                            tracing::info!("ESP32 auto-connected on {}", port);
+                            let brand = db
+                                .get_app_settings()
+                                .map(|s| s.gym_name)
+                                .unwrap_or_else(|_| "GymPOS".to_string());
+                            let _ = hw.set_idle_screen(&brand);
+                        }
+                        Err(e) => {
+                            tracing::debug!("ESP32 auto-connect on {} failed: {}", port, e)
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        });
+    }
 
     tauri::Builder::default()
         // GitHub-Releases auto-updater (signed; see updater.rs + tauri.conf

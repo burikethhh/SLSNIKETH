@@ -1787,18 +1787,23 @@ async function startAutonomousBiometricEngine() {
 
             if (!activeDoorPassageWindow) return;
             doorOpenFrameCount++;
-            // Alarm legs: 2+ in-ROI persons WITH ROI motion (>=2% pixel churn,
-            // kills YOLO ghost false alarms on posters/shadows), OR 2+ distinct
-            // tracked IDs having entered the ROI (tracks imply movement already).
-            const motion = (res && res.motion_in_roi) || 0;
-            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
+            // Alarm legs (OVERHEAD camera position): YOLO counts heads in the
+            // ROI — more than 1 person in a tick is suspicious, and 2
+            // consecutive suspicious ticks (700ms) confirm the alarm against
+            // single-frame YOLO ghosts. The old >=2% ROI-motion gate is gone:
+            // on a top-down view the pixel-churn fraction is tiny even with
+            // people in frame, and it suppressed valid multi-person hits.
+            // Tracked-ID leg (2+ distinct IDs entering the ROI) stays as an
+            // independent confirmation.
+            const multiCount = res && res.person_count > 1;
             const multiTracked = tracked.everCount >= 2;
-            if (multiStatic || multiTracked) {
+            if (multiCount || multiTracked) {
                 suspiciousFrames++;
                 // Immediate trigger when multi-occupancy confirmed across 2 ticks
                 if (suspiciousFrames >= TAILGATE_SUSPICIOUS_NEEDED) {
                     activeDoorPassageWindow = false;
                     clearTailgateOverlay();
+                    const motion = (res && res.motion_in_roi) || 0;
                     try {
                         const alarmRes = await invokeTauri('trigger_tailgate_alarm', {
                             reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`,

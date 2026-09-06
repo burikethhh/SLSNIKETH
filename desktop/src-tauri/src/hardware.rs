@@ -45,6 +45,23 @@ impl HardwareManager {
             .collect()
     }
 
+    /// USB VID whitelist for auto-detection: FTDI, SiLabs CP210x, WCH CH34x,
+    /// Espressif native USB-Serial/JTAG — the adapters every ESP32 board uses.
+    const AUTO_CONNECT_VIDS: [u16; 4] = [0x0403, 0x10C4, 0x1A86, 0x303A];
+
+    /// First USB serial port whose adapter VID matches a known ESP32 bridge.
+    /// Used by the auto-connect loop so plugging the controller in just works.
+    pub fn find_esp_port(&self) -> Option<String> {
+        for p in serialport::available_ports().unwrap_or_default() {
+            if let SerialPortType::UsbPort(info) = &p.port_type {
+                if Self::AUTO_CONNECT_VIDS.contains(&info.vid) {
+                    return Some(p.port_name);
+                }
+            }
+        }
+        None
+    }
+
     pub fn connect(&self, port_name: &str, baud_rate: u32) -> Result<String, String> {
         // Stop any previous EVT reader so a reconnect binds to the new port.
         if self.reader_running.load(Ordering::SeqCst) {
