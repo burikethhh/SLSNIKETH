@@ -15,6 +15,41 @@ pub struct Database {
 }
 
 impl Database {
+
+    /// One-time re-seal: plaintext legacy face-vector rows are encrypted in
+    /// place (same engine dimension vectors only) so at-rest protection covers
+    /// pre-existing data without touching recognition.
+    pub fn reseal_plain_face_vectors(&self, dim: usize) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, face_vector FROM members WHERE face_vector IS NOT NULL AND face_vector NOT LIKE 'ENC1:%'",
+        )?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+
+        let mut resealed = 0usize;
+        for (id, stored) in rows {
+            let Some(opened) = open_face_json(&stored) else { continue };
+            let Ok(vectors) = serde_json::from_str::<Vec<Vec<f32>>>(&opened) else { continue };
+            if vectors.is_empty() || vectors.iter().any(|v| v.len() != dim) {
+                continue; // wrong-dimension galleries are the migration's job
+            }
+            let sealed = seal_face_json(&opened);
+            if conn
+                .execute(
+                    "UPDATE members SET face_vector = ?1 WHERE id = ?2",
+                    params![sealed, id],
+                )
+                .is_ok()
+            {
+                resealed += 1;
+            }
+        }
+        Ok(resealed)
+    }
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         let db = Self {
@@ -423,7 +458,7 @@ impl Database {
         let vec_json = req
             .face_vector
             .as_ref()
-            .map(|v| serde_json::to_string(v).unwrap_or_default());
+            .map(|v| seal_face_json(&serde_json::to_string(v).unwrap_or_default()));
 
         conn.execute(
             "INSERT INTO walk_ins (id, guest_name, phone, amount_paid, payment_method, face_vector, created_at, expires_at)
@@ -487,6 +522,7 @@ impl Database {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
             let face_vector: Option<Vec<f32>> = vec_json
+                .and_then(|s| open_face_json(&s))
                 .and_then(|s| serde_json::from_str(&s).ok());
 
             Ok(WalkInRecord {
@@ -527,6 +563,7 @@ impl Database {
                 .unwrap_or_else(|_| Utc::now());
 
             let vector: Vec<f32> = vec_str
+                .and_then(|s| open_face_json(&s))
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default();
 
@@ -556,7 +593,9 @@ impl Database {
         let id = format!("MEM-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         let now = Utc::now();
         let now_str = now.to_rfc3339();
-        let vectors_json = serde_json::to_string(&req.face_vectors).unwrap_or_else(|_| "[]".to_string());
+        let vectors_json = seal_face_json(
+            &serde_json::to_string(&req.face_vectors).unwrap_or_else(|_| "[]".to_string()),
+        );
 
         conn.execute(
             "INSERT INTO members (id, first_name, last_name, email, phone, face_vector, status, membership_type, photo_data_url, created_at, updated_at)
@@ -599,7 +638,8 @@ impl Database {
 
         let member_rows = stmt.query_map([], |row| {
             let vectors_json: String = row.get(5)?;
-            let vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
+            let vectors: Vec<Vec<f32>> = serde_json::from_str(&open_face_json(&vectors_json).unwrap_or_default())
+                .unwrap_or_default();
             let created_str: String = row.get(8)?;
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -636,7 +676,8 @@ impl Database {
 
         let mut rows = stmt.query_map(params![id], |row| {
             let vectors_json: String = row.get(5)?;
-            let vectors: Vec<Vec<f32>> = serde_json::from_str(&vectors_json).unwrap_or_default();
+            let vectors: Vec<Vec<f32>> = serde_json::from_str(&open_face_json(&vectors_json).unwrap_or_default())
+                .unwrap_or_default();
             let created_str: String = row.get(8)?;
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
@@ -757,7 +798,9 @@ impl Database {
             }
         }
         let conn = self.conn.lock().unwrap();
-        let vectors_json = serde_json::to_string(vectors).unwrap_or_else(|_| "[]".to_string());
+        let vectors_json = seal_face_json(
+            &serde_json::to_string(vectors).unwrap_or_else(|_| "[]".to_string()),
+        );
         conn.execute(
             "UPDATE members SET face_vector = ?1, photo_data_url = COALESCE(?2, photo_data_url), is_synced = 0, updated_at = ?3 WHERE id = ?4",
             params![vectors_json, photo, Utc::now().to_rfc3339(), id],
@@ -2207,3 +2250,65 @@ mod tests {
         assert!(db.get_saved_terminal_session().unwrap().is_none());
     }
 }
+
+
+// ───────────── Biometric Vector Encryption at Rest ─────────────
+// Face vectors are biometric templates: stored with AES-256-GCM under a key
+// derived from this machine's hardware ID (see license::get_hwid). A copied
+// gympos_local.sqlite is useless on any other machine, and plaintext legacy
+// rows transparently re-seal on their next write. Format: "ENC1:" +
+// b64url(nonce[12] || ciphertext).
+static VEC_KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+
+fn vec_key() -> [u8; 32] {
+    *VEC_KEY.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"gympos-face-vec-v1|");
+        h.update(crate::license::get_hwid().as_bytes());
+        h.finalize().into()
+    })
+}
+
+fn seal_face_json(plaintext: &str) -> String {
+    use aes_gcm::aead::{Aead, AeadCore, KeyInit};
+    use aes_gcm::Aes256Gcm;
+    use base64::Engine as _;
+    let cipher = Aes256Gcm::new_from_slice(&vec_key()).expect("valid AES key");
+    let nonce = Aes256Gcm::generate_nonce(&mut aes_gcm::aead::OsRng);
+    let ct = cipher
+        .encrypt(&nonce, plaintext.as_bytes())
+        .expect("AES-GCM encrypt of in-memory plaintext");
+    let mut raw = Vec::with_capacity(12 + ct.len());
+    raw.extend_from_slice(nonce.as_slice());
+    raw.extend_from_slice(ct.as_slice());
+    format!(
+        "ENC1:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+    )
+}
+
+/// Opens a stored face-vector JSON blob: "ENC1:" prefixed values are
+/// decrypted, anything else is legacy plaintext passed through as-is.
+fn open_face_json(stored: &str) -> Option<String> {
+    use base64::Engine as _;
+    let stored = stored.trim();
+    if !stored.starts_with("ENC1:") {
+        return Some(stored.to_string());
+    }
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&stored[5..])
+        .ok()?;
+    if raw.len() < 13 {
+        return None;
+    }
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+    let cipher = Aes256Gcm::new_from_slice(&vec_key()).ok()?;
+    let (nonce, ct) = raw.split_at(12);
+    let plain = cipher
+        .decrypt(Nonce::from_slice(nonce), ct)
+        .ok()?;
+    String::from_utf8(plain).ok()
+}
+

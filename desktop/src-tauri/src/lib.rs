@@ -138,6 +138,98 @@ pub fn run() {
         }
     });
 
+    // Legacy gallery migration: members enrolled before the ArcFace upgrade
+    // carry 128-d SFace vectors the 512-d recognizer can never match — the
+    // only manual fix was re-scanning every member. The stored reference
+    // photo is re-embedded through the CURRENT recognizer in a background
+    // thread (one 512-d anchor beats five dead 128-d ones), replacing the
+    // gallery in SQLite + the in-memory store. Runs once per launch; the
+    // migration is self-terminating because upgraded vectors match dim.
+    let engine = std::sync::Arc::new(face_engine);
+    {
+        let db = db_arc.clone();
+        let store = face_store.clone();
+        let engine_for_thread = engine.clone();
+        std::thread::spawn(move || {
+            let Some(engine) = engine_for_thread.as_ref() else { return };
+            let dim = engine.embedding_dim();
+            std::thread::sleep(std::time::Duration::from_secs(6)); // let boot settle
+            let members = match db.list_members() {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("Legacy gallery migration skipped: {}", e);
+                    return;
+                }
+            };
+            let legacy: Vec<_> = members
+                .into_iter()
+                .filter(|m| !m.face_vectors.is_empty())
+                .filter(|m| m.face_vectors.iter().any(|v| v.len() != dim))
+                .filter(|m| {
+                    m.photo_data_url
+                        .as_deref()
+                        .map(|p| !p.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .collect();
+            // Seal any remaining plaintext legacy vector rows (at-rest hygiene)
+            match db.reseal_plain_face_vectors(dim) {
+                Ok(n) if n > 0 => tracing::info!("Re-sealed {} plaintext vector row(s) at rest", n),
+                _ => {}
+            }
+
+            if legacy.is_empty() {
+                return;
+            }
+            let old_dim = legacy[0]
+                .face_vectors
+                .first()
+                .map(|v| v.len())
+                .unwrap_or(0);
+            tracing::info!(
+                "Legacy gallery migration: {} member(s) ({}-d vectors) -> re-embedding reference photos at {}-d",
+                legacy.len(),
+                old_dim,
+                dim
+            );
+            let mut migrated = 0usize;
+            for m in &legacy {
+                let Some(photo) = m.photo_data_url.as_deref() else { continue };
+                let image = match crate::vision::decode_base64_image(photo) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        tracing::debug!("Migration {}: undecodable photo ({})", m.id, e);
+                        continue;
+                    }
+                };
+                match engine.detect_and_embed(&image) {
+                    Ok(Some((_, vec))) if vec.len() == dim => {
+                        let vectors = vec![vec];
+                        match db.update_member_vectors(&m.id, &vectors, Some(photo)) {
+                            Ok(updated) => {
+                                store.upsert(
+                                    updated.id.clone(),
+                                    format!("{} {}", updated.first_name, updated.last_name),
+                                    updated.face_vectors.clone(),
+                                );
+                                migrated += 1;
+                                tracing::info!(
+                                    "Migrated {} {} to {}-d gallery",
+                                    updated.first_name, updated.last_name, dim
+                                );
+                            }
+                            Err(e) => tracing::warn!("Migration {}: DB update failed: {}", m.id, e),
+                        }
+                    }
+                    Ok(_) => tracing::debug!("Migration {}: no face in stored photo — skipped", m.id),
+                    Err(e) => tracing::warn!("Migration {}: embed failed: {}", m.id, e),
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            tracing::info!("Legacy gallery migration complete: {migrated}/{} upgraded", legacy.len());
+        });
+    }
+
     let initial_session = if license_arc.current_status().is_operable() {
         db_arc.get_saved_terminal_session().unwrap_or(None)
     } else {
@@ -151,7 +243,7 @@ pub fn run() {
         hardware: hardware.clone(),
         face_store,
         session: Arc::new(parking_lot::RwLock::new(initial_session)),
-        face_engine: Arc::new(face_engine),
+        face_engine: engine,
         person_counter: Arc::new(person_counter),
         pin_gate: Arc::new(std::sync::Mutex::new(commands::PinGate::default())),
         tailgate_policy,
@@ -194,6 +286,16 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // Single-instance guard: a second launch focuses the existing window
+        // instead of fighting over the cameras and the SQLite database.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         // GitHub-Releases auto-updater (signed; see updater.rs + tauri.conf
         // plugins.updater). Registered before manage() so commands can use it.
         .plugin(tauri_plugin_updater::Builder::new().build())

@@ -436,12 +436,24 @@ pub fn get_dashboard_summary(state: State<'_, AppContext>) -> Result<serde_json:
 
 #[tauri::command]
 pub fn list_members(state: State<'_, AppContext>) -> Result<Vec<Member>, String> {
-    state.db.list_members().map_err(|e| e.to_string())
+    // BIOMETRIC HYGIENE: the UI never needs the raw face templates — only
+    // the recognition engine does (which reads them from SQLite directly).
+    // Stripping them here closes the bulk-gallery exfiltration path from
+    // the webview layer.
+    let mut members = state.db.list_members().map_err(|e| e.to_string())?;
+    for m in &mut members {
+        m.face_vectors = Vec::new();
+    }
+    Ok(members)
 }
 
 #[tauri::command]
 pub fn get_member(id: String, state: State<'_, AppContext>) -> Result<Option<Member>, String> {
-    state.db.get_member_by_id(&id).map_err(|e| e.to_string())
+    let mut member = state.db.get_member_by_id(&id).map_err(|e| e.to_string())?;
+    if let Some(m) = &mut member {
+        m.face_vectors = Vec::new();
+    }
+    Ok(member)
 }
 
 #[tauri::command]
