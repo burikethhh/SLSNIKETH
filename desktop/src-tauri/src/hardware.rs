@@ -20,6 +20,10 @@ pub struct HardwareManager {
     connected_port_name: Arc<Mutex<Option<String>>>,
     button_events: Arc<Mutex<Vec<HardwareButtonEvent>>>,
     reader_running: Arc<AtomicBool>,
+    /// When the relay last energized (unlock click) — the tailgate siren
+    /// defers past this window so relay coil + buzzer never slam the rail
+    /// together (brownout guard).
+    last_relay_on: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl HardwareManager {
@@ -29,7 +33,20 @@ impl HardwareManager {
             connected_port_name: Arc::new(Mutex::new(None)),
             button_events: Arc::new(Mutex::new(Vec::new())),
             reader_running: Arc::new(AtomicBool::new(false)),
+            last_relay_on: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Milliseconds since the relay last energized (u64::MAX = never / long ago).
+    pub fn relay_busy_ms(&self) -> u64 {
+        match *self.last_relay_on.lock() {
+            Some(t) => t.elapsed().as_millis() as u64,
+            None => u64::MAX,
+        }
+    }
+
+    fn mark_relay_energized(&self) {
+        *self.last_relay_on.lock() = Some(std::time::Instant::now());
     }
 
     pub fn list_available_ports() -> Vec<String> {
@@ -311,6 +328,7 @@ impl HardwareManager {
     }
 
     pub fn unlock_door(&self, duration_ms: u32) -> Result<String, String> {
+        self.mark_relay_energized();
         let secs = std::cmp::max(1, duration_ms / 1000);
         let cmd = format!("UNLOCK:{}", secs);
         self.send_command(&cmd)?;
@@ -318,6 +336,7 @@ impl HardwareManager {
     }
 
     pub fn grant_entry(&self, member_name: &str, duration_ms: u32) -> Result<String, String> {
+        self.mark_relay_energized();
         let secs = std::cmp::max(1, duration_ms / 1000);
         let clean_name: String = member_name.chars().take(16).collect();
         let cmd = format!("WELCOME:{}|{}", clean_name, secs);
@@ -326,6 +345,7 @@ impl HardwareManager {
     }
 
     pub fn grant_exit(&self, member_name: &str, duration_ms: u32) -> Result<String, String> {
+        self.mark_relay_energized();
         let secs = std::cmp::max(1, duration_ms / 1000);
         let clean_name: String = member_name.chars().take(16).collect();
         let cmd = format!("BYE:{}|{}", clean_name, secs);

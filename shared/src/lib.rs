@@ -322,6 +322,11 @@ pub struct CameraConfig {
     pub adapt_threshold: f32,
     #[serde(default = "default_liveness_min_px")]
     pub liveness_min_px: f32,
+    /// Camera assignment lock: when true, the boot sequence never
+    /// substitutes or re-shuffles cameras — the saved lane assignment is
+    /// kept exactly as the operator locked it (fixed USB insertions).
+    #[serde(default)]
+    pub camera_assignment_locked: bool,
     /// Gate scan distance: minimum face size (px) in frame before a scan
     /// triggers — the bigger the face box, the closer the person. Prevents
     /// accidental triggers from people passing far from the camera.
@@ -364,6 +369,7 @@ impl Default for CameraConfig {
             liveness_min_px: default_liveness_min_px(),
             scan_min_face_px: default_scan_min_face_px(),
             mog_sensitivity: default_mog_sensitivity(),
+            camera_assignment_locked: false,
         }
     }
 }

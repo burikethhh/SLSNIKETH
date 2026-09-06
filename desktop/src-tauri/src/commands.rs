@@ -339,11 +339,6 @@ pub fn trigger_tailgate_alarm(
         }
         due
     };
-    if siren_due {
-        // 1. Fire ESP32 hardware buzzer/strobe relay for 5 seconds
-        let _ = state.hardware.trigger_alarm(5000);
-    }
-
     // 2. Log attributed security violation (whose window + YOLO snapshot)
     let log = state
         .db
@@ -353,6 +348,36 @@ pub fn trigger_tailgate_alarm(
             person_count,
         )
         .map_err(|e| e.to_string())?;
+
+    if siren_due {
+        // BROWNOUT GUARD: the relay coil is still energized for ~3s after a
+        // verified scan (that is exactly when the tailgate window is armed),
+        // and firing the solid 5s siren into the same rail at the same
+        // instant is what browns the board out. Defer the blast until the
+        // relay opens — the incident is already logged either way.
+        const RELAY_ENERGIZED_MS: u64 = 3400;
+        let relay_busy_ms = state.hardware.relay_busy_ms();
+        if relay_busy_ms < RELAY_ENERGIZED_MS {
+            let wait = RELAY_ENERGIZED_MS - relay_busy_ms;
+            let hw = state.hardware.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(wait));
+                let _ = hw.trigger_alarm(5000);
+                tracing::info!("Deferred tailgate siren fired (relay safety gap {wait}ms)");
+            });
+            return Ok(json!({
+                "status": "ALARM_TRIGGERED",
+                "reason": reason.unwrap_or_else(|| "Turnstile ROI multi-occupancy violation".to_string()),
+                "siren_deferred_ms": wait,
+                "siren_suppressed": false,
+                "policy_enabled": policy.enabled,
+                "log": log
+            }));
+        }
+        // 1. Fire ESP32 hardware buzzer/strobe relay for 5 seconds
+        let _ = state.hardware.trigger_alarm(5000);
+    }
+
 
     Ok(json!({
         "status": "ALARM_TRIGGERED",

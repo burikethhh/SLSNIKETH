@@ -730,7 +730,12 @@ async function initCameraStreams() {
         // 1. Camera 1: Face Scan Entry
         if (!streamCam1 || !streamCam1.active) {
             const res1 = await getStreamForDevice(cfg.camera1_entry_device_id, 'entry');
-            if (res1.stream) {
+            if (res1.stream && cameraAssignmentLocked() && res1.recovered) {
+                // LOCKED: never shuffle the lane to a substitute camera — the
+                // slot stays reserved for the saved device (fixed USB rig).
+                try { res1.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+                setCameraSlotFeedback(1, 'bandwidth', "Locked: saved Camera 1 not present — slot reserved, will retry.");
+            } else if (res1.stream) {
                 streamCam1 = res1.stream;
                 streamCam1DeviceId = (res1.recovered && res1.recoveredDeviceId) ? res1.recoveredDeviceId : cfg.camera1_entry_device_id;
                 setCameraSlotFeedback(1, 'active');
@@ -759,11 +764,15 @@ async function initCameraStreams() {
                     streamCam2DeviceId = cfg.camera2_exit_device_id;
                     setCameraSlotFeedback(2, 'active');
                 } else if (res2.error) {
-                    setCameraSlotFeedback(2, 'bandwidth', "USB bus limit reached on shared hub. Mirroring Camera 1 until one camera is moved to a separate PC USB port.");
-                    // Fallback to streamCam1 so dashboard is never black
-                    if (streamCam1) {
-                        streamCam2 = streamCam1;
-                        streamCam2DeviceId = streamCam1DeviceId;
+                    if (cameraAssignmentLocked()) {
+                        setCameraSlotFeedback(2, 'bandwidth', "Locked: saved Camera 2 not present — slot reserved, will retry.");
+                    } else {
+                        setCameraSlotFeedback(2, 'bandwidth', "USB bus limit reached on shared hub. Mirroring Camera 1 until one camera is moved to a separate PC USB port.");
+                        // Fallback to streamCam1 so dashboard is never black
+                        if (streamCam1) {
+                            streamCam2 = streamCam1;
+                            streamCam2DeviceId = streamCam1DeviceId;
+                        }
                     }
                 }
             } else if (streamCam1) {
@@ -789,7 +798,10 @@ async function initCameraStreams() {
             }
 
             // If 3rd camera failed due to USB hub bandwidth limit:
-            if (!gotDedicatedCam3) {
+            if (!gotDedicatedCam3 && cameraAssignmentLocked()) {
+                setCameraSlotFeedback(3, 'bandwidth', "Locked: saved Camera 3 not present — slot reserved, will retry.");
+            }
+            if (!gotDedicatedCam3 && !cameraAssignmentLocked()) {
                 // Check if an alternate available camera can be used (e.g. laptop camera)
                 let altFound = false;
                 try {
@@ -942,6 +954,41 @@ async function triggerAlarmTest() {
     }
 }
 
+// Persist the EXACT assignment that is running right now: live lane device
+// ids + ROI calibration + recognition tuning, flagged locked so boot never
+// substitutes or shuffles cameras. One click = permanent.
+async function lockCameraAssignment() {
+    if (!appSettings.camera_config) appSettings.camera_config = {};
+    let wired = 0;
+    if (streamCam1DeviceId) { appSettings.camera_config.camera1_entry_device_id = streamCam1DeviceId; wired++; }
+    if (streamCam2DeviceId && streamCam2DeviceId !== streamCam1DeviceId) { appSettings.camera_config.camera2_exit_device_id = streamCam2DeviceId; wired++; }
+    if (streamCam3DeviceId && streamCam3DeviceId !== streamCam1DeviceId && streamCam3DeviceId !== streamCam2DeviceId) { appSettings.camera_config.camera3_tailgate_device_id = streamCam3DeviceId; wired++; }
+    if (!streamCam1DeviceId) { alert('No live Camera 1 to lock. Open a camera first.'); return; }
+
+    // ROI calibration (same collection as saveRoiCalibration)
+    const gid = (id, fb) => { const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : fb; };
+    appSettings.camera_config.roi_x = gid('slider-roi-x', 20.0);
+    appSettings.camera_config.roi_y = gid('slider-roi-y', 20.0);
+    appSettings.camera_config.roi_width = gid('slider-roi-w', 60.0);
+    appSettings.camera_config.roi_height = gid('slider-roi-h', 60.0);
+    appSettings.camera_config.roi_sensitivity = gid('slider-roi-sens', 85.0);
+    // Recognition tuning
+    appSettings.camera_config.match_threshold = gid('slider-match-thr', 0.62);
+    appSettings.camera_config.adapt_threshold = gid('slider-adapt-thr', 0.80);
+    appSettings.camera_config.liveness_min_px = gid('slider-live-px', 0.5);
+    appSettings.camera_config.scan_min_face_px = gid('slider-scan-dist', 120);
+    appSettings.camera_config.mog_sensitivity = gid('slider-mog-sens', 0.5);
+    appSettings.camera_config.camera_assignment_locked = true;
+
+    try {
+        await invokeTauri('save_app_settings', { settings: appSettings });
+        showHudToast('Cameras Locked', wired + ' camera(s) + ROI + tuning persisted. This exact assignment loads on every start.', 'success');
+        await initCameraStreams();
+    } catch (e) {
+        alert('Failed to lock camera assignment: ' + e);
+    }
+}
+
 async function saveCameraRouting() {
     const sel1 = document.getElementById('cam-assign-entry');
     const sel2 = document.getElementById('cam-assign-exit');
@@ -1059,6 +1106,13 @@ function tuningCfg() {
         mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
         scan_min_face_px: cfg.scan_min_face_px ?? 120,
     };
+}
+
+// Camera assignment lock: when the operator locks the assignment, the boot
+// sequence never substitutes or re-shuffles lanes — a missing camera keeps
+// its slot reserved until it reappears (fixed USB rig, insertions untouched).
+function cameraAssignmentLocked() {
+    return !!(appSettings.camera_config && appSettings.camera_config.camera_assignment_locked);
 }
 
 // Gate scan distance: the face box must be at least this wide (px) for a
@@ -1844,7 +1898,11 @@ async function startAutonomousBiometricEngine() {
                             personCount: res.person_count
                         }).catch(() => null);
                         activeWindowMemberId = null;
-                        const sirenNote = alarmRes && alarmRes.siren_suppressed
+                        const sirenNote = !alarmRes
+                            ? ''
+                            : alarmRes.siren_deferred_ms
+                            ? ` Siren deferred ${alarmRes.siren_deferred_ms}ms (relay safety gap — anti-brownout).`
+                            : alarmRes.siren_suppressed
                             ? ' Siren held (log-only mode or cooldown) — incident recorded.'
                             : ' Hardware Siren Active!';
 
