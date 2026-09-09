@@ -24,14 +24,13 @@ test.describe('desktop webview', () => {
     await expect(page.locator('.nav-item', { hasText: 'Hardware Settings' })).toBeVisible();
   });
 
-  test('dashboard metrics + 3 camera boxes', async ({ page }) => {
+  test('dashboard metrics + 2 camera boxes', async ({ page }) => {
     await expect(page.locator('#view-dashboard')).toBeVisible();
     await expect(page.locator('#stat-active-members')).toBeVisible();
     await expect(page.locator('#stat-checkins')).toBeVisible();
     await expect(page.locator('#dash-cam1-entry')).toBeAttached();
     await expect(page.locator('#dash-cam2-exit')).toBeAttached();
-    await expect(page.locator('#dash-cam3-tailgate')).toBeAttached();
-    await expect(page.locator('#dash-roi-overlay')).toBeVisible();
+    await expect(page.locator('#dash-cam3-tailgate')).toHaveCount(0);
   });
 
   test('switchView interbranch renders metrics + search flex fix', async ({ page }) => {
@@ -60,7 +59,7 @@ test.describe('desktop webview', () => {
     await expect(page.locator('#member-tier-filter')).toBeVisible();
   });
 
-  test('live gate kiosk shows 3 cameras + gate log', async ({ page }) => {
+  test('live gate kiosk shows 2 cameras + gate log', async ({ page }) => {
     await page.click('text=Live Gate / Kiosk');
     await expect(page.locator('#view-attendance')).toBeVisible();
     await expect(page.locator('#kiosk-cam1-entry')).toBeAttached();

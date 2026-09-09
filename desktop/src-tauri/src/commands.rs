@@ -26,21 +26,9 @@ pub struct AppContext {
     /// (e.g. missing `desktop/models/*.onnx`) — callers of `scan_face_frame`
     /// get a clear error instead of a panic in that case.
     pub face_engine: Arc<Option<FaceEngine>>,
-    /// Person counter for overhead Camera 3 anti-tailgate ROI
-    /// (`yolov8n.onnx`). `None` when the model failed to load — callers of
-    /// `count_persons_in_frame` get a clear error instead of a panic.
-    pub person_counter: Arc<Option<crate::vision::PersonCounter>>,
     /// Brute-force defense for the 4-8 digit staff PIN pad (only 10^4-10^8
     /// combinations, so an unlocked kiosk must not accept unlimited guesses).
     pub pin_gate: Arc<std::sync::Mutex<PinGate>>,
-    /// Last-known remote tailgate policy for this branch (Phase A-D),
-    /// refreshed by the sync worker from `SyncResponse.tailgate_policy`.
-    /// Defaults to enabled + 300s siren cooldown when the cloud has no row.
-    pub tailgate_policy: Arc<parking_lot::RwLock<gympos_shared::TailgatePolicy>>,
-    /// When the siren last blasted. Incident ROWS are always written (evidence
-    /// must never be dropped), but the physical siren is rate-limited by the
-    /// policy cooldown so a lingering crowd doesn't strobe the gym.
-    pub last_tailgate_alarm: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// Consecutive-failure lockout for staff PIN entry: after 5 wrong PINs the
@@ -315,80 +303,6 @@ pub fn unlock_magnetic_lock(
 
 
 #[tauri::command]
-pub fn trigger_tailgate_alarm(
-    reason: Option<String>,
-    linked_member_id: Option<String>,
-    person_count: Option<i32>,
-    state: State<'_, AppContext>,
-) -> Result<serde_json::Value, String> {
-    // Phase A-D: incident rows are ALWAYS written (evidence first). The siren
-    // honors the remote policy: disabled branches log silently, and repeat
-    // blasts inside the cooldown window are suppressed (still logged).
-    let policy = state.tailgate_policy.read().clone();
-    let siren_due = if !policy.enabled {
-        false
-    } else {
-        let mut last = state.last_tailgate_alarm.lock().expect("alarm clock poisoned");
-        let now = std::time::Instant::now();
-        let due = match *last {
-            Some(t) => now.duration_since(t).as_secs() >= policy.siren_cooldown_secs,
-            None => true,
-        };
-        if due {
-            *last = Some(now);
-        }
-        due
-    };
-    // 2. Log attributed security violation (whose window + YOLO snapshot)
-    let log = state
-        .db
-        .log_tailgate_incident(
-            linked_member_id.as_deref(),
-            "⚠️ Tailgate Intrusion",
-            person_count,
-        )
-        .map_err(|e| e.to_string())?;
-
-    if siren_due {
-        // BROWNOUT GUARD: the relay coil is still energized for ~3s after a
-        // verified scan (that is exactly when the tailgate window is armed),
-        // and firing the solid 5s siren into the same rail at the same
-        // instant is what browns the board out. Defer the blast until the
-        // relay opens — the incident is already logged either way.
-        const RELAY_ENERGIZED_MS: u64 = 3400;
-        let relay_busy_ms = state.hardware.relay_busy_ms();
-        if relay_busy_ms < RELAY_ENERGIZED_MS {
-            let wait = RELAY_ENERGIZED_MS - relay_busy_ms;
-            let hw = state.hardware.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(wait));
-                let _ = hw.trigger_alarm(5000);
-                tracing::info!("Deferred tailgate siren fired (relay safety gap {wait}ms)");
-            });
-            return Ok(json!({
-                "status": "ALARM_TRIGGERED",
-                "reason": reason.unwrap_or_else(|| "Turnstile ROI multi-occupancy violation".to_string()),
-                "siren_deferred_ms": wait,
-                "siren_suppressed": false,
-                "policy_enabled": policy.enabled,
-                "log": log
-            }));
-        }
-        // 1. Fire ESP32 hardware buzzer/strobe relay for 5 seconds
-        let _ = state.hardware.trigger_alarm(5000);
-    }
-
-
-    Ok(json!({
-        "status": "ALARM_TRIGGERED",
-        "reason": reason.unwrap_or_else(|| "Turnstile ROI multi-occupancy violation".to_string()),
-        "siren_suppressed": !siren_due,
-        "policy_enabled": policy.enabled,
-        "log": log
-    }))
-}
-
-#[tauri::command]
 pub fn list_interbranch_members(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     let detailed = state.db.list_interbranch_members_detailed().map_err(|e| e.to_string())?;
     // Also return local gym context for client-side filtering if needed
@@ -595,52 +509,6 @@ pub async fn scan_face_frame(image_base64: String, state: State<'_, AppContext>)
     }
 }
 
-/// Counts persons inside the overhead Camera 3 ROI using the bundled
-/// `yolov8n.onnx` (`crate::vision::PersonCounter`). Called once per 350ms
-/// tick by `armDoorOpenTailgateSurveillance` in the webview during the
-/// 7.5s door-open window; `person_count > 1` (fused with ROI motion and
-/// per-box tracking) means tailgating.
-#[tauri::command]
-pub async fn count_persons_in_frame(
-    image_base64: String,
-    roi_x: f32,
-    roi_y: f32,
-    roi_width: f32,
-    roi_height: f32,
-    state: State<'_, AppContext>,
-) -> Result<serde_json::Value, String> {
-    check_license_active(&state)?;
-    let counter_opt = state.person_counter.clone();
-    // MOG sensitivity follows Hardware Settings (Recognition Tuning).
-    let (mog_sensitivity, yolo_conf) = {
-        let cfg = state
-            .db
-            .get_app_settings()
-            .ok()
-            .and_then(|s| s.camera_config);
-        let mog = cfg.as_ref().map(|c| c.mog_sensitivity).unwrap_or(0.5);
-        // Optical Anti-Tailgate Sensitivity (50-99%): higher % = lower YOLO
-        // confidence floor = more detections. 85% (default) == 0.45.
-        let sens = cfg.as_ref().map(|c| c.roi_sensitivity).unwrap_or(85.0);
-        let conf = (0.45 + (85.0 - sens) * 0.005).clamp(0.30, 0.60);
-        (mog, conf)
-    };
-    let image = crate::vision::decode_base64_image(&image_base64)?;
-    // YOLO inference off the async path — tailgate ticks every 350ms must
-    // never queue behind each other on the Tauri worker.
-    let (count, boxes, motion_in_roi) = tauri::async_runtime::spawn_blocking(move || {
-        let counter = counter_opt
-            .as_ref()
-            .as_ref()
-            .ok_or_else(|| "Person counter unavailable: yolov8n.onnx failed to load".to_string())?;
-        counter.set_motion_sensitivity(mog_sensitivity);
-        counter.count_and_locate_in_roi(&image, roi_x, roi_y, roi_width, roi_height, yolo_conf)
-    })
-    .await
-    .map_err(|e| format!("Person-count task failed: {}", e))??;
-    Ok(json!({ "person_count": count, "boxes": boxes, "motion_in_roi": motion_in_roi }))
-}
-
 #[tauri::command]
 pub fn process_face_scan(
     probe_vector: Vec<f32>,
@@ -805,40 +673,9 @@ pub fn process_face_scan(
 }
 
 #[tauri::command]
-pub fn log_tailgate_event(state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
-    let _ = state.hardware.trigger_alarm(5000);
-    let log = state
-        .db
-        .log_tailgate_incident(None, "⚠️ Tailgate Intrusion", None)
-        .map_err(|e| e.to_string())?;
-
-    Ok(json!({
-        "alert": "Tailgating violation flagged",
-        "log": log
-    }))
-}
-
-#[tauri::command]
 pub fn list_recent_attendance(limit: Option<usize>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
     let logs = state.db.list_recent_attendance(limit.unwrap_or(20)).map_err(|e| e.to_string())?;
     Ok(json!(logs))
-}
-
-/// Phase D: tailgate incident history for the exe resolve-view (newest first).
-#[tauri::command]
-pub fn list_tailgate_incidents(limit: Option<usize>, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
-    let logs = state.db.list_tailgate_incidents(limit.unwrap_or(50)).map_err(|e| e.to_string())?;
-    let unacked = state.db.count_unacked_tailgates().unwrap_or(0);
-    Ok(json!({ "incidents": logs, "unacked": unacked }))
-}
-
-/// Phase D: marks a local tailgate incident reviewed (manager+). Cloud
-/// acknowledgement stays on the dashboards; this clears the local queue.
-#[tauri::command]
-pub fn resolve_tailgate_incident(id: String, state: State<'_, AppContext>) -> Result<serde_json::Value, String> {
-    require_role(&state, &[StaffRole::Manager, StaffRole::Owner])?;
-    let updated = state.db.resolve_tailgate_incident(&id).map_err(|e| e.to_string())?;
-    Ok(json!({ "resolved": updated }))
 }
 
 // --- POS Store Commands ---
@@ -906,10 +743,18 @@ pub fn checkout_pos_sale(
 }
 
 #[tauri::command]
-pub fn renew_member(id: String, state: State<'_, AppContext>) -> Result<Member, String> {
+pub fn renew_member(
+    id: String,
+    expires_at: Option<String>,
+    duration_days: Option<i64>,
+    state: State<'_, AppContext>,
+) -> Result<Member, String> {
     check_license_active(&state)?;
     require_manager(&state)?;
-    state.db.renew_member(&id).map_err(|e| e.to_string())
+    state
+        .db
+        .renew_member(&id, expires_at, duration_days)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

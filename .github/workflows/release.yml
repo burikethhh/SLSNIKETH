@@ -61,8 +61,7 @@ jobs:
         run: |
           $models = @(
             "desktop/models/face_detection_yunet_2023mar.onnx",
-            "desktop/models/face_recognition_sface_2021dec.onnx",
-            "desktop/models/yolov8n.onnx"
+            "desktop/models/face_recognition_sface_2021dec.onnx"
           )
           foreach ($m in $models) {
             if (-not (Test-Path $m)) {
@@ -90,7 +89,7 @@ jobs:
 
             ### What's included
             - GymPOS desktop application (fully offline-capable)
-            - ONNX AI models bundled (face detection/recognition + anti-tailgate YOLOv8)
+            - ONNX AI models bundled (face detection/recognition for entry + exit cameras)
             - Owner-issued staff PINs only — no default credentials (create staff in the Owner Portal)
             - Auto-updater (terminals self-update from this release, signature-verified)
 

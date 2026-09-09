@@ -167,7 +167,6 @@ GPOS-<base64_url_claims>.<base64_url_signature>
 Located in `gympos-saas/desktop/models/`:
 - **Face Detection**: `face_detection_yunet_2023mar.onnx`
 - **Face Recognition**: `face_recognition_sface_2021dec.onnx` (128-d normalized embeddings)
-- **Anti-Tailgating**: `yolov8n.onnx` (Person tracking & multi-occupancy trigger)
 
 ---
 

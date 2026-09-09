@@ -5,7 +5,7 @@ use gympos_shared::{
     ProductItem, PromoVoucherConfig, RemoteCatalogProduct, SaleTransaction, StaffAccount, StaffRole, TerminalSession,
     UpdateCoachRequest, UpdateMemberRequest, UpdateProductRequest, WalkInRecord,
 };
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use std::path::Path;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -126,10 +126,10 @@ impl Database {
                 direction TEXT NOT NULL, -- 'in' or 'out'
                 timestamp TEXT NOT NULL,
                 confidence REAL,
+                -- Legacy columns from the removed anti-tailgate feature:
+                -- no new rows set them, but history stays queryable.
                 tailgate_flag INTEGER NOT NULL DEFAULT 0,
                 synced_to_cloud INTEGER NOT NULL DEFAULT 0,
-                -- Phase A-D tailgate incidents: whose window was piggybacked,
-                -- YOLO count snapshot, local acknowledge state.
                 linked_member_id TEXT,
                 person_count INTEGER,
                 acknowledged INTEGER NOT NULL DEFAULT 0,
@@ -582,6 +582,32 @@ impl Database {
 
     // --- Member CRUD ---
 
+    /// Parse a member date supplied by the UI. Accepts full RFC3339
+    /// (`2022-03-15T00:00:00Z`, `2022-03-15T08:00:00+08:00`) or plain
+    /// date-only (`2022-03-15`, treated as local-midnight UTC).
+    /// Returns `Ok(None)` for missing/blank input (caller applies defaults).
+    fn parse_member_date(raw: &Option<String>) -> std::result::Result<Option<DateTime<Utc>>, String> {
+        let s = match raw {
+            None => return Ok(None),
+            Some(v) if v.trim().is_empty() => return Ok(None),
+            Some(v) => v.trim().to_string(),
+        };
+        if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+            return Ok(Some(dt.with_timezone(&Utc)));
+        }
+        // Date-only fallback: YYYY-MM-DD -> midnight UTC.
+        if s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-' {
+            let midnight = format!("{}T00:00:00Z", s);
+            if let Ok(dt) = DateTime::parse_from_rfc3339(&midnight) {
+                return Ok(Some(dt.with_timezone(&Utc)));
+            }
+        }
+        Err(format!(
+            "Invalid date '{}': use YYYY-MM-DD or full ISO-8601 (e.g. 2022-03-15)",
+            s
+        ))
+    }
+
     pub fn count_members(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM members WHERE status = 'active'", [], |r| r.get(0))?;
@@ -592,14 +618,27 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = format!("MEM-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
         let now = Utc::now();
-        let now_str = now.to_rfc3339();
+        // Join date defaults to enrollment time; backdate via `created_at`
+        // for members who joined before this system existed.
+        let joined_at = Self::parse_member_date(&req.created_at)
+            .map_err(rusqlite::Error::InvalidParameterName)?
+            .unwrap_or(now);
+        let expires_at = Self::parse_member_date(&req.expires_at)
+            .map_err(rusqlite::Error::InvalidParameterName)?;
+        if let Some(exp) = expires_at {
+            if exp < joined_at {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Expiry date cannot be earlier than the join date".to_string(),
+                ));
+            }
+        }
         let vectors_json = seal_face_json(
             &serde_json::to_string(&req.face_vectors).unwrap_or_else(|_| "[]".to_string()),
         );
 
         conn.execute(
-            "INSERT INTO members (id, first_name, last_name, email, phone, face_vector, status, membership_type, photo_data_url, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10)",
+            "INSERT INTO members (id, first_name, last_name, email, phone, face_vector, status, membership_type, photo_data_url, created_at, updated_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 req.first_name,
@@ -609,8 +648,9 @@ impl Database {
                 vectors_json,
                 req.membership_type,
                 req.photo_data_url,
-                now_str,
-                now_str
+                joined_at.to_rfc3339(),
+                now.to_rfc3339(),
+                expires_at.map(|e| e.to_rfc3339()),
             ],
         )?;
 
@@ -624,15 +664,15 @@ impl Database {
             status: "active".to_string(),
             face_vectors: req.face_vectors.clone(),
             photo_data_url: req.photo_data_url.clone(),
-            created_at: now,
-            expires_at: None,
+            created_at: joined_at,
+            expires_at,
         })
     }
 
     pub fn list_members(&self) -> Result<Vec<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url, expires_at
              FROM members ORDER BY created_at DESC",
         )?;
 
@@ -644,6 +684,11 @@ impl Database {
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
+            let expires_at = row
+                .get::<_, Option<String>>(10)
+                .unwrap_or(None)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
 
             Ok(Member {
                 id: row.get(0)?,
@@ -656,7 +701,7 @@ impl Database {
                 membership_type: row.get(7)?,
                 photo_data_url: row.get::<_, Option<String>>(9).unwrap_or(None),
                 created_at,
-                expires_at: None,
+                expires_at,
             })
         })?;
 
@@ -670,7 +715,7 @@ impl Database {
     pub fn get_member_by_id(&self, id: &str) -> Result<Option<Member>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url
+            "SELECT id, first_name, last_name, email, phone, face_vector, status, membership_type, created_at, photo_data_url, expires_at
              FROM members WHERE id = ?1",
         )?;
 
@@ -682,6 +727,11 @@ impl Database {
             let created_at = chrono::DateTime::parse_from_rfc3339(&created_str)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now());
+            let expires_at = row
+                .get::<_, Option<String>>(10)
+                .unwrap_or(None)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
 
             Ok(Member {
                 id: row.get(0)?,
@@ -694,7 +744,7 @@ impl Database {
                 membership_type: row.get(7)?,
                 photo_data_url: row.get::<_, Option<String>>(9).unwrap_or(None),
                 created_at,
-                expires_at: None,
+                expires_at,
             })
         })?;
 
@@ -706,8 +756,51 @@ impl Database {
     }
 
     pub fn update_member(&self, req: &UpdateMemberRequest) -> Result<Member> {
+        // Resolve date overrides before taking the write lock. Semantics:
+        // - created_at: None/blank = keep existing join date.
+        // - expires_at: None = keep existing; blank string = clear to no expiry.
+        let new_join = Self::parse_member_date(&req.created_at)
+            .map_err(rusqlite::Error::InvalidParameterName)?;
+        let clear_expiry = matches!(&req.expires_at, Some(s) if s.trim().is_empty());
+        let new_expiry = Self::parse_member_date(&req.expires_at)
+            .map_err(rusqlite::Error::InvalidParameterName)?;
+
         let conn = self.conn.lock().unwrap();
         let now = Utc::now();
+        // Read existing dates to support keep/clear semantics + validation.
+        let existing: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT created_at, expires_at FROM members WHERE id = ?1",
+                params![req.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| e)?;
+        let (existing_join, existing_expiry) = existing
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+        let final_join = new_join.unwrap_or_else(|| {
+            DateTime::parse_from_rfc3339(&existing_join)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or(now)
+        });
+        let final_expiry = if clear_expiry {
+            None
+        } else {
+            new_expiry.or_else(|| {
+                existing_expiry.and_then(|s| {
+                    DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                })
+            })
+        };
+        if let Some(exp) = final_expiry {
+            if exp < final_join {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Expiry date cannot be earlier than the join date".to_string(),
+                ));
+            }
+        }
         conn.execute(
             "UPDATE members SET
                 first_name = ?1,
@@ -717,8 +810,10 @@ impl Database {
                 membership_type = ?5,
                 status = ?6,
                 photo_data_url = COALESCE(?7, photo_data_url),
-                updated_at = ?8
-             WHERE id = ?9",
+                created_at = ?8,
+                expires_at = ?9,
+                updated_at = ?10
+             WHERE id = ?11",
             params![
                 req.first_name,
                 req.last_name,
@@ -727,6 +822,8 @@ impl Database {
                 req.membership_type,
                 req.status,
                 req.photo_data_url,
+                final_join.to_rfc3339(),
+                final_expiry.map(|e| e.to_rfc3339()),
                 now.to_rfc3339(),
                 req.id
             ],
@@ -749,14 +846,29 @@ impl Database {
         Ok(())
     }
 
-    /// Renew: status back to active + expiry pushed 30 days out (standard membership renewal).
-    pub fn renew_member(&self, id: &str) -> Result<Member> {
-        let conn = self.conn.lock().unwrap();
+    /// Renew: status back to active + expiry set explicitly or pushed
+    /// `duration_days` out (default 30). An explicit `expires_at` override
+    /// lets staff align renewals to a chosen billing date.
+    pub fn renew_member(
+        &self,
+        id: &str,
+        expires_at: Option<String>,
+        duration_days: Option<i64>,
+    ) -> Result<Member> {
+        let explicit = Self::parse_member_date(&expires_at)
+            .map_err(rusqlite::Error::InvalidParameterName)?;
         let now = Utc::now();
-        let new_exp = (now + chrono::Duration::days(30)).to_rfc3339();
+        let new_exp = match explicit {
+            Some(dt) => dt,
+            None => {
+                let days = duration_days.unwrap_or(30).clamp(1, 3650);
+                now + chrono::Duration::days(days)
+            }
+        };
+        let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE members SET status = 'active', expires_at = ?1, updated_at = ?2 WHERE id = ?3",
-            params![new_exp, now.to_rfc3339(), id],
+            params![new_exp.to_rfc3339(), now.to_rfc3339(), id],
         )?;
         drop(conn);
         self.get_member_by_id(id)?
@@ -946,40 +1058,6 @@ impl Database {
         })
     }
 
-    /// Phase A-D: logs a tailgate incident with attribution — whose admitted
-    /// window was piggybacked (`linked_member_id`) plus the YOLO count
-    /// snapshot. `member_id` stays NULL (the intruder is unknown by design).
-    pub fn log_tailgate_incident(
-        &self,
-        linked_member_id: Option<&str>,
-        display_name: &str,
-        person_count: Option<i32>,
-    ) -> Result<AttendanceRecord> {
-        let conn = self.conn.lock().unwrap();
-        let id = format!("ATT-{}", Uuid::new_v4().to_string()[..8].to_uppercase());
-        let now = Utc::now();
-        let now_str = now.to_rfc3339();
-
-        conn.execute(
-            "INSERT INTO attendance_logs (id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, synced_to_cloud, linked_member_id, person_count, acknowledged)
-             VALUES (?1, NULL, ?2, 'in', ?3, NULL, 1, 0, ?4, ?5, 0)",
-            params![id, display_name, now_str, linked_member_id, person_count],
-        )?;
-
-        Ok(AttendanceRecord {
-            id,
-            member_id: None,
-            member_name: Some(display_name.to_string()),
-            direction: "in".to_string(),
-            confidence: None,
-            tailgate_flag: true,
-            timestamp: now,
-            sync_status: "pending".to_string(),
-            linked_member_id: linked_member_id.map(|s| s.to_string()),
-            person_count,
-        })
-    }
-
     pub fn list_recent_attendance(&self, limit: usize) -> Result<Vec<AttendanceRecord>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1014,53 +1092,9 @@ impl Database {
         Ok(list)
     }
 
-    /// Phase D: tailgate incident history for the exe resolve-view (newest
-    /// first). Uses `unwrap_or` on the Phase-A columns so pre-migration
-    /// databases that somehow missed the ALTER still read instead of erroring.
-    pub fn list_tailgate_incidents(&self, limit: usize) -> Result<Vec<AttendanceRecord>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, member_id, member_name, direction, timestamp, confidence, tailgate_flag, linked_member_id, person_count
-             FROM attendance_logs WHERE tailgate_flag = 1 ORDER BY timestamp DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
-            let time_str: String = row.get(4)?;
-            let timestamp = chrono::DateTime::parse_from_rfc3339(&time_str)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-            Ok(AttendanceRecord {
-                id: row.get(0)?,
-                member_id: row.get(1)?,
-                member_name: row.get(2)?,
-                direction: row.get(3)?,
-                timestamp,
-                confidence: row.get(5)?,
-                tailgate_flag: true,
-                sync_status: "synced".to_string(),
-                linked_member_id: row.get(7).unwrap_or(None),
-                person_count: row.get(8).unwrap_or(None),
-            })
-        })?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
-        }
-        Ok(list)
-    }
-
-    /// Phase D: marks a local tailgate incident reviewed. Returns true when a
-    /// row was actually updated. Cloud acknowledgement is separate (owner/CEO
-    /// ack via the dashboards); this only clears the local queue badge.
-    pub fn resolve_tailgate_incident(&self, id: &str) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let n = conn.execute(
-            "UPDATE attendance_logs SET acknowledged = 1 WHERE id = ?1 AND tailgate_flag = 1",
-            params![id],
-        )?;
-        Ok(n > 0)
-    }
-
-    /// Phase D: unreviewed local tailgate incidents (drives the exe badge).
+    /// Historical tailgate incidents stay queryable in `attendance_logs`
+    /// (legacy rows), but nothing writes new ones since the feature removal.
+    /// This count now only reflects pre-removal history.
     pub fn count_unacked_tailgates(&self) -> Result<usize> {
         let conn = self.conn.lock().unwrap();
         let count: i64 = conn.query_row(
@@ -2145,6 +2179,8 @@ mod tests {
             membership_type: "regular".to_string(),
             face_vectors: vec![vec![0.1; 128]],
             photo_data_url: None,
+            created_at: None,
+            expires_at: None,
         };
 
         let member = db.create_member(&req).unwrap();
@@ -2208,11 +2244,93 @@ mod tests {
             membership_type: "regular".to_string(),
             face_vectors: vec![vec![0.1; 128]],
             photo_data_url: None,
+            created_at: None,
+            expires_at: None,
         };
         let other = db.create_member(&other_req).unwrap();
         db.schedule_session(&coach.id, &coach.name, &other.id, "Other Member", "2026-09-07T10:00:00Z", 60).unwrap();
         db.delete_coach(&coach.id).unwrap();
         assert!(!db.list_coaches().unwrap().iter().any(|c| c.id == coach.id));
+    }
+
+    #[test]
+    fn test_member_join_and_expiry_backdate() {
+        use gympos_shared::UpdateMemberRequest;
+        let db = Database::in_memory().unwrap();
+
+        // 1. Register with a pre-system join date + explicit expiry.
+        let req = CreateMemberRequest {
+            first_name: "Legacy".to_string(),
+            last_name: "Member".to_string(),
+            email: "legacy@example.com".to_string(),
+            phone: "09170000001".to_string(),
+            membership_type: "regular".to_string(),
+            face_vectors: vec![vec![0.1; 128]],
+            photo_data_url: None,
+            created_at: Some("2022-03-15".to_string()),
+            expires_at: Some("2022-04-15".to_string()),
+        };
+        let member = db.create_member(&req).unwrap();
+        assert_eq!(member.created_at.format("%Y-%m-%d").to_string(), "2022-03-15");
+        assert_eq!(
+            member.expires_at.unwrap().format("%Y-%m-%d").to_string(),
+            "2022-04-15"
+        );
+
+        // 2. list/get round-trip preserves both dates.
+        let listed = db.list_members().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].created_at.format("%Y-%m-%d").to_string(), "2022-03-15");
+        assert!(listed[0].expires_at.is_some());
+
+        // 3. Edit both dates.
+        let upd = UpdateMemberRequest {
+            id: member.id.clone(),
+            first_name: "Legacy".to_string(),
+            last_name: "Member".to_string(),
+            email: "legacy@example.com".to_string(),
+            phone: "09170000001".to_string(),
+            membership_type: "regular".to_string(),
+            status: "active".to_string(),
+            photo_data_url: None,
+            created_at: Some("2021-01-10".to_string()),
+            expires_at: Some("2026-01-10T00:00:00Z".to_string()),
+        };
+        let updated = db.update_member(&upd).unwrap();
+        assert_eq!(updated.created_at.format("%Y-%m-%d").to_string(), "2021-01-10");
+        assert_eq!(updated.expires_at.unwrap().format("%Y-%m-%d").to_string(), "2026-01-10");
+
+        // 4. Expiry earlier than join is rejected.
+        let bad = UpdateMemberRequest {
+            created_at: None,
+            expires_at: Some("2020-01-01".to_string()),
+            ..upd.clone()
+        };
+        assert!(db.update_member(&bad).is_err());
+
+        // 5. Blank expiry clears it; blank join keeps it.
+        let clear = UpdateMemberRequest {
+            created_at: Some("".to_string()),
+            expires_at: Some("".to_string()),
+            ..upd.clone()
+        };
+        let cleared = db.update_member(&clear).unwrap();
+        assert_eq!(cleared.created_at.format("%Y-%m-%d").to_string(), "2021-01-10");
+        assert!(cleared.expires_at.is_none());
+
+        // 6. Renew honors an explicit expiry override.
+        let renewed = db
+            .renew_member(&member.id, Some("2027-06-30".to_string()), None)
+            .unwrap();
+        assert_eq!(renewed.status, "active");
+        assert_eq!(renewed.expires_at.unwrap().format("%Y-%m-%d").to_string(), "2027-06-30");
+
+        // 7. Invalid date strings are rejected, not silently stored.
+        let bad_create = CreateMemberRequest {
+            created_at: Some("not-a-date".to_string()),
+            ..req.clone()
+        };
+        assert!(db.create_member(&bad_create).is_err());
     }
 
     #[test]

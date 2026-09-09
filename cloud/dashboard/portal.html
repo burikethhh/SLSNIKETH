@@ -177,7 +177,6 @@
                 <button onclick="switchPortalTab('plans')" id="tab-plans" class="tab-btn">Membership Plans</button>
                 <button onclick="switchPortalTab('promos')" id="tab-promos" class="tab-btn">Promo Vouchers</button>
                 <button onclick="switchPortalTab('transactions')" id="tab-transactions" class="tab-btn">Live POS Feed</button>
-                <button onclick="switchPortalTab('incidents')" id="tab-incidents" class="tab-btn">Tailgate Incidents <span id="incidents-badge" class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-red-950 text-red-300 border border-red-800 hidden">0</span></button>
             </div>
 
             <div class="flex items-center space-x-2">
@@ -520,44 +519,6 @@
                         <tbody id="transactions-tbody" class="divide-y divide-slate-800/60 text-slate-300">
                             <tr>
                                 <td colspan="5" class="py-8 text-center text-slate-500">No POS transactions recorded yet.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- ================= TAB: TAILGATE INCIDENTS (Phase C) ================= -->
-        <div id="view-incidents" class="tab-content space-y-6 hidden">
-            <div class="glass-panel p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <div>
-                        <h3 class="text-xl font-bold text-slate-200">Tailgate Intrusion Feed</h3>
-                        <p class="text-xs text-slate-400">Piggyback incidents synced from your branch terminals · acknowledge to clear your queue</p>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <span id="incidents-unacked" class="stat-badge badge-basic">0 open</span>
-                        <button onclick="fetchOwnerIncidents()" class="btn-purple px-3 py-1.5 rounded-lg text-xs">Refresh</button>
-                    </div>
-                </div>
-
-                <div id="incidents-by-branch" class="flex flex-wrap gap-2 mb-4 text-xs"></div>
-
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-xs">
-                        <thead class="text-slate-400 uppercase bg-slate-900/50 border-b border-slate-800">
-                            <tr>
-                                <th class="py-3 px-4">Time</th>
-                                <th class="py-3 px-4">Branch</th>
-                                <th class="py-3 px-4">Piggybacked Entry</th>
-                                <th class="py-3 px-4">Persons</th>
-                                <th class="py-3 px-4">Status</th>
-                                <th class="py-3 px-4 text-right">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="incidents-tbody" class="divide-y divide-slate-800/60 text-slate-300">
-                            <tr>
-                                <td colspan="6" class="py-8 text-center text-slate-500">No tailgate incidents synced yet.</td>
                             </tr>
                         </tbody>
                     </table>
@@ -920,6 +881,11 @@
         let cachedProducts = [];
         let cachedPlans = [];
         let cachedPromos = [];
+        // True once the owner edits/adds/deletes any catalog row locally.
+        // While dirty, background reloads must NOT overwrite the editor,
+        // otherwise a Delete looks like it "keeps popping back".
+        let catalogDirty = false;
+        function markCatalogDirty() { catalogDirty = true; }
         let revenueChart = null;
         let categoryChart = null;
         let trafficChart = null;
@@ -1095,9 +1061,13 @@
             if (content) content.classList.remove('hidden');
         }
 
-        async function loadOwnerDashboardData() {
+        async function loadOwnerDashboardData(opts = {}) {
             if (!ownerSession) return;
             const headers = { 'Authorization': `Bearer ${ownerSession.token}` };
+            // opts.force === true means the caller just saved and wants
+            // server truth. Otherwise a dirty local editor wins over the
+            // 60s auto-refresh / manual Refresh Telemetry for the catalog.
+            const skipCatalog = catalogDirty && !opts.force;
 
             try {
                 // 1. Fetch Analytics & Branches
@@ -1112,16 +1082,20 @@
                     populateBranchSelector(currentAnalytics.branches);
                 }
 
-                // 2. Fetch Catalog, Plans, Promos
-                const catRes = await ownerFetch(`${API_BASE}/api/v1/owner/catalog`, { headers });
-                if (catRes.ok) {
-                    const catData = await catRes.json();
-                    cachedProducts = catData.products || [];
-                    cachedPlans = catData.plans || [];
-                    cachedPromos = catData.promos || [];
-                    renderCatalogTable();
-                    renderPlansGrid();
-                    renderPromosTable();
+                // 2. Fetch Catalog, Plans, Promos (skipped while dirty)
+                if (skipCatalog) {
+                    console.debug('Catalog reload skipped — unsaved local edits pending. Click Save & Sync to persist.');
+                } else {
+                    const catRes = await ownerFetch(`${API_BASE}/api/v1/owner/catalog`, { headers });
+                    if (catRes.ok) {
+                        const catData = await catRes.json();
+                        cachedProducts = catData.products || [];
+                        cachedPlans = catData.plans || [];
+                        cachedPromos = catData.promos || [];
+                        renderCatalogTable();
+                        renderPlansGrid();
+                        renderPromosTable();
+                    }
                 }
 
                 // 3. Fetch Staff Accounts
@@ -1131,82 +1105,8 @@
                     cachedStaff = staffData.staff || [];
                     renderStaffTable();
                 }
-
-                // 4. Phase C: tailgate incidents for my franchise
-                await fetchOwnerIncidents();
             } catch (err) {
                 console.error('Failed to load telemetry:', err);
-            }
-        }
-
-        // --- Phase C: Tailgate Intrusion Feed ---
-        let ownerIncidents = [];
-
-        async function fetchOwnerIncidents() {
-            if (!ownerSession) return;
-            const headers = { 'Authorization': `Bearer ${ownerSession.token}` };
-            try {
-                const res = await ownerFetch(`${API_BASE}/api/v1/owner/incidents?limit=50`, { headers });
-                if (!res.ok) return;
-                const data = await res.json();
-                ownerIncidents = data.incidents || [];
-                renderOwnerIncidents(data.unacked ?? 0, data.by_gym_7d || {});
-            } catch (err) {
-                console.error('Failed to load tailgate incidents:', err);
-            }
-        }
-
-        function renderOwnerIncidents(unacked, byGym) {
-            const badge = document.getElementById('incidents-badge');
-            if (badge) {
-                badge.innerText = String(unacked);
-                badge.classList.toggle('hidden', unacked === 0);
-            }
-            const openEl = document.getElementById('incidents-unacked');
-            if (openEl) openEl.innerText = `${unacked} open`;
-
-            const chips = document.getElementById('incidents-by-branch');
-            if (chips && currentAnalytics && currentAnalytics.branches) {
-                chips.innerHTML = currentAnalytics.branches.map(b => {
-                    const n = byGym[b.gym_id] || 0;
-                    return `<span class="px-2.5 py-1 rounded-full border ${n > 0 ? 'bg-red-950/60 text-red-200 border-red-800' : 'bg-slate-900/60 text-slate-300 border-slate-800'}"><b>${escapeHtml(b.name)}</b> · <span class="font-mono">${n}/7d</span></span>`;
-                }).join('');
-            }
-
-            const tbody = document.getElementById('incidents-tbody');
-            if (!tbody) return;
-            if (ownerIncidents.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="py-8 text-center text-slate-500">No tailgate incidents synced yet.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = ownerIncidents.map(inc => {
-                const when = new Date(inc.timestamp).toLocaleString();
-                const acked = inc.acknowledged
-                    ? `<span class="stat-badge badge-active">ACKED</span>`
-                    : `<span class="stat-badge badge-basic">OPEN</span>`;
-                return `
-                    <tr class="${inc.acknowledged ? 'opacity-50' : ''}">
-                        <td class="py-3 px-4 font-mono text-[11px]">${escapeHtml(when)}</td>
-                        <td class="py-3 px-4 font-bold text-slate-200">${escapeHtml(inc.gym_name)}</td>
-                        <td class="py-3 px-4 text-[11px]">${inc.linked_member_id ? `admitted <span class="font-mono">${escapeHtml(inc.linked_member_id)}</span>` : '<span class="text-slate-500">unattributed</span>'}</td>
-                        <td class="py-3 px-4 font-mono">${inc.person_count ?? '?'}</td>
-                        <td class="py-3 px-4">${acked}</td>
-                        <td class="py-3 px-4 text-right">${inc.acknowledged ? '' : `<button onclick="ackOwnerIncident('${encodeURIComponent(inc.id)}')" class="btn-purple px-2.5 py-1 rounded-lg text-[11px]">Acknowledge</button>`}</td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        async function ackOwnerIncident(id) {
-            if (!ownerSession) return;
-            try {
-                const res = await ownerFetch(`${API_BASE}/api/v1/owner/incidents/${id}/ack`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${ownerSession.token}` }
-                });
-                if (res.ok) await fetchOwnerIncidents();
-            } catch (err) {
-                console.error('Acknowledge failed:', err);
             }
         }
 
@@ -1470,10 +1370,12 @@
         function updateProductField(idx, field, value) {
             cachedProducts[idx][field] = value;
             cachedProducts[idx].updated_at = new Date().toISOString();
+            markCatalogDirty();
         }
 
         function deleteProduct(idx) {
             cachedProducts.splice(idx, 1);
+            markCatalogDirty();
             renderCatalogTable();
         }
 
@@ -1501,6 +1403,7 @@
             });
 
             closeProductModal();
+            markCatalogDirty();
             renderCatalogTable();
             alert('Product added locally. Click "Push Updates to Terminals" to sync across all branches!');
         }
@@ -1518,7 +1421,9 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
+                    catalogDirty = false;
                     alert(`Success: ${data.saved_count} products saved and queued to sync to all branch POS terminals on next heartbeat!`);
+                    await loadOwnerDashboardData({ force: true });
                 } else {
                     alert(data.error || 'Failed to save products');
                 }
@@ -1573,23 +1478,27 @@
         function updatePlanPrice(idx, price) {
             cachedPlans[idx].price_monthly = price;
             cachedPlans[idx].updated_at = new Date().toISOString();
+            markCatalogDirty();
         }
 
         function updatePlanTag(idx, tag) {
             cachedPlans[idx].tag = (tag || '').toUpperCase().slice(0, 24);
             cachedPlans[idx].updated_at = new Date().toISOString();
+            markCatalogDirty();
             renderPlansGrid();
         }
 
         function updatePlanPeriod(idx, period) {
             cachedPlans[idx].billing_period = period;
             cachedPlans[idx].updated_at = new Date().toISOString();
+            markCatalogDirty();
             renderPlansGrid();
         }
 
         function deletePlan(idx) {
-            if (!confirm(`Delete plan "${cachedPlans[idx].name}"?`)) return;
+            if (!confirm(`Delete plan "${cachedPlans[idx].name}"? Click "Save & Sync Plan Rates" afterwards to make the delete permanent.`)) return;
             cachedPlans.splice(idx, 1);
+            markCatalogDirty();
             renderPlansGrid();
         }
 
@@ -1622,6 +1531,7 @@
             document.getElementById('plan-price-input').value = '';
             document.getElementById('plan-benefits-input').value = '';
             closePlanModal();
+            markCatalogDirty();
             renderPlansGrid();
             alert('Custom rate card added! Click "Save & Sync Plan Rates" to push to kiosks.');
         }
@@ -1639,7 +1549,9 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
+                    catalogDirty = false;
                     alert(`Success: ${data.saved_count} membership plans saved and queued for kiosk sync!`);
+                    await loadOwnerDashboardData({ force: true });
                 } else {
                     alert(data.error || 'Failed to save plans');
                 }
@@ -1679,11 +1591,13 @@
 
         function togglePromoStatus(idx) {
             cachedPromos[idx].is_active = !cachedPromos[idx].is_active;
+            markCatalogDirty();
             renderPromosTable();
         }
 
         function deletePromo(idx) {
             cachedPromos.splice(idx, 1);
+            markCatalogDirty();
             renderPromosTable();
         }
 
@@ -1719,6 +1633,7 @@
             document.getElementById('promo-min-input').value = '';
             document.getElementById('promo-exp-input').value = '';
             closePromoModal();
+            markCatalogDirty();
             renderPromosTable();
             alert('Promo code created! Click "Push Promos to POS" to activate on terminals.');
         }
@@ -1764,7 +1679,9 @@
                 });
                 const data = await res.json();
                 if (res.ok) {
+                    catalogDirty = false;
                     alert(`Success: ${data.saved_count} promo vouchers saved and distributed to POS terminals!`);
+                    await loadOwnerDashboardData({ force: true });
                 } else {
                     alert(data.error || 'Failed to save promos');
                 }

@@ -185,12 +185,6 @@ async function invokeTauri(command, args = {}) {
             return { matched: false, is_expired: false, message: "Face not recognized", door_unlocked: false };
         } else if (command === 'list_recent_attendance') {
             return window.cachedAttendanceLogs || [];
-        } else if (command === 'list_tailgate_incidents') {
-            const all = window.cachedAttendanceLogs || [];
-            const incidents = all.filter(l => l.tailgate_flag);
-            return { incidents, unacked: incidents.length };
-        } else if (command === 'resolve_tailgate_incident') {
-            return { resolved: true };
         } else if (command === 'list_products') {
             return [
                 { id: "prod-1", name: "Whey Protein Isolate (2lb)", price: 45.0, stock: 40, category: "supplements" },
@@ -205,8 +199,6 @@ async function invokeTauri(command, args = {}) {
                 { id: "coach-2", name: "Elena Rostova", specialty: "Agility & Conditioning", phone: "0917-555-0102", active_students: 18 },
                 { id: "coach-3", name: "Darius Stone", specialty: "Combat & Endurance", phone: "0917-555-0103", active_students: 10 }
             ];
-        } else if (command === 'trigger_tailgate_alarm') {
-            return { status: "ALARM_TRIGGERED", reason: "Turnstile ROI multi-occupancy violation", siren_suppressed: false, policy_enabled: true };
         } else if (command === 'scan_face_frame') {
             // Browser-preview-only mock (no Tauri/ONNX backend available outside
             // the desktop app) — fabricates a plausible embedding so the UI can
@@ -214,10 +206,6 @@ async function invokeTauri(command, args = {}) {
             // ONNX detection/embedding pipeline in `vision.rs`.
             const seed = (args.imageBase64 || '').length % 997;
             return { face_detected: true, confidence: 0.9, vector: generateNormalizedFaceEmbedding(seed, 0), box: { x: 0, y: 0, w: 0, h: 0 } };
-        } else if (command === 'count_persons_in_frame') {
-            // Browser-preview-only mock for the YOLOv8n person counter
-            // (Task 5.4). Single occupant by default so previews don't alarm.
-            return { person_count: 1 };
         } else if (command === 'get_member_stats') {
             const act = cachedMembers.filter(m => m.status === 'active').length;
             const exp = cachedMembers.filter(m => m.status === 'expired').length;
@@ -225,7 +213,7 @@ async function invokeTauri(command, args = {}) {
             return { active: act, expired: exp, suspended: sus, total: cachedMembers.length };
         } else if (command === 'renew_member') {
             const m = cachedMembers.find(x => x.id === args.id);
-            if (m) { m.status = 'active'; m.expires_at = new Date(Date.now() + 30 * 86400000).toISOString(); }
+            if (m) { m.status = 'active'; m.expires_at = args.expires_at ? new Date(args.expires_at + 'T00:00:00').toISOString() : new Date(Date.now() + 30 * 86400000).toISOString(); }
             return m || null;
         } else if (command === 'freeze_member') {
             const m = cachedMembers.find(x => x.id === args.id);
@@ -272,31 +260,23 @@ let appSettings = {
     walk_in_rate: 10.0,
     camera_config: {
         camera1_entry_device_id: "",
-        camera2_exit_device_id: "",
-        camera3_tailgate_device_id: "",
-        roi_x: 20.0,
-        roi_y: 20.0,
-        roi_width: 60.0,
-        roi_height: 60.0,
-        roi_sensitivity: 85.0
+        camera2_exit_device_id: ""
     }
 };
 
-// --- Multi-Camera Stream Controller & Occupancy Prober ---
+// --- Dual-Camera Stream Controller & Occupancy Prober ---
 let streamCam1 = null;
 let streamCam2 = null;
-let streamCam3 = null;
 let streamCam1DeviceId = null;
 let streamCam2DeviceId = null;
-let streamCam3DeviceId = null;
 let probedDevicesCache = [];
 
 /**
  * Safely requests a video stream for a given deviceId.
- * Uses bandwidth-safe 640x480 constraints so that 3 simultaneous USB webcams
+ * Uses bandwidth-safe constraints so that 2 simultaneous USB webcams
  * do not saturate the Windows USB 2.0/3.0 root hub isochronous transfer bandwidth.
  */
-async function getStreamForDevice(deviceId, lane = 'entry') {
+async function getStreamForDevice(deviceId) {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
         return {
             stream: null,
@@ -305,43 +285,28 @@ async function getStreamForDevice(deviceId, lane = 'entry') {
     }
 
     // Windows UVC bandwidth optimization: 640x480 uncompressed YUY2 is ~147Mbps.
-    // Three 640x480 cameras can stream simultaneously on a single USB root hub
+    // Two 640x480 cameras can stream simultaneously on a single USB root hub
     // without triggering NotReadableError (USB isochronous bandwidth starvation).
     // Bandwidth strategy (USB HUB BANDWIDTH LIMIT/CONFLICT fix): cheap UVC
     // cameras stream UNCOMPRESSED YUY2 at 640p (~140+ Mbps each on the shared
-    // 480 Mbps USB 2.0 segment — 3 cams = guaranteed conflict even when every
-    // cable goes straight into the PC, because all ports share one controller
-    // segment). Requesting 720p24 forces the camera into MJPEG (~20-40 Mbps
-    // each, ~10x smaller); captureVideoFrame downsizes to <=640px for the
-    // model anyway, so inference is unchanged. Falls back progressively.
+    // 480 Mbps USB 2.0 segment). Requesting 720p24 forces the camera into
+    // MJPEG (~20-40 Mbps each, ~10x smaller); captureVideoFrame downsizes to
+    // <=640px for the model anyway, so inference is unchanged. Falls back
+    // progressively.
     // Per-lane bandwidth strategy (fixes USB HUB BANDWIDTH LIMIT/CONFLICT):
     // - entry/exit (face recognition): 720p24 forces UVC cameras into MJPEG
     //   (~10x smaller than uncompressed YUY2 on the shared 480Mbps segment)
-    // - tailgate (overhead YOLO counting, 320x320 input): tiny 480x270@12
-    //   stream — a fraction of the bandwidth, plenty for head counting
-    let attempts;
-    if (lane === 'tailgate') {
-        attempts = [
-            deviceId
-                ? { deviceId: { exact: deviceId }, width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 12, max: 15 } }
-                : { width: { ideal: 480 }, height: { ideal: 270 }, frameRate: { ideal: 12, max: 15 } },
-            deviceId
-                ? { deviceId: { exact: deviceId } }
-                : { video: true }
-        ];
-    } else {
-        attempts = [
-            deviceId
-                ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }
-                : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } },
-            deviceId
-                ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } }
-                : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } },
-            deviceId
-                ? { deviceId: { exact: deviceId } }
-                : { video: true }
-        ];
-    }
+    const attempts = [
+        deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } }
+            : { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 24, max: 30 } },
+        deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } }
+            : { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 12, max: 24 } },
+        deviceId
+            ? { deviceId: { exact: deviceId } }
+            : { video: true }
+    ];
 
     let lastErr = null;
     for (const constraints of attempts) {
@@ -458,12 +423,6 @@ function syncAllCameraViewports() {
     bindViewport(document.getElementById('kiosk-cam2-exit'), document.getElementById('kiosk-cam2-standby'), streamCam2);
     bindViewport(document.getElementById('test-preview-cam2'), null, streamCam2);
 
-    // Camera 3 (Anti-Tailgate Overhead Radar)
-    bindViewport(document.getElementById('worker-cam3-tailgate'), null, streamCam3);
-    bindViewport(document.getElementById('dash-cam3-tailgate'), document.getElementById('dash-cam3-standby'), streamCam3);
-    bindViewport(document.getElementById('kiosk-cam3-tailgate'), document.getElementById('kiosk-cam3-standby'), streamCam3);
-    bindViewport(document.getElementById('test-preview-cam3'), null, streamCam3);
-    bindViewport(document.getElementById('roi-preview-video'), null, streamCam3);
 }
 
 /**
@@ -490,10 +449,8 @@ function watchCameraSignals() {
     const slots = [
         ['dash-cam1-entry', 'dash-cam1-standby'],
         ['dash-cam2-exit', 'dash-cam2-standby'],
-        ['dash-cam3-tailgate', 'dash-cam3-standby'],
         ['kiosk-cam1-entry', 'kiosk-cam1-standby'],
         ['kiosk-cam2-exit', 'kiosk-cam2-standby'],
-        ['kiosk-cam3-tailgate', 'kiosk-cam3-standby'],
     ];
     for (const [vid, sid] of slots) {
         const v = document.getElementById(vid);
@@ -515,7 +472,7 @@ function watchCameraSignals() {
 }
 
 /**
- * Updates status alert banners and occupied overlay on Camera card 1, 2, or 3.
+ * Updates status alert banners and occupied overlay on Camera card 1 or 2.
  */
 function setCameraSlotFeedback(camNumber, state, detail = '') {
     const msgEl = document.getElementById(`cam-status-msg-${camNumber}`);
@@ -525,7 +482,7 @@ function setCameraSlotFeedback(camNumber, state, detail = '') {
     if (state === 'bandwidth' || state === 'occupied') {
         if (msgEl) {
             msgEl.className = "text-[11px] p-2.5 rounded-lg leading-snug bg-amber-950/80 border border-amber-600 text-amber-200 block";
-            msgEl.innerHTML = `<strong>⚠️ USB Hub Bandwidth Limit / Conflict:</strong> ${detail || 'Windows cannot stream 3 webcams through one shared USB hub. Plug 1 camera directly into another PC USB port (or select the laptop webcam).'}`;
+            msgEl.innerHTML = `<strong>⚠️ USB Hub Bandwidth Limit / Conflict:</strong> ${detail || 'Windows cannot stream 2 webcams through one shared USB hub. Plug 1 camera directly into another PC USB port (or select the laptop webcam).'}`;
         }
         if (overlayEl) overlayEl.classList.remove('hidden');
         if (badgeEl) {
@@ -596,7 +553,7 @@ async function scanActiveCameras(notify = false) {
         probedDevicesCache = [];
 
         // Active device IDs currently streaming in GymPOS
-        const activeGymPosDeviceIds = [streamCam1DeviceId, streamCam2DeviceId, streamCam3DeviceId].filter(Boolean);
+        const activeGymPosDeviceIds = [streamCam1DeviceId, streamCam2DeviceId].filter(Boolean);
 
         // Count occurrences of labels to disambiguate identical camera models
         const labelCounts = {};
@@ -642,13 +599,12 @@ async function scanActiveCameras(notify = false) {
             summaryEl.innerText = `Detected ${videoDevices.length} camera(s): ${readyCount} Available${activeCount > 0 ? ` (${activeCount} active in GymPOS)` : ''}`;
         }
         if (detailEl) {
-            detailEl.innerText = readyCount >= 3 ? "All webcams detected and ready for routing" : "Cameras detected and ready for routing";
+            detailEl.innerText = readyCount >= 2 ? "All webcams detected and ready for routing" : "Cameras detected and ready for routing";
         }
 
         // Populate dropdowns with descriptive status indicators
         const sel1 = document.getElementById('cam-assign-entry');
         const sel2 = document.getElementById('cam-assign-exit');
-        const sel3 = document.getElementById('cam-assign-tailgate');
 
         const cfg = appSettings.camera_config || {};
 
@@ -673,7 +629,6 @@ async function scanActiveCameras(notify = false) {
 
         if (sel1) sel1.innerHTML = buildOptions(cfg.camera1_entry_device_id || "", 0);
         if (sel2) sel2.innerHTML = buildOptions(cfg.camera2_exit_device_id || "", 1);
-        if (sel3) sel3.innerHTML = buildOptions(cfg.camera3_tailgate_device_id || "", 2);
 
         if (notify) {
             showHudToast("Cameras Scanned", `Found ${videoDevices.length} camera(s). All devices ready for assignment.`, "success");
@@ -692,8 +647,8 @@ async function populateCameraDevices() {
 
 /**
  * Initializes streams on boot/settings load.
- * Auto-discovers distinct physical webcams for Camera 1, 2, and 3.
- * Includes graceful mirroring fallback if 3 webcams exceed single USB hub bandwidth.
+ * Auto-discovers distinct physical webcams for Camera 1 and 2.
+ * Includes graceful mirroring fallback if 2 webcams exceed single USB hub bandwidth.
  */
 async function initCameraStreams() {
     if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') return;
@@ -701,27 +656,20 @@ async function initCameraStreams() {
     if (!appSettings.camera_config) {
         appSettings.camera_config = {
             camera1_entry_device_id: "",
-            camera2_exit_device_id: "",
-            camera3_tailgate_device_id: "",
-            roi_x: 20.0,
-            roi_y: 20.0,
-            roi_width: 60.0,
-            roi_height: 60.0,
-            roi_sensitivity: 85.0
+            camera2_exit_device_id: ""
         };
     }
     const cfg = appSettings.camera_config;
 
     try {
         // If device IDs are not explicitly configured, discover available webcams
-        // and assign distinct physical webcams to slots 1, 2, and 3 if available.
-        if (!cfg.camera1_entry_device_id && !cfg.camera2_exit_device_id && !cfg.camera3_tailgate_device_id) {
+        // and assign distinct physical webcams to slots 1 and 2 if available.
+        if (!cfg.camera1_entry_device_id && !cfg.camera2_exit_device_id) {
             try {
                 const devs = await navigator.mediaDevices.enumerateDevices();
                 const vdevs = devs.filter(d => d.kind === 'videoinput');
                 if (vdevs.length >= 1) cfg.camera1_entry_device_id = vdevs[0].deviceId;
                 if (vdevs.length >= 2) cfg.camera2_exit_device_id = vdevs[1].deviceId;
-                if (vdevs.length >= 3) cfg.camera3_tailgate_device_id = vdevs[2].deviceId;
             } catch (e) {
                 console.debug("Auto-assigning default devices failed:", e);
             }
@@ -729,7 +677,7 @@ async function initCameraStreams() {
 
         // 1. Camera 1: Face Scan Entry
         if (!streamCam1 || !streamCam1.active) {
-            const res1 = await getStreamForDevice(cfg.camera1_entry_device_id, 'entry');
+            const res1 = await getStreamForDevice(cfg.camera1_entry_device_id);
             if (res1.stream && cameraAssignmentLocked() && res1.recovered) {
                 // LOCKED: never shuffle the lane to a substitute camera — the
                 // slot stays reserved for the saved device (fixed USB rig).
@@ -758,7 +706,7 @@ async function initCameraStreams() {
         // 2. Camera 2: Face Scan Exit
         if (!streamCam2 || !streamCam2.active) {
             if (cfg.camera2_exit_device_id && cfg.camera2_exit_device_id !== cfg.camera1_entry_device_id) {
-                const res2 = await getStreamForDevice(cfg.camera2_exit_device_id, 'exit');
+                const res2 = await getStreamForDevice(cfg.camera2_exit_device_id);
                 if (res2.stream) {
                     streamCam2 = res2.stream;
                     streamCam2DeviceId = cfg.camera2_exit_device_id;
@@ -782,54 +730,6 @@ async function initCameraStreams() {
             }
         }
 
-        await new Promise(r => setTimeout(r, 100));
-
-        // 3. Camera 3: Anti-Tailgate Overhead
-        if (!streamCam3 || !streamCam3.active) {
-            let gotDedicatedCam3 = false;
-            if (cfg.camera3_tailgate_device_id && cfg.camera3_tailgate_device_id !== cfg.camera1_entry_device_id && cfg.camera3_tailgate_device_id !== cfg.camera2_exit_device_id) {
-                const res3 = await getStreamForDevice(cfg.camera3_tailgate_device_id, 'tailgate');
-                if (res3.stream) {
-                    streamCam3 = res3.stream;
-                    streamCam3DeviceId = cfg.camera3_tailgate_device_id;
-                    setCameraSlotFeedback(3, 'active');
-                    gotDedicatedCam3 = true;
-                }
-            }
-
-            // If 3rd camera failed due to USB hub bandwidth limit:
-            if (!gotDedicatedCam3 && cameraAssignmentLocked()) {
-                setCameraSlotFeedback(3, 'bandwidth', "Locked: saved Camera 3 not present — slot reserved, will retry.");
-            }
-            if (!gotDedicatedCam3 && !cameraAssignmentLocked()) {
-                // Check if an alternate available camera can be used (e.g. laptop camera)
-                let altFound = false;
-                try {
-                    const devs = await navigator.mediaDevices.enumerateDevices();
-                    const vdevs = devs.filter(d => d.kind === 'videoinput');
-                    const usedIds = [streamCam1DeviceId, streamCam2DeviceId].filter(Boolean);
-                    const freeDev = vdevs.find(d => !usedIds.includes(d.deviceId));
-                    if (freeDev) {
-                        const altRes = await getStreamForDevice(freeDev.deviceId, 'tailgate');
-                        if (altRes.stream) {
-                            streamCam3 = altRes.stream;
-                            streamCam3DeviceId = freeDev.deviceId;
-                            setCameraSlotFeedback(3, 'active', `Streaming on ${freeDev.label || 'alternate webcam'}`);
-                            altFound = true;
-                        }
-                    }
-                } catch (e) {}
-
-                // Fallback to sharing Camera 1 so the dashboard is NEVER black
-                if (!altFound && streamCam1) {
-                    streamCam3 = streamCam1;
-                    streamCam3DeviceId = streamCam1DeviceId;
-                    setCameraSlotFeedback(3, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot stream 3 webcams through 1 hub. Move 1 camera to another PC USB port, or select the laptop camera.");
-                    showHudToast("USB Hub Limit Exceeded", "3 webcams cannot share 1 USB hub. Mirroring Camera 1 until one camera is moved to a separate PC USB port.", "warning");
-                }
-            }
-        }
-
         // Synchronize all video viewports across the entire application immediately
         syncAllCameraViewports();
 
@@ -839,9 +739,6 @@ async function initCameraStreams() {
             window.__camSignalWatchdog = true;
             setInterval(watchCameraSignals, 2500);
         }
-
-        // Apply ROI Calibrated Zone styling across overlays
-        applyRoiConfigToOverlays(cfg);
     } catch (err) {
         console.warn("Camera streams initialization error:", err);
     }
@@ -857,28 +754,21 @@ async function previewSelectedCamera(camNumber, deviceId) {
         if (!appSettings.camera_config) {
             appSettings.camera_config = {
                 camera1_entry_device_id: "",
-                camera2_exit_device_id: "",
-                camera3_tailgate_device_id: "",
-                roi_x: 20.0, roi_y: 20.0, roi_width: 60.0, roi_height: 60.0, roi_sensitivity: 85.0
+                camera2_exit_device_id: ""
             };
         }
 
         // Release old stream for this camera slot if dedicated
         if (camNumber === 1) {
-            if (streamCam1 && streamCam1 !== streamCam2 && streamCam1 !== streamCam3) stopStream(streamCam1);
+            if (streamCam1 && streamCam1 !== streamCam2) stopStream(streamCam1);
             streamCam1 = null;
             streamCam1DeviceId = null;
             appSettings.camera_config.camera1_entry_device_id = deviceId;
         } else if (camNumber === 2) {
-            if (streamCam2 && streamCam2 !== streamCam1 && streamCam2 !== streamCam3) stopStream(streamCam2);
+            if (streamCam2 && streamCam2 !== streamCam1) stopStream(streamCam2);
             streamCam2 = null;
             streamCam2DeviceId = null;
             appSettings.camera_config.camera2_exit_device_id = deviceId;
-        } else if (camNumber === 3) {
-            if (streamCam3 && streamCam3 !== streamCam1 && streamCam3 !== streamCam2) stopStream(streamCam3);
-            streamCam3 = null;
-            streamCam3DeviceId = null;
-            appSettings.camera_config.camera3_tailgate_device_id = deviceId;
         }
         // Preview selection edits in-memory routing: flag unsaved until
         // Save & Bind Routing persists it.
@@ -894,16 +784,13 @@ async function previewSelectedCamera(camNumber, deviceId) {
             streamToUse = streamCam1;
         } else if (camNumber !== 2 && deviceId && deviceId === streamCam2DeviceId && streamCam2) {
             streamToUse = streamCam2;
-        } else if (camNumber !== 3 && deviceId && deviceId === streamCam3DeviceId && streamCam3) {
-            streamToUse = streamCam3;
         }
 
         if (!streamToUse) {
-            const lane = camNumber === 3 ? 'tailgate' : (camNumber === 2 ? 'exit' : 'entry');
-            const res = await getStreamForDevice(deviceId, lane);
+            const res = await getStreamForDevice(deviceId);
             if (res.error) {
-                setCameraSlotFeedback(camNumber, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot run 3 webcams on the same USB hub. Move this camera directly to a different PC USB port (not the hub), or choose the laptop webcam.");
-                showHudToast("USB Hub Limit Exceeded", "Windows cannot run 3 webcams on the same USB hub. Move one camera to another PC USB port, or choose the laptop webcam.", "danger");
+                setCameraSlotFeedback(camNumber, 'bandwidth', "USB Hub Bandwidth Exceeded. Windows cannot run 2 webcams on the same USB hub. Move this camera directly to a different PC USB port (not the hub), or choose the laptop webcam.");
+                showHudToast("USB Hub Limit Exceeded", "Windows cannot run 2 webcams on the same USB hub. Move one camera to another PC USB port, or choose the laptop webcam.", "danger");
                 // If it fails, fallback to streamCam1 so dashboard and preview don't go black
                 if (streamCam1) {
                     streamToUse = streamCam1;
@@ -926,11 +813,6 @@ async function previewSelectedCamera(camNumber, deviceId) {
             streamCam2DeviceId = deviceId;
             const isShared = (streamToUse === streamCam1);
             setCameraSlotFeedback(2, isShared ? 'shared' : 'active', isShared ? 'Shared with Camera 1' : '');
-        } else if (camNumber === 3) {
-            streamCam3 = streamToUse;
-            streamCam3DeviceId = deviceId;
-            const isShared = (streamToUse === streamCam1);
-            setCameraSlotFeedback(3, isShared ? 'shared' : 'active', isShared ? 'Shared with Camera 1' : '');
         }
 
         // Synchronize immediately to Dashboard, Kiosk, and Hardware previews!
@@ -943,46 +825,27 @@ async function previewSelectedCamera(camNumber, deviceId) {
     }
 }
 
-async function triggerAlarmTest() {
-    try {
-        await invokeTauri('trigger_tailgate_alarm', {
-            reason: "Manual Hardware Siren & Buzzer Diagnostics Test"
-        });
-        showHudToast("Alarm Test Fired", "ESP32 buzzer relay active for 5000ms.", "danger");
-    } catch (e) {
-        alert("Alarm Test Error: " + e);
-    }
-}
-
 // Persist the EXACT assignment that is running right now: live lane device
-// ids + ROI calibration + recognition tuning, flagged locked so boot never
-// substitutes or shuffles cameras. One click = permanent.
+// ids + recognition tuning, flagged locked so boot never substitutes or
+// re-shuffles cameras. One click = permanent.
 async function lockCameraAssignment() {
     if (!appSettings.camera_config) appSettings.camera_config = {};
     let wired = 0;
     if (streamCam1DeviceId) { appSettings.camera_config.camera1_entry_device_id = streamCam1DeviceId; wired++; }
     if (streamCam2DeviceId && streamCam2DeviceId !== streamCam1DeviceId) { appSettings.camera_config.camera2_exit_device_id = streamCam2DeviceId; wired++; }
-    if (streamCam3DeviceId && streamCam3DeviceId !== streamCam1DeviceId && streamCam3DeviceId !== streamCam2DeviceId) { appSettings.camera_config.camera3_tailgate_device_id = streamCam3DeviceId; wired++; }
     if (!streamCam1DeviceId) { alert('No live Camera 1 to lock. Open a camera first.'); return; }
 
-    // ROI calibration (same collection as saveRoiCalibration)
-    const gid = (id, fb) => { const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : fb; };
-    appSettings.camera_config.roi_x = gid('slider-roi-x', 20.0);
-    appSettings.camera_config.roi_y = gid('slider-roi-y', 20.0);
-    appSettings.camera_config.roi_width = gid('slider-roi-w', 60.0);
-    appSettings.camera_config.roi_height = gid('slider-roi-h', 60.0);
-    appSettings.camera_config.roi_sensitivity = gid('slider-roi-sens', 85.0);
     // Recognition tuning
+    const gid = (id, fb) => { const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : fb; };
     appSettings.camera_config.match_threshold = gid('slider-match-thr', 0.62);
     appSettings.camera_config.adapt_threshold = gid('slider-adapt-thr', 0.80);
     appSettings.camera_config.liveness_min_px = gid('slider-live-px', 0.5);
     appSettings.camera_config.scan_min_face_px = gid('slider-scan-dist', 120);
-    appSettings.camera_config.mog_sensitivity = gid('slider-mog-sens', 0.5);
     appSettings.camera_config.camera_assignment_locked = true;
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
-        showHudToast('Cameras Locked', wired + ' camera(s) + ROI + tuning persisted. This exact assignment loads on every start.', 'success');
+        showHudToast('Cameras Locked', wired + ' camera(s) + tuning persisted. This exact assignment loads on every start.', 'success');
         await initCameraStreams();
     } catch (e) {
         alert('Failed to lock camera assignment: ' + e);
@@ -992,42 +855,32 @@ async function lockCameraAssignment() {
 async function saveCameraRouting() {
     const sel1 = document.getElementById('cam-assign-entry');
     const sel2 = document.getElementById('cam-assign-exit');
-    const sel3 = document.getElementById('cam-assign-tailgate');
 
     if (!appSettings.camera_config) {
         appSettings.camera_config = {
             camera1_entry_device_id: "",
             camera2_exit_device_id: "",
-            camera3_tailgate_device_id: "",
-            roi_x: 20.0,
-            roi_y: 20.0,
-            roi_width: 60.0,
-            roi_height: 60.0,
-            roi_sensitivity: 85.0,
             match_threshold: 0.62,
             adapt_threshold: 0.80,
-            liveness_min_px: 0.5,
-            mog_sensitivity: 0.5
+            liveness_min_px: 0.5
         };
     }
 
     const newId1 = sel1 ? sel1.value : appSettings.camera_config.camera1_entry_device_id;
     const newId2 = sel2 ? sel2.value : appSettings.camera_config.camera2_exit_device_id;
-    const newId3 = sel3 ? sel3.value : appSettings.camera_config.camera3_tailgate_device_id;
 
     appSettings.camera_config.camera1_entry_device_id = newId1;
     appSettings.camera_config.camera2_exit_device_id = newId2;
-    appSettings.camera_config.camera3_tailgate_device_id = newId3;
 
     try {
         await invokeTauri('save_app_settings', { settings: appSettings });
         localStorage.setItem('gympos_branding', JSON.stringify(appSettings));
 
         // Re-initialize any streams cleanly
-        const uniqueStreams = new Set([streamCam1, streamCam2, streamCam3].filter(Boolean));
+        const uniqueStreams = new Set([streamCam1, streamCam2].filter(Boolean));
         uniqueStreams.forEach(s => stopStream(s));
-        streamCam1 = null; streamCam2 = null; streamCam3 = null;
-        streamCam1DeviceId = null; streamCam2DeviceId = null; streamCam3DeviceId = null;
+        streamCam1 = null; streamCam2 = null;
+        streamCam1DeviceId = null; streamCam2DeviceId = null;
 
         await new Promise(r => setTimeout(r, 120));
         await initCameraStreams();
@@ -1036,65 +889,10 @@ async function saveCameraRouting() {
         syncAllCameraViewports();
         clearRoutingDirty();
 
-        showHudToast("Camera Routing Saved", "All 3 camera assignments saved to database and live streams routed to Dashboard & Kiosks.", "success");
+        showHudToast("Camera Routing Saved", "Both camera assignments saved to database and live streams routed to Dashboard & Kiosks.", "success");
     } catch (e) {
         alert("Failed to save camera routing: " + e);
     }
-}
-
-// --- Turnstile ROI Zone Calibration ---
-
-let suppressRoutingDirty = false;
-
-function updateRoiPreview() {
-    if (!suppressRoutingDirty) markRoutingDirty();
-    const x = parseFloat(document.getElementById('slider-roi-x').value) || 20;
-    const y = parseFloat(document.getElementById('slider-roi-y').value) || 20;
-    const w = parseFloat(document.getElementById('slider-roi-w').value) || 60;
-    const h = parseFloat(document.getElementById('slider-roi-h').value) || 60;
-
-    document.getElementById('val-roi-x').innerText = `${x}%`;
-    document.getElementById('val-roi-y').innerText = `${y}%`;
-    document.getElementById('val-roi-w').innerText = `${w}%`;
-    document.getElementById('val-roi-h').innerText = `${h}%`;
-    document.getElementById('roi-dim-text').innerText = `${w}% x ${h}%`;
-
-    const calibBox = document.getElementById('roi-calib-box');
-    if (calibBox) {
-        calibBox.style.left = `${x}%`;
-        calibBox.style.top = `${y}%`;
-        calibBox.style.width = `${w}%`;
-        calibBox.style.height = `${h}%`;
-    }
-
-    // Also reflect on the test-preview box + dashboard and kiosk overlays
-    const testBox = document.getElementById('test-roi-box');
-    if (testBox) {
-        testBox.style.left = `${x}%`;
-        testBox.style.top = `${y}%`;
-        testBox.style.width = `${w}%`;
-        testBox.style.height = `${h}%`;
-    }
-    const dashOverlay = document.getElementById('dash-roi-overlay');
-    const kioskOverlay = document.getElementById('kiosk-roi-overlay');
-    if (dashOverlay) {
-        dashOverlay.style.left = `${x}%`;
-        dashOverlay.style.top = `${y}%`;
-        dashOverlay.style.width = `${w}%`;
-        dashOverlay.style.height = `${h}%`;
-    }
-    if (kioskOverlay) {
-        kioskOverlay.style.left = `${x}%`;
-        kioskOverlay.style.top = `${y}%`;
-        kioskOverlay.style.width = `${w}%`;
-        kioskOverlay.style.height = `${h}%`;
-    }
-}
-
-function updateRoiSensitivityText() {
-    const sens = document.getElementById('slider-roi-sens').value || 85;
-    const sensText = sens >= 90 ? "Ultra Strict" : (sens >= 75 ? "High Precision" : "Standard");
-    document.getElementById('val-roi-sens').innerText = `${sens}% (${sensText})`;
 }
 
 function tuningCfg() {
@@ -1103,9 +901,25 @@ function tuningCfg() {
         match_threshold: cfg.match_threshold ?? 0.62,
         adapt_threshold: cfg.adapt_threshold ?? 0.80,
         liveness_min_px: cfg.liveness_min_px ?? 0.5,
-        mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
         scan_min_face_px: cfg.scan_min_face_px ?? 120,
     };
+}
+
+// Persists only the Face Recognition Tuning sliders (no camera lock).
+async function saveRecognitionTuning() {
+    if (!appSettings.camera_config) appSettings.camera_config = {};
+    const g = (id, fb) => { const el = document.getElementById(id); const v = el ? parseFloat(el.value) : NaN; return Number.isFinite(v) ? v : fb; };
+    appSettings.camera_config.match_threshold = g('slider-match-thr', 0.62);
+    appSettings.camera_config.adapt_threshold = g('slider-adapt-thr', 0.80);
+    appSettings.camera_config.liveness_min_px = g('slider-live-px', 0.5);
+    appSettings.camera_config.scan_min_face_px = g('slider-scan-dist', 120);
+    try {
+        await invokeTauri('save_app_settings', { settings: appSettings });
+        clearRoutingDirty();
+        showHudToast('Tuning Saved', 'Face recognition thresholds persisted.', 'success');
+    } catch (e) {
+        alert('Failed to save tuning: ' + e);
+    }
 }
 
 // Camera assignment lock: when the operator locks the assignment, the boot
@@ -1128,7 +942,6 @@ function updateTuningTexts() {
     if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
     if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
     if (g('slider-scan-dist') && g('val-scan-dist')) g('val-scan-dist').innerText = parseFloat(g('slider-scan-dist').value).toFixed(0);
-    if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
     markRoutingDirty();
 }
 
@@ -1137,7 +950,6 @@ function applyTuningToSliders(cfg) {
         match_threshold: cfg.match_threshold ?? 0.62,
         adapt_threshold: cfg.adapt_threshold ?? 0.80,
         liveness_min_px: cfg.liveness_min_px ?? 0.5,
-        mog_sensitivity: cfg.mog_sensitivity ?? 0.5,
         scan_min_face_px: cfg.scan_min_face_px ?? 120,
     };
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
@@ -1145,7 +957,6 @@ function applyTuningToSliders(cfg) {
     set('slider-adapt-thr', t.adapt_threshold);
     set('slider-live-px', t.liveness_min_px);
     set('slider-scan-dist', t.scan_min_face_px);
-    set('slider-mog-sens', t.mog_sensitivity);
     updateTuningTextsSilent();
     return t;
 }
@@ -1158,7 +969,6 @@ function updateTuningTextsSilent() {
     if (g('slider-adapt-thr') && g('val-adapt-thr')) g('val-adapt-thr').innerText = parseFloat(g('slider-adapt-thr').value).toFixed(2);
     if (g('slider-live-px') && g('val-live-px')) g('val-live-px').innerText = parseFloat(g('slider-live-px').value).toFixed(1);
     if (g('slider-scan-dist') && g('val-scan-dist')) g('val-scan-dist').innerText = parseFloat(g('slider-scan-dist').value).toFixed(0);
-    if (g('slider-mog-sens') && g('val-mog-sens')) g('val-mog-sens').innerText = parseFloat(g('slider-mog-sens').value).toFixed(2);
 }
 
 // Dirty-dot: any routing/calibration/tuning edit marks the Hardware view
@@ -1175,75 +985,6 @@ function clearRoutingDirty() {
     if (dot) dot.classList.add('hidden');
     const btn = document.getElementById('btn-save-routing');
     if (btn) btn.classList.remove('ring-2', 'ring-amber-400');
-}
-
-function applyRoiConfigToOverlays(cfg) {
-    suppressRoutingDirty = true;
-    try {
-        applyTuningToSliders(cfg);
-    } finally {
-        suppressRoutingDirty = false;
-    }
-    const x = cfg.roi_x !== undefined ? cfg.roi_x : 20;
-    const y = cfg.roi_y !== undefined ? cfg.roi_y : 20;
-    const w = cfg.roi_width !== undefined ? cfg.roi_width : 60;
-    const h = cfg.roi_height !== undefined ? cfg.roi_height : 60;
-    const sens = cfg.roi_sensitivity !== undefined ? cfg.roi_sensitivity : 85;
-
-    const sx = document.getElementById('slider-roi-x');
-    const sy = document.getElementById('slider-roi-y');
-    const sw = document.getElementById('slider-roi-w');
-    const sh = document.getElementById('slider-roi-h');
-    const ss = document.getElementById('slider-roi-sens');
-
-    if (sx) sx.value = x;
-    if (sy) sy.value = y;
-    if (sw) sw.value = w;
-    if (sh) sh.value = h;
-    if (ss) ss.value = sens;
-
-    updateRoiPreview();
-    updateRoiSensitivityText();
-}
-
-async function saveRoiCalibration() {
-    if (!appSettings.camera_config) {
-        appSettings.camera_config = {
-            camera1_entry_device_id: "",
-            camera2_exit_device_id: "",
-            camera3_tailgate_device_id: "",
-            roi_x: 20.0,
-            roi_y: 20.0,
-            roi_width: 60.0,
-            roi_height: 60.0,
-            roi_sensitivity: 85.0
-        };
-    }
-
-    appSettings.camera_config.roi_x = parseFloat(document.getElementById('slider-roi-x').value) || 20.0;
-    appSettings.camera_config.roi_y = parseFloat(document.getElementById('slider-roi-y').value) || 20.0;
-    appSettings.camera_config.roi_width = parseFloat(document.getElementById('slider-roi-w').value) || 60.0;
-    appSettings.camera_config.roi_height = parseFloat(document.getElementById('slider-roi-h').value) || 60.0;
-    appSettings.camera_config.roi_sensitivity = parseFloat(document.getElementById('slider-roi-sens').value) || 85.0;
-    const g = (id, fb) => {
-        const el = document.getElementById(id);
-        const v = el ? parseFloat(el.value) : NaN;
-        return Number.isFinite(v) ? v : fb;
-    };
-    appSettings.camera_config.match_threshold = g('slider-match-thr', 0.62);
-    appSettings.camera_config.adapt_threshold = g('slider-adapt-thr', 0.80);
-    appSettings.camera_config.liveness_min_px = g('slider-live-px', 0.5);
-    appSettings.camera_config.scan_min_face_px = g('slider-scan-dist', 120);
-    appSettings.camera_config.mog_sensitivity = g('slider-mog-sens', 0.5);
-
-    try {
-        await invokeTauri('save_app_settings', { settings: appSettings });
-        applyRoiConfigToOverlays(appSettings.camera_config);
-        clearRoutingDirty();
-        alert("Turnstile ROI Zone Calibration Successfully Saved!");
-    } catch (e) {
-        alert("Failed to save ROI calibration: " + e);
-    }
 }
 
 // --- Floating HUD Toast Notifications ---
@@ -1297,7 +1038,7 @@ function showHudToast(title, message, type = 'success') {
     }, 4000);
 }
 
-// --- Autonomous Real-Time Biometric & Tailgate Processing Engine ---
+// --- Autonomous Real-Time Biometric Processing Engine (Entry + Exit) ---
 
 let autoGateActive = true;
 let memberCooldownMap = new Map(); // tracks last verification time per member ID to prevent multi-scanning
@@ -1393,8 +1134,8 @@ function checkLivePending(lane, vector, landmarks, faceBox) {
 }
 
 // Per-lane consecutive inference-failure counters — surfaces WHICH camera is
-// struggling (entry/exit/tailgate) instead of failing silently every 650ms.
-const camErr = { cam1: 0, cam2: 0, cam3: 0 };
+// struggling (entry/exit) instead of failing silently every 650ms.
+const camErr = { cam1: 0, cam2: 0 };
 function noteCamErr(lane, label) {
     camErr[lane] = (camErr[lane] || 0) + 1;
     if (camErr[lane] === 15) {
@@ -1410,7 +1151,7 @@ function toggleAutoGateMode() {
     if (autoGateActive) {
         badge.className = "cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 transition hover:bg-emerald-900/80 shadow-sm";
         text.innerText = "AUTO-AI: ACTIVE";
-        showHudToast("Auto-Gate AI Engaged", "Autonomous Face Verification & Anti-Tailgate are running 24/7.", "success");
+        showHudToast("Auto-Gate AI Engaged", "Autonomous Face Verification is running 24/7 on entry + exit.", "success");
     } else {
         badge.className = "cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-400 transition hover:bg-slate-700 shadow-sm";
         text.innerText = "AUTO-AI: PAUSED";
@@ -1456,172 +1197,18 @@ function findActiveVideoElement(candidateIds) {
 function getCaptureElement(camNumber) {
     const map = {
         1: ['worker-cam1-entry', 'dash-cam1-entry', 'kiosk-cam1-entry', 'test-preview-cam1'],
-        2: ['worker-cam2-exit', 'dash-cam2-exit', 'kiosk-cam2-exit', 'test-preview-cam2'],
-        3: ['worker-cam3-tailgate', 'dash-cam3-tailgate', 'kiosk-cam3-tailgate', 'test-preview-cam3']
+        2: ['worker-cam2-exit', 'dash-cam2-exit', 'kiosk-cam2-exit', 'test-preview-cam2']
     };
     return findActiveVideoElement(map[camNumber] || []);
 }
 
 let autoScanCam1Busy = false;
 let autoScanCam2Busy = false;
-let autoScanCam3Busy = false;
-
-let activeDoorPassageWindow = false;
-let doorOpenFrameCount = 0;
-let suspiciousFrames = 0;
-let maxTailgateFrames = 21; // 7.5s at 350ms interval
-const TAILGATE_WINDOW_MS = 7500;
-const TAILGATE_TICK_MS = 350;
-const TAILGATE_SUSPICIOUS_NEEDED = 2; // consecutive multi-person ticks to alarm
-
-// --- Tailgate person tracker (B3): stable per-person IDs across ticks ---
-// Nearest-center matching on ROI box centers; tracks enter/exit + distinct
-// IDs seen inside the ROI during the window. Drawn on the cam3 overlay.
-const tailgateTracks = new Map(); // id -> {cx, cy, lastSeen, inRoi, everInRoi}
-let tailgateNextId = 1;
-const TRACK_MAX_DIST_PX = 90;
-const TRACK_STALE_MS = 1200;
-
-function updateTailgateTracks(boxes, frameW, frameH, roi) {
-    const now = Date.now();
-    const used = new Set();
-    let distinctInRoi = 0;
-    for (const b of boxes || []) {
-        const cx = b.cx ?? (b.x + b.w / 2);
-        const cy = b.cy ?? (b.y + b.h / 2);
-        let bestId = null, bestDist = TRACK_MAX_DIST_PX;
-        for (const [id, t] of tailgateTracks) {
-            if (used.has(id)) continue;
-            const d = Math.hypot(t.cx - cx, t.cy - cy);
-            if (d < bestDist) { bestDist = d; bestId = id; }
-        }
-        const inRoi = boxInRoi(b, cx, cy, roi, frameW, frameH);
-        if (bestId === null) {
-            bestId = 'P' + (tailgateNextId++);
-            tailgateTracks.set(bestId, { cx, cy, lastSeen: now, inRoi, everInRoi: inRoi });
-        } else {
-            const t = tailgateTracks.get(bestId);
-            t.cx = cx; t.cy = cy; t.lastSeen = now; t.inRoi = inRoi;
-            if (inRoi) t.everInRoi = true;
-        }
-        used.add(bestId);
-        if (inRoi) distinctInRoi++;
-    }
-    // Expire stale tracks (person left the scene).
-    for (const [id, t] of tailgateTracks) {
-        if (now - t.lastSeen > TRACK_STALE_MS) tailgateTracks.delete(id);
-    }
-    let everCount = 0;
-    for (const t of tailgateTracks.values()) {
-        if (t.everInRoi && now - t.lastSeen <= TRACK_STALE_MS) everCount++;
-    }
-    return { distinctInRoi, everCount, tracks: [...tailgateTracks.entries()].map(([id, t]) => ({ id, ...t })) };
-}
-
-function boxInRoi(b, cx, cy, roi, frameW, frameH) {
-    // roi in percent (0-100), box coords in original pixels.
-    const rx = (roi.x / 100) * frameW, ry = (roi.y / 100) * frameH;
-    const rw = (roi.w / 100) * frameW, rh = (roi.h / 100) * frameH;
-    const centerIn = cx >= rx && cx <= rx + rw && cy >= ry && cy <= ry + rh;
-    const intersects = b.x < rx + rw && b.x + b.w > rx && b.y < ry + rh && b.y + b.h > ry;
-    return centerIn || intersects; // locked rule: matches Rust count_and_locate_in_roi
-}
-
-function drawTailgateOverlay(tracks, roi, videoEl) {
-    // Overlay canvas sits atop the cam3 card (created on demand).
-    let canvas = document.getElementById('tailgate-track-overlay');
-    const host = videoEl ? videoEl.closest('.glass-panel') || videoEl.parentElement : null;
-    if (!canvas && host) {
-        canvas = document.createElement('canvas');
-        canvas.id = 'tailgate-track-overlay';
-        canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
-        const pos = window.getComputedStyle(host).position;
-        if (pos === 'static') host.style.position = 'relative';
-        host.appendChild(canvas);
-    }
-    if (!canvas || !videoEl || !videoEl.videoWidth) return;
-    const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
-    canvas.width = vw; canvas.height = vh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, vw, vh);
-    // ROI box (cyan).
-    ctx.strokeStyle = 'rgba(34,211,238,0.9)';
-    ctx.lineWidth = Math.max(2, vw / 320);
-    ctx.strokeRect((roi.x / 100) * vw, (roi.y / 100) * vh, (roi.w / 100) * vw, (roi.h / 100) * vh);
-    // Tracked persons: green = moving, amber = static, red = in ROI.
-    for (const t of tracks) {
-        const color = t.inRoi ? 'rgba(248,113,113,0.95)' : 'rgba(52,211,153,0.9)';
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(2, vw / 320);
-        const bx = t.cx - 30, by = t.cy - 40;
-        ctx.strokeRect(bx, by, 60, 80);
-        ctx.fillStyle = color;
-        ctx.font = `bold ${Math.max(12, vw / 53)}px sans-serif`;
-        ctx.fillText(t.id + (t.inRoi ? ' ROI' : ''), bx, by - 4);
-    }
-}
-
-async function testTransitPassage() {
-    // Real single-frame count on the overhead feed (replaces the old blind
-    // 2s arm): reports persons + motion so routing can be verified live.
-    const out = document.getElementById('transit-test-result');
-    const say = (t) => { if (out) out.innerText = t; };
-    say('Capturing overhead frame…');
-    try {
-        const video = getCaptureElement(3);
-        if (!video) { say('No overhead video feed — check routing.'); return; }
-        const frame = captureVideoFrame(video);
-        if (!frame) { say('Frame capture failed.'); return; }
-        const cfg = appSettings.camera_config || {};
-        const res = await invokeTauri('count_persons_in_frame', {
-            imageBase64: frame,
-            roiX: cfg.roi_x ?? 20, roiY: cfg.roi_y ?? 20,
-            roiWidth: cfg.roi_width ?? 60, roiHeight: cfg.roi_height ?? 60,
-        });
-        const motion = res && res.motion_in_roi !== undefined
-            ? `, motion ${((res.motion_in_roi || 0) * 100).toFixed(0)}%` : '';
-        say(`Count: ${res ? res.person_count : '?'} person(s) in ROI${motion}. Boxes: ${res && res.boxes ? res.boxes.length : 0}.`);
-        const boxes = (res && res.boxes) || [];
-        const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
-        const tracked = updateTailgateTracks(boxes, vw, vh, {
-            x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
-            w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
-        });
-        drawTailgateOverlay(tracked.tracks, {
-            x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
-            w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
-        }, video);
-    } catch (e) {
-        say('Count failed: ' + (e?.message || e));
-    }
-}
-
-function clearTailgateOverlay() {
-    tailgateTracks.clear();
-    const canvas = document.getElementById('tailgate-track-overlay');
-    if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-}
-
-let activeWindowMemberId = null; // whose admitted entry Loop 3 attributes if piggybacked
-
-function armDoorOpenTailgateSurveillance(durationMs = TAILGATE_WINDOW_MS, admittedMemberId = null) {
-    activeDoorPassageWindow = true;
-    doorOpenFrameCount = 0;
-    suspiciousFrames = 0;
-    activeWindowMemberId = admittedMemberId || null;
-    maxTailgateFrames = Math.max(6, Math.floor(durationMs / TAILGATE_TICK_MS));
-    console.debug(`[Security] 1:1 Anti-Tailgate Surveillance armed for ${durationMs}ms`);
-}
 
 /**
- * Universal Concurrent 3-Camera Vision Engine (SLS123 Parity):
+ * Universal Concurrent 2-Camera Vision Engine:
  * - Camera 1 (Entry Face Terminal): continuous face scan with direction 'in'
  * - Camera 2 (Exit Face Terminal): continuous face scan with direction 'out'
- * - Camera 3 (Overhead Tailgate Radar): continuous YOLOv8 person tracking in ROI zone
  */
 async function startAutonomousBiometricEngine() {
     // ── Loop 1: Camera 1 Entry Face Scanner (Direction 'in') — 650ms tick ──
@@ -1706,10 +1293,6 @@ async function startAutonomousBiometricEngine() {
                     `Welcome, <b>${escapeHtml(res.member_name || 'Member')}</b>! ${branchInfo}Gate unlocked (3000ms). (${(scanRes.confidence * 100 | 0)}% conf)`,
                     "success"
                 );
-
-                // Arm 1:1 Door-Open Anti-Tailgate Surveillance for 7.5s,
-                // attributed to this admitted member for the incident record.
-                armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
 
                 await loadAttendanceLogs();
                 await refreshDashboard();
@@ -1804,11 +1387,6 @@ async function startAutonomousBiometricEngine() {
                     "exit"
                 );
 
-                // Exit opens the same 7.5s window, attributed to the exiting
-                // member: a tailgater can follow an exiting member just as
-                // easily as an entering one.
-                armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
-
                 await loadAttendanceLogs();
                 await refreshDashboard();
             } else if (res && res.needs_reenroll) {
@@ -1830,114 +1408,6 @@ async function startAutonomousBiometricEngine() {
         }
     }, 650);
 
-    // ── Loop 3: Camera 3 Continuous Overhead Anti-Tailgate Radar (350ms tick) ──
-    // Economy: disarmed ticks run YOLO at most every 6th tick (~2.1s, overlay
-    // only); armed ticks run every tick. All three camera loops stay concurrent.
-    let cam3Economy = 0;
-    setInterval(async () => {
-        if (!autoGateActive || autoScanCam3Busy || document.hidden) return;
-        const armed = activeDoorPassageWindow;
-        if (!armed) {
-            cam3Economy++;
-            if (cam3Economy % 6 !== 1) return;
-        }
-        autoScanCam3Busy = true;
-        try {
-            const video = getCaptureElement(3);
-            if (!video) return;
-
-            const frame = captureVideoFrame(video);
-            if (!frame) return;
-
-            const cfg = appSettings.camera_config || {};
-            const roi = {
-                x: cfg.roi_x ?? 20, y: cfg.roi_y ?? 20,
-                w: cfg.roi_width ?? 60, h: cfg.roi_height ?? 60,
-            };
-            let res;
-            try {
-                res = await invokeTauri('count_persons_in_frame', {
-                    imageBase64: frame,
-                    roiX: roi.x,
-                    roiY: roi.y,
-                    roiWidth: roi.w,
-                    roiHeight: roi.h,
-                });
-            } catch (e) {
-                noteCamErr('cam3', 'Camera 3 (Tailgate)');
-                return;
-            }
-            noteCamOk('cam3');
-
-            // Tracker overlay (always, cheap JS-side): stable IDs + ROI box.
-            const boxes = (res && res.boxes) || [];
-            const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
-            const tracked = updateTailgateTracks(boxes, vw, vh, roi);
-            drawTailgateOverlay(tracked.tracks, roi, video);
-
-            if (!activeDoorPassageWindow) return;
-            doorOpenFrameCount++;
-            // Alarm legs: 2+ in-ROI persons WITH ROI motion (>=2% pixel churn,
-            // kills YOLO ghost false alarms on posters/shadows), OR 2+ distinct
-            // tracked IDs having entered the ROI (tracks imply movement).
-            // (Pure head-count mode returns when the new overhead camera unit
-            // is installed — the current unit needs the motion gate.)
-            const motion = (res && res.motion_in_roi) || 0;
-            const multiStatic = res && res.person_count > 1 && motion >= 0.02;
-            const multiTracked = tracked.everCount >= 2;
-            if (multiStatic || multiTracked) {
-                suspiciousFrames++;
-                // Immediate trigger when multi-occupancy confirmed across 2 ticks
-                if (suspiciousFrames >= TAILGATE_SUSPICIOUS_NEEDED) {
-                    activeDoorPassageWindow = false;
-                    clearTailgateOverlay();
-                    try {
-                        const alarmRes = await invokeTauri('trigger_tailgate_alarm', {
-                            reason: `Multi-occupancy turnstile transit violation in ROI (${res.person_count} persons, motion ${(motion * 100).toFixed(0)}%, ${tracked.everCount} tracked)`,
-                            linkedMemberId: activeWindowMemberId,
-                            personCount: res.person_count
-                        }).catch(() => null);
-                        activeWindowMemberId = null;
-                        const sirenNote = !alarmRes
-                            ? ''
-                            : alarmRes.siren_deferred_ms
-                            ? ` Siren deferred ${alarmRes.siren_deferred_ms}ms (relay safety gap — anti-brownout).`
-                            : alarmRes.siren_suppressed
-                            ? ' Siren held (log-only mode or cooldown) — incident recorded.'
-                            : ' Hardware Siren Active!';
-
-                        const banner = document.getElementById('tailgate-siren-banner');
-                        if (banner) {
-                            banner.classList.remove('hidden');
-                            setTimeout(() => { if (banner) banner.classList.add('hidden'); }, 10000);
-                        }
-
-                        showHudToast(
-                            "Anti-Tailgate Violation",
-                            `Tailgating Detected! Multiple persons in Turnstile ROI during gate transit (${res.person_count} persons).${sirenNote}`,
-                            "danger"
-                        );
-
-                        await loadAttendanceLogs();
-                        await refreshDashboard();
-                    } catch (e) {
-                        console.debug("Tailgate alarm trigger error:", e);
-                    }
-                }
-            } else {
-                suspiciousFrames = 0;
-            }
-
-            if (doorOpenFrameCount >= maxTailgateFrames) {
-                activeDoorPassageWindow = false;
-                clearTailgateOverlay();
-            }
-        } catch (e) {
-            console.debug("Cam 3 tailgate cycle error:", e);
-        } finally {
-            autoScanCam3Busy = false;
-        }
-    }, 350);
 }
 
 // (loadAppSettings defined below in Theme & White-Label Branding Engine section)
@@ -1979,7 +1449,6 @@ async function initApp() {
 }
 
 // ── Hardware Push-Buttons (pins.jfif): BTN1 pin 4 = ENTRY camera, BTN2 pin 8 = EXIT camera ──
-// Tailgate has no button — it arms automatically on every entry unlock.
 let hardwareButtonPollTimer = null;
 
 function startHardwareButtonPoll() {
@@ -2004,10 +1473,6 @@ async function handleHardwareButtonEvent(evt) {
     if (!isEntry && !isExit) return;
     const direction = isEntry ? 'in' : 'out';
     const label = isEntry ? 'ENTRY Camera Enabled (BTN 1)' : 'EXIT Camera Enabled (BTN 2)';
-    // The 7.5s tailgate window opens on EVERY button press up front —
-    // verified or not, entry or exit. Someone tailgating an unverified
-    // attempt is exactly what this catches.
-    armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS);
     showHudToast(label, isEntry ? 'Face the ENTRY camera — scanning…' : 'Face the EXIT camera — scanning…', 'success');
     // Highlight active camera card briefly
     try { highlightCameraCard(isEntry ? 'kiosk-cam1-entry' : 'kiosk-cam2-exit'); } catch (e) {}
@@ -2096,7 +1561,6 @@ async function doHardwareFaceScan(videoId, direction) {
             const isCross = result.member_name && cachedMembers.find(m => `${m.first_name} ${m.last_name}` === result.member_name)?.home_gym_name;
             showHudToast(direction === 'in' ? 'Entry Verified' : 'Exit Verified',
                 `${escapeHtml(result.member_name || 'Member')} — Gate unlocked (${(result.confidence*100|0)}% ${direction.toUpperCase()})`, 'success');
-            armDoorOpenTailgateSurveillance(TAILGATE_WINDOW_MS, matchedId);
             await loadAttendanceLogs();
             await refreshDashboard();
         } else {
@@ -2157,9 +1621,9 @@ async function loadAppSettings() {
             appSettings = settings;
             localStorage.setItem('gympos_branding', JSON.stringify(settings));
             applyBrandingToUI(settings);
-            // Restore camera ROI calibration config from settings
+            // Restore recognition tuning sliders from settings
             if (settings.camera_config) {
-                applyRoiConfigToOverlays(settings.camera_config);
+                applyTuningToSliders(settings.camera_config);
             }
             return;
         }
@@ -2300,10 +1764,8 @@ function switchView(viewName) {
         // Bind onchange auto-preview for camera assignment dropdowns
         const sel1 = document.getElementById('cam-assign-entry');
         const sel2 = document.getElementById('cam-assign-exit');
-        const sel3 = document.getElementById('cam-assign-tailgate');
         if (sel1 && !sel1._bound) { sel1.addEventListener('change', () => previewSelectedCamera(1, sel1.value)); sel1._bound = true; }
         if (sel2 && !sel2._bound) { sel2.addEventListener('change', () => previewSelectedCamera(2, sel2.value)); sel2._bound = true; }
-        if (sel3 && !sel3._bound) { sel3.addEventListener('change', () => previewSelectedCamera(3, sel3.value)); sel3._bound = true; }
     }
 }
 
@@ -2606,11 +2068,15 @@ function resetRegistrationStudio() {
     const ln = document.getElementById('reg-mem-last-name');
     const phn = document.getElementById('reg-mem-phone');
     const em = document.getElementById('reg-mem-email');
+    const jd = document.getElementById('reg-mem-join-date');
+    const ed = document.getElementById('reg-mem-expiry-date');
     const err = document.getElementById('reg-error-msg');
     if (fn) fn.value = '';
     if (ln) ln.value = '';
     if (phn) phn.value = '';
     if (em) em.value = '';
+    if (jd) jd.value = '';
+    if (ed) ed.value = '';
     if (err) err.innerText = '';
 }
 
@@ -2620,7 +2086,14 @@ async function submitStudioRegistration() {
     const phone = document.getElementById('reg-mem-phone').value.trim();
     const email = document.getElementById('reg-mem-email').value.trim();
     const plan = document.getElementById('reg-mem-plan').value;
+    const joinDate = (document.getElementById('reg-mem-join-date')?.value || '').trim();
+    const expiryDate = (document.getElementById('reg-mem-expiry-date')?.value || '').trim();
     const errorEl = document.getElementById('reg-error-msg');
+
+    if (joinDate && expiryDate && expiryDate < joinDate) {
+        errorEl.innerText = "Expiry date cannot be earlier than the join date";
+        return;
+    }
 
     if (!rescanMemberId) {
         if (!firstName || !lastName) {
@@ -2708,7 +2181,9 @@ async function submitStudioRegistration() {
                 phone: phone,
                 membership_type: plan,
                 face_vectors: finalVectors,
-                photo_data_url: refPhoto
+                photo_data_url: refPhoto,
+                created_at: joinDate || null,
+                expires_at: expiryDate || null
             }
         });
 
@@ -2754,7 +2229,7 @@ async function refreshDashboard() {
             : null;
         const signature = JSON.stringify([
             summary.active_members, summary.max_members, summary.today_checkins,
-            summary.tailgate_count, summary.tier, summary.hardware_connected,
+            summary.tier, summary.hardware_connected,
             summary.hardware_port, statusType0, statusDays0, statusReason0,
         ]);
         if (signature === lastDashboardSignature) return;
@@ -2771,9 +2246,6 @@ async function refreshDashboard() {
 
         const checkinsEl = document.getElementById('stat-checkins');
         if (checkinsEl) checkinsEl.innerText = summary.today_checkins;
-
-        const tailgatesEl = document.getElementById('stat-tailgates');
-        if (tailgatesEl) tailgatesEl.innerText = summary.tailgate_count;
 
         // Member census boxes: Active / Expired / Total (checklist requirement)
         try {
@@ -2921,8 +2393,6 @@ async function submitWalkInPass() {
         });
 
         closeWalkInModal();
-        // Walk-in opens the door: same 7.5s tailgate window as any unlock.
-        armDoorOpenTailgateSurveillance();
         await loadWalkIns();
         await loadAttendanceLogs();
         await refreshDashboard();
@@ -3059,7 +2529,7 @@ function filterMembersList() {
     });
 
     if (filtered.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-slate-500">No members matching search filter</td></tr>';
         return;
     }
 
@@ -3084,6 +2554,10 @@ function filterMembersList() {
             ? `<button onclick="unfreezeMember('${escId}')" title="Unfreeze (reactivate)" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Unfreeze</button>`
             : `<button onclick="freezeMember('${escId}')" title="Freeze (deny gate, keep data)" class="px-2.5 py-1 rounded bg-amber-950/60 hover:bg-amber-900 text-xs text-amber-300 border border-amber-800/50 font-medium transition">Freeze</button>`;
 
+        const joinedDisp = m.created_at ? new Date(m.created_at).toLocaleDateString() : '--';
+        const expRaw = m.expires_at || null;
+        const expPast = expRaw ? (new Date(expRaw).getTime() < Date.now()) : false;
+        const expDisp = expRaw ? new Date(expRaw).toLocaleDateString() : '<span class="text-slate-600">—</span>';
         return `
             <tr class="hover:bg-slate-800/30 transition ${isSuspended || isExpired ? 'opacity-70' : ''}">
                 <td class="p-3 font-mono text-blue-300">${escapeHtml(m.id)}</td>
@@ -3099,11 +2573,13 @@ function filterMembersList() {
                 </td>
                 <td class="p-3 uppercase text-[11px] font-bold text-amber-300">${escapeHtml(m.membership_type)}</td>
                 <td class="p-3 text-slate-400 font-mono">${escapeHtml(m.phone || '--')}</td>
+                <td class="p-3 text-slate-400 font-mono whitespace-nowrap">${escapeHtml(joinedDisp)}</td>
+                <td class="p-3 font-mono whitespace-nowrap ${expPast ? 'text-red-400 font-bold' : 'text-slate-400'}">${expDisp}</td>
                 <td class="p-3">${statusBadge}</td>
                 <td class="p-3 text-right">
                     <div class="flex flex-wrap justify-end gap-1.5">
                         <button onclick="openEditMemberModal('${escId}')" title="Edit Profile" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-blue-300 border border-slate-700 font-medium transition">Edit</button>
-                        <button onclick="renewMember('${escId}')" title="Renew: +30 days, back to ACTIVE" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Renew</button>
+                        <button onclick="renewMember('${escId}')" title="Renew: set expiry date, back to ACTIVE" class="px-2.5 py-1 rounded bg-emerald-950/60 hover:bg-emerald-900 text-xs text-emerald-300 border border-emerald-800/50 font-medium transition">Renew</button>
                         <button onclick="startMemberRescan('${escId}')" title="Re-scan face in Studio" class="px-2.5 py-1 rounded bg-purple-950/60 hover:bg-purple-900 text-xs text-purple-300 border border-purple-800/50 font-medium transition">Re-scan</button>
                         ${freezeBtn}
                         <button onclick="deleteMember('${escId}', '${escName}')" title="Delete Member" class="px-2.5 py-1 rounded bg-red-950/60 hover:bg-red-900 text-xs text-red-300 border border-red-800/50 font-medium transition">Delete</button>
@@ -3123,12 +2599,19 @@ function formatRbacError(action, err) {
 }
 
 async function renewMember(id) {
-    if (!confirm(`Renew membership for ${id}? Status returns to ACTIVE with expiry +30 days.`)) return;
+    const defaultExp = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+    const picked = prompt(`Renew membership for ${id}?\nEnter expiry date (YYYY-MM-DD) or accept the default +30 days (${defaultExp}).\nCancel aborts the renewal.`, defaultExp);
+    if (picked === null) return;
+    const expiry = picked.trim();
+    if (expiry && !/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+        alert('Invalid date — use YYYY-MM-DD (e.g. 2026-10-09). Renewal aborted.');
+        return;
+    }
     try {
-        await invokeTauri('renew_member', { id: id });
+        await invokeTauri('renew_member', { id: id, expires_at: expiry || null, duration_days: null });
         await loadMembers();
         await refreshDashboard();
-        showHudToast('Membership Renewed', `${id} is ACTIVE for 30 more days.`, 'success');
+        showHudToast('Membership Renewed', `${id} is ACTIVE until ${expiry || defaultExp}.`, 'success');
     } catch (e) { alert(formatRbacError('Renew', e)); }
 }
 
@@ -3277,6 +2760,10 @@ function openEditMemberModal(id) {
         planSel.querySelectorAll('option[data-legacy]').forEach(o => o.remove());
     }
     document.getElementById('edit-mem-status').value = m.status.toLowerCase();
+    // Dates arrive as full ISO (or legacy rows without expiry) — date
+    // inputs need the YYYY-MM-DD prefix only.
+    document.getElementById('edit-mem-join-date').value = (m.created_at || '').slice(0, 10);
+    document.getElementById('edit-mem-expiry-date').value = (m.expires_at || '').slice(0, 10);
     document.getElementById('edit-mem-error-msg').innerText = '';
     const photoEl = document.getElementById('edit-mem-photo');
     if (photoEl) {
@@ -3301,10 +2788,17 @@ async function submitUpdateMember() {
     const email = document.getElementById('edit-mem-email').value.trim();
     const plan = document.getElementById('edit-mem-plan').value;
     const status = document.getElementById('edit-mem-status').value;
+    const joinDate = (document.getElementById('edit-mem-join-date')?.value || '').trim();
+    // Empty expiry clears it (no expiry); empty join keeps the stored date.
+    const expiryDate = (document.getElementById('edit-mem-expiry-date')?.value || '').trim();
     const errorEl = document.getElementById('edit-mem-error-msg');
 
     if (!firstName || !lastName) {
         errorEl.innerText = "First and last name are required";
+        return;
+    }
+    if (joinDate && expiryDate && expiryDate < joinDate) {
+        errorEl.innerText = "Expiry date cannot be earlier than the join date";
         return;
     }
 
@@ -3331,7 +2825,9 @@ async function submitUpdateMember() {
                 email: email,
                 membership_type: plan,
                 status: status,
-                photo_data_url: photoUrl
+                photo_data_url: photoUrl,
+                created_at: joinDate || null,
+                expires_at: expiryDate === '' ? '' : expiryDate
             }
         });
 
@@ -3762,8 +3258,7 @@ async function loadEndOfDay() {
         set('eod-stat-tx', r.transactions);
         set('eod-stat-discounts', `−${peso(r.discounts)} (${r.discounted_transactions} tx)`);
         set('eod-stat-walkins', `${r.walk_ins} (${peso(r.walk_in_revenue)})`);
-        set('eod-stat-checkins', r.check_ins);
-        set('eod-stat-tailgates', r.tailgate_flags);
+            set('eod-stat-checkins', r.check_ins);
         set('eod-stat-expenses', `−${peso(r.expense_total)} (${r.expense_count})`);
         set('eod-stat-cashflow', peso(r.net_cash_flow));
         if (body) {
@@ -4079,57 +3574,21 @@ async function cancelCoachSession(sessionId) {
     }
 }
 
-// --- Live Gate & Anti-Tailgate Incident System ---
-
-let attendanceTailgateOnly = false;
-
-function toggleTailgateFilter() {
-    attendanceTailgateOnly = !attendanceTailgateOnly;
-    const btn = document.getElementById('btn-tailgate-filter');
-    if (btn) {
-        btn.innerText = attendanceTailgateOnly ? 'Show all activity' : 'Show tailgate only';
-        btn.className = attendanceTailgateOnly
-            ? 'px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-red-950 hover:bg-red-900 text-red-200 border border-red-800 transition'
-            : 'px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition';
-    }
-    loadAttendanceLogs();
-}
-
-async function resolveTailgateIncident(id) {
-    try {
-        await invokeTauri('resolve_tailgate_incident', { id });
-        await loadAttendanceLogs();
-        await refreshDashboard();
-    } catch (e) {
-        alert("Resolve failed (manager/owner login required): " + e);
-    }
-}
+// --- Live Gate Activity Log ---
 
 async function loadAttendanceLogs() {
     try {
-        const [logs, inc] = await Promise.all([
-            invokeTauri('list_recent_attendance', { limit: 15 }),
-            invokeTauri('list_tailgate_incidents', { limit: 1 }).catch(() => null)
-        ]);
+        const logs = await invokeTauri('list_recent_attendance', { limit: 15 });
         const tbody = document.getElementById('attendance-log-tbody');
-        if (tbody) {
-            const badge = document.getElementById('tailgate-unacked-badge');
-            const unacked = inc && typeof inc.unacked === 'number' ? inc.unacked : 0;
-            if (badge) {
-                badge.innerText = `${unacked} unreviewed`;
-                badge.classList.toggle('hidden', unacked === 0);
-            }
-        }
         if (!tbody) return;
 
-        const rows = attendanceTailgateOnly && Array.isArray(logs) ? logs.filter(l => l.tailgate_flag) : logs;
+        const rows = logs;
         if (!Array.isArray(rows) || rows.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-slate-500">${attendanceTailgateOnly ? 'No tailgate incidents in recent activity' : 'No recent gate activity'}</td></tr>`;
+            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500">No recent gate activity</td></tr>';
             return;
         }
 
         tbody.innerHTML = rows.map(l => {
-            const isTailgate = l.tailgate_flag;
             const isOverride = l.direction === 'override' || (l.member_name && l.member_name.includes('STAFF MANUAL'));
             const isWalkIn = l.member_name && l.member_name.startsWith('Walk-In:');
 
@@ -4154,12 +3613,7 @@ async function loadAttendanceLogs() {
             const isInterbranchVisitor = !!(interMember && interMember.home_gym_name && interMember.home_gym_name !== (appSettings.gym_name||'') && !isOverride);
 
             let flagBadge = '<span class="text-slate-500 text-[10px]">Normal</span>';
-            if (isTailgate) {
-                const attrib = l.linked_member_id
-                    ? `<div class="text-[9px] text-red-300/70 font-mono mt-0.5">via ${escapeHtml(l.linked_member_id)}${l.person_count ? ` · ${l.person_count}p` : ''}</div>`
-                    : (l.person_count ? `<div class="text-[9px] text-red-300/70 font-mono mt-0.5">${l.person_count}p in ROI</div>` : '');
-                flagBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-red-950 text-red-400 border border-red-800 font-bold animate-pulse"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg><span>TAILGATE FLAG</span></span>${attrib}<button onclick="resolveTailgateIncident('${l.id}')" title="Mark reviewed (manager/owner)" class="mt-1 px-2 py-0.5 rounded text-[9px] bg-slate-800 hover:bg-emerald-950 text-slate-300 hover:text-emerald-300 border border-slate-700 font-semibold transition">Resolve</button>`;
-            } else if (isInterbranchVisitor) {
+            if (isInterbranchVisitor) {
                 flagBadge = `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-purple-950 text-purple-300 border border-purple-800 font-bold" title="Home: ${interMember.home_gym_name}"><span>📍 Inter-Branch Visitor</span><span class="font-mono text-[9px]">[${interMember.home_gym_name}]</span></span>`;
             } else if (isOverride) {
                 flagBadge = '<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-amber-950 text-amber-400 border border-amber-700 font-semibold"><span>UNPAID / MANUAL PULSE</span></span>';
@@ -4171,9 +3625,7 @@ async function loadAttendanceLogs() {
 
             let displayName = l.member_name;
             if (!displayName || displayName === 'Unidentified Person') {
-                if (isTailgate) {
-                    displayName = '⚠️ Tailgate Intrusion';
-                } else if (isOverride) {
+                if (isOverride) {
                     displayName = 'Manual Gate Pulse';
                 } else {
                     displayName = 'Unregistered Visitor';
@@ -4181,7 +3633,7 @@ async function loadAttendanceLogs() {
             }
 
             return `
-                <tr class="hover:bg-slate-800/30 transition ${isTailgate ? 'bg-red-950/20' : (isInterbranchVisitor ? 'bg-purple-950/20 border-l-2 border-purple-500' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : ''))}">
+                <tr class="hover:bg-slate-800/30 transition ${(isInterbranchVisitor ? 'bg-purple-950/20 border-l-2 border-purple-500' : (isOverride ? 'bg-amber-950/25 border-l-2 border-amber-500' : ''))}">
                     <td class="p-3 font-mono text-blue-300">${l.id}</td>
                     <td class="p-3 font-semibold text-slate-200">${escapeHtml(displayName)}${isInterbranchVisitor ? ` <span class="text-[9px] text-purple-400">[${escapeHtml(interMember.home_gym_name)}]</span>` : ''}</td>
                     <td class="p-3">${dirBadge}</td>
@@ -4247,7 +3699,6 @@ async function simulateFaceScan(direction) {
             }
             msg += ` — Gate Unlocked!`;
             showHudToast("Face Verified", msg, "success");
-            armDoorOpenTailgateSurveillance();
             alert(msg);
         } else if (result.is_expired) {
             alert(`Scan Denied: ${result.message}\nDoor remains LOCKED to prevent unauthorized entry.`);
@@ -4269,7 +3720,7 @@ async function simulateWalkInScan(direction) {
     }
 
     // Live camera only: synthetic name-seeded probes self-match and prove
-    // nothing (and must never arm the tailgate window).
+    // nothing.
     const isEntry = direction === 'in';
     const video = getCaptureElement(isEntry ? 1 : 2);
     const frame = video ? captureVideoFrame(video) : null;
@@ -4312,7 +3763,6 @@ async function simulateWalkInScan(direction) {
             }
             msg += ` — Gate Unlocked!`;
             showHudToast("Walk-In Verified", msg, "success");
-            armDoorOpenTailgateSurveillance();
             alert(msg);
         } else if (result.is_expired) {
             alert(`Scan Denied: 8-Hour Pass Expired for ${guest.guest_name}. Gate remains LOCKED.`);
@@ -4327,27 +3777,7 @@ async function simulateWalkInScan(direction) {
     }
 }
 
-async function triggerTailgateSecurityAlarm() {
-    try {
-        await invokeTauri('trigger_tailgate_alarm', {
-            reason: "Turnstile ROI multi-occupancy violation"
-        });
 
-        // Show siren banner
-        const banner = document.getElementById('tailgate-siren-banner');
-        if (banner) banner.classList.remove('hidden');
-
-        await loadAttendanceLogs();
-        await refreshDashboard();
-    } catch (e) {
-        alert("Tailgate Alarm Error: " + e);
-    }
-}
-
-function dismissSiren() {
-    const banner = document.getElementById('tailgate-siren-banner');
-    if (banner) banner.classList.add('hidden');
-}
 
 // --- Quick Hardware & License ---
 
@@ -4371,8 +3801,6 @@ async function quickUnlockDoor() {
             durationMs: 3000,
             reason: reason.trim() || 'No reason provided'
         });
-        // Any door opening gets the 7.5s tailgate window, operator or not.
-        armDoorOpenTailgateSurveillance();
         setTimeout(() => {
             if (lockEl) {
                 lockEl.innerText = "LOCKED (STANDBY)";
@@ -4784,7 +4212,6 @@ function lockTerminal() {
     camerasStarted = false;
     if (streamCam1) { stopStream(streamCam1); streamCam1 = null; }
     if (streamCam2) { stopStream(streamCam2); streamCam2 = null; }
-    if (streamCam3) { stopStream(streamCam3); streamCam3 = null; }
     try { invokeTauri('logout_terminal_session'); } catch (_) {}
     showLockScreen();
 }

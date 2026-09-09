@@ -1,6 +1,6 @@
 //! E2E inter-branch + gate turnstile integration test
 //! Run: cargo test --test e2e_interbranch_turnstile
-//! Steps: enroll 5-angle → interbranch upsert → FaceVectorStore match → anti-passback → visitor badge → tailgate
+//! Steps: enroll 5-angle → interbranch upsert → FaceVectorStore match → anti-passback → visitor badge
 
 use gympos_shared::CloudMemberSyncItem;
 use gympos_desktop_lib::db::Database;
@@ -103,21 +103,6 @@ fn e2e_interbranch_sync_and_gate() {
     assert_eq!(last_dir, Some("in".to_string()));
     // Second IN should be considered passback (caller checks last_direction == Some("in"))
     assert_eq!(last_dir.as_deref(), Some("in"));
-}
-
-#[test]
-fn e2e_tailgate_threshold_math() {
-    // App.js armDoorOpenTailgateSurveillance: duration 3500ms, interval 250ms, sensitivity 85
-    let duration = 3500;
-    let interval = 250;
-    let max_frames = duration / interval; // 14
-    assert_eq!(max_frames, 14);
-    let sensitivity = 85;
-    let violation_threshold = std::cmp::max(2, (max_frames as f32 * (1.0 - sensitivity as f32 / 100.0) * 0.6).floor() as usize);
-    assert!(violation_threshold >= 2);
-    // 5 suspicious frames in 14 with threshold 2 -> should trigger ALARM:5000 / PAT_HEAVY_ALERT
-    let suspicious = 5;
-    assert!(suspicious >= 3, "3 confirm frames minimum for tailgate");
 }
 
 #[test]

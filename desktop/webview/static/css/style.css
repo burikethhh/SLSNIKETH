@@ -58,23 +58,6 @@
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
-/* ── Tailgate Emergency Siren Flash ─────────────────── */
-@keyframes siren-strobe {
-    0%, 100% {
-        background-color: rgba(220, 38, 38, 0.25);
-        border-color: rgba(239, 68, 68, 0.8);
-        box-shadow: 0 0 30px rgba(239, 68, 68, 0.4);
-    }
-    50% {
-        background-color: rgba(220, 38, 38, 0.05);
-        border-color: rgba(239, 68, 68, 0.3);
-        box-shadow: 0 0 10px rgba(239, 68, 68, 0.1);
-    }
-}
-.siren-active {
-    animation: siren-strobe 0.8s infinite ease-in-out;
-}
-
 /* ── Color Swatch Selection ─────────────────────────── */
 .color-swatch {
     width: 32px;

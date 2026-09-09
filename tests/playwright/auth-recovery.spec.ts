@@ -37,19 +37,10 @@ const portalAnalytics = {
   revenue_by_category: { 'Store POS': 310000 }, hourly_traffic: Array(24).fill(0),
 };
 
-const portalIncidents = {
-  incidents: [
-    { id: 'ATT-ABCD1234', gym_id: '11111111-1111-1111-1111-111111111111', gym_name: 'QA Makati', owner_email: 'qa@titan.fitness', member_name: '⚠️ Tailgate Intrusion', linked_member_id: 'MEM-001', person_count: 2, timestamp: new Date().toISOString(), acknowledged: false, acknowledged_by: null },
-    { id: 'ATT-OLD99999', gym_id: '11111111-1111-1111-1111-111111111111', gym_name: 'QA Makati', owner_email: 'qa@titan.fitness', member_name: '⚠️ Tailgate Intrusion', linked_member_id: null, person_count: 3, timestamp: new Date().toISOString(), acknowledged: true, acknowledged_by: 'qa@titan.fitness' },
-  ],
-  unacked: 1, by_gym_7d: { '11111111-1111-1111-1111-111111111111': 2 },
-};
-
 async function mockPortalHappy(page: any) {
   await page.route('**/api/v1/owner/analytics', (r: any) => r.fulfill({ json: portalAnalytics }));
   await page.route('**/api/v1/owner/catalog', (r: any) => r.fulfill({ json: { products: [], plans: [], promos: [] } }));
   await page.route('**/api/v1/owner/staff', (r: any) => r.fulfill({ json: { staff: [], count: 0 } }));
-  await page.route('**/api/v1/owner/incidents*', (r: any) => r.fulfill({ json: portalIncidents }));
 }
 
 async function mockPortal401(page: any) {
@@ -60,12 +51,12 @@ const isHidden = (page: any, sel: string) =>
   page.evaluate((s: string) => !!document.querySelector(s)?.classList.contains('hidden'), sel);
 
 test.describe('owner portal screens + 401 recovery', () => {
-  test('all 8 tabs render with views', async ({ page }) => {
+  test('all 7 tabs render with views', async ({ page }) => {
     await page.addInitScript(CHART_STUB);
     await seedOwnerSession(page, goodOwnerToken);
     await mockPortalHappy(page);
     await page.goto(`${STATIC}/portal.html`);
-    for (const tab of ['overview', 'keys', 'staff', 'catalog', 'plans', 'promos', 'transactions', 'incidents']) {
+    for (const tab of ['overview', 'keys', 'staff', 'catalog', 'plans', 'promos', 'transactions']) {
       await expect(page.locator(`#tab-${tab}`)).toBeAttached();
       await page.locator(`#tab-${tab}`).click();
       expect(await isHidden(page, `#view-${tab}`)).toBe(false);
@@ -83,21 +74,6 @@ test.describe('owner portal screens + 401 recovery', () => {
     await expect(page.locator('body')).not.toContainText('Optimum Whey');
     await expect(page.locator('body')).not.toContainText('SUMMER2026');
     await expect(page.locator('body')).not.toContainText('VIP Executive Annual');
-  });
-
-  test('incidents tab renders feed, badge, ack flow', async ({ page }) => {
-    await page.addInitScript(CHART_STUB);
-    await seedOwnerSession(page, goodOwnerToken);
-    await mockPortalHappy(page);
-    let acked = false;
-    await page.route('**/api/v1/owner/incidents/*/ack', (r: any) => { acked = true; return r.fulfill({ json: { acknowledged: true } }); });
-    await page.goto(`${STATIC}/portal.html`);
-    await page.locator('#tab-incidents').click();
-    await expect(page.locator('#incidents-tbody')).toContainText('MEM-001');
-    await expect(page.locator('#incidents-tbody')).toContainText('MEM-001');
-    await expect(page.locator('#incidents-badge')).toContainText('1');
-    await page.getByRole('button', { name: 'Acknowledge' }).first().click();
-    await expect.poll(() => acked).toBe(true);
   });
 
   test('peso pricing, no demo credentials in portal', async ({ page }) => {
@@ -166,55 +142,7 @@ test.describe('CEO command center screens + 401 recovery', () => {
     });
   }
 
-  test('screens render: fleet, vault, releases, security console', async ({ page }) => {
-    await seedCeo(page);
-    await page.route('**/api/**', (r: any) => {
-      const url = r.request().url();
-      if (url.includes('/admin/owners')) return r.fulfill({ json: [] });
-      if (url.includes('/licenses')) return r.fulfill({ json: [] });
-      if (url.includes('/updates/releases')) return r.fulfill({ json: [] });
-      if (url.includes('/admin/incidents')) return r.fulfill({ json: { incidents: [], unacked: 0 } });
-      if (url.includes('/analytics/fleet')) return r.fulfill({ json: { security_breach_by_gym_7d: {} } });
-      return r.fulfill({ status: 404, json: {} });
-    });
-    await page.goto(`${STATIC}/`);
-    await expect(page.locator('body')).toContainText('CEO COMMAND CENTER');
-    await expect(page.locator('#owners-hierarchy-container')).toBeAttached();
-    await expect(page.locator('#license-vault-tbody')).toBeAttached();
-    await expect(page.locator('body')).toContainText('Tailgate Security Console');
-    await expect(page.locator('#security-incidents-tbody')).toContainText('No tailgate incidents');
-  });
-
-  test('security console renders incidents, ack flow, 7d chips, peso tiers', async ({ page }) => {
-    await seedCeo(page);
-    let acked = false;
-    let policySet: any = null;
-    await page.route('**/api/**', (r: any) => {
-      const url = r.request().url();
-      if (url.includes('/admin/owners')) return r.fulfill({
-        json: [{ owner_email: 'o@titan.fitness', company_name: 'Titan', total_branches: 1, pending_licenses_count: 0, branches: [{ gym_id: 'g1', name: 'Makati', tier: 'pro', license_key: 'k', is_license_active: true, days_remaining: 30 }] }],
-      });
-      if (url.includes('/licenses')) return r.fulfill({ json: [] });
-      if (url.includes('/updates/releases')) return r.fulfill({ json: [] });
-      if (url.endsWith('/ack') && r.request().method() === 'POST') { acked = true; return r.fulfill({ json: { acknowledged: true } }); }
-      if (url.includes('/admin/incidents')) return r.fulfill({ json: portalIncidents });
-      if (url.includes('/analytics/fleet')) return r.fulfill({ json: { security_breach_by_gym_7d: { g1: 2 } } });
-      if (url.includes('/tailgate') && r.request().method() === 'POST') { policySet = r.request().postDataJSON(); return r.fulfill({ json: { ok: true } }); }
-      return r.fulfill({ status: 404, json: {} });
-    });
-    await page.goto(`${STATIC}/`);
-    await expect(page.locator('#security-incidents-tbody')).toContainText('MEM-001');
-    await expect(page.locator('#ceo-security-unacked')).toContainText('1 unacked');
-    await expect(page.locator('#ceo-security-branches')).toContainText('2/7d');
-    await expect(page.locator('#gym-tier')).toContainText('Pro');
-    await expect(page.locator('#stat-mrr')).toContainText('₱199.00'); // 1 mocked Pro branch
-    await page.getByRole('button', { name: 'Acknowledge' }).first().click();
-    await expect.poll(() => acked).toBe(true);
-    await page.getByRole('button', { name: 'OFF' }).first().click();
-    await expect.poll(() => policySet).toEqual({ enabled: false, siren_cooldown_secs: 300 });
-  });
-
-  test('REGRESSION: CEO 401 re-opens login modal', async ({ page }) => {
+  test('screens render: fleet, vault, releases', async ({ page }) => {
     await seedCeo(page);
     await page.route('**/api/**', (r: any) => {
       const url = r.request().url();
@@ -222,7 +150,21 @@ test.describe('CEO command center screens + 401 recovery', () => {
       if (url.includes('/licenses')) return r.fulfill({ json: [] });
       if (url.includes('/updates/releases')) return r.fulfill({ json: [] });
       if (url.includes('/analytics/fleet')) return r.fulfill({ json: {} });
-      if (url.includes('/admin/incidents')) return r.fulfill({ status: 401, json: { error: 'Unauthorized' } });
+      return r.fulfill({ status: 404, json: {} });
+    });
+    await page.goto(`${STATIC}/`);
+    await expect(page.locator('body')).toContainText('CEO COMMAND CENTER');
+    await expect(page.locator('#owners-hierarchy-container')).toBeAttached();
+    await expect(page.locator('#license-vault-tbody')).toBeAttached();
+  });
+
+  test('REGRESSION: CEO 401 re-opens login modal', async ({ page }) => {
+    await seedCeo(page);
+    await page.route('**/api/**', (r: any) => {
+      const url = r.request().url();
+      if (url.includes('/admin/owners')) return r.fulfill({ json: [] });
+      if (url.includes('/licenses')) return r.fulfill({ status: 401, json: { error: 'Unauthorized' } });
+      if (url.includes('/updates/releases')) return r.fulfill({ json: [] });
       return r.fulfill({ status: 404, json: {} });
     });
     await page.goto(`${STATIC}/`);

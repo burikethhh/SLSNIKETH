@@ -93,14 +93,6 @@ impl CloudDatabase {
                 acknowledged_by TEXT,
                 acknowledged_at TEXT
             )"#,
-            // Phase B/D: per-branch tailgate policy (remote enable + siren
-            // cooldown), synced down to the exe inside SyncResponse.
-            r#"CREATE TABLE IF NOT EXISTS cloud_gym_tailgate_policy (
-                gym_id TEXT PRIMARY KEY,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                siren_cooldown_secs INTEGER NOT NULL DEFAULT 300,
-                updated_at TEXT NOT NULL
-            )"#,
             r#"CREATE TABLE IF NOT EXISTS cloud_owner_accounts (
                 owner_email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -646,165 +638,6 @@ impl CloudDatabase {
         Ok(count)
     }
 
-    // --- Phase A-D tailgate incidents (CEO + owner feeds, ack lifecycle) ---
-
-    fn incident_from_row(row: &sqlx::postgres::PgRow) -> sqlx::Result<gympos_shared::TailgateIncident> {
-        use sqlx::Row as _;
-        let ts_str: String = row.try_get("timestamp")?;
-        let timestamp = DateTime::parse_from_rfc3339(&ts_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
-        Ok(gympos_shared::TailgateIncident {
-            id: row.try_get("id")?,
-            gym_id: row.try_get("gym_id")?,
-            gym_name: row.try_get::<Option<String>, _>("gym_name")?.unwrap_or_else(|| "Unknown branch".to_string()),
-            owner_email: row.try_get("owner_email")?,
-            member_name: row.try_get("member_name")?,
-            linked_member_id: row.try_get("linked_member_id").unwrap_or(None),
-            person_count: row.try_get("person_count").unwrap_or(None),
-            timestamp,
-            acknowledged: row.try_get::<i32, _>("acknowledged").unwrap_or(0) == 1,
-            acknowledged_by: row.try_get("acknowledged_by").unwrap_or(None),
-        })
-    }
-
-    /// Latest tailgate incidents, newest first. `owner_email=None` = fleet-wide
-    /// (CEO); `Some` = that franchise only (owner portal — enforced again at
-    /// the route layer, this is defense in depth, not the trust boundary).
-    pub async fn list_tailgate_incidents(&self, owner_email: Option<&str>, limit: i64) -> sqlx::Result<Vec<gympos_shared::TailgateIncident>> {
-        let rows = match owner_email {
-            Some(owner) => sqlx::query(
-                "SELECT a.id, a.gym_id, COALESCE(g.name, 'Unknown branch') AS gym_name, a.owner_email,
-                        a.member_name, a.linked_member_id, a.person_count, a.timestamp, a.acknowledged, a.acknowledged_by
-                 FROM cloud_attendance a LEFT JOIN cloud_gyms g ON g.id = a.gym_id
-                 WHERE a.tailgate_flag = 1 AND a.owner_email = $1
-                 ORDER BY a.timestamp DESC LIMIT $2",
-            )
-            .bind(owner)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?,
-            None => sqlx::query(
-                "SELECT a.id, a.gym_id, COALESCE(g.name, 'Unknown branch') AS gym_name, a.owner_email,
-                        a.member_name, a.linked_member_id, a.person_count, a.timestamp, a.acknowledged, a.acknowledged_by
-                 FROM cloud_attendance a LEFT JOIN cloud_gyms g ON g.id = a.gym_id
-                 WHERE a.tailgate_flag = 1
-                 ORDER BY a.timestamp DESC LIMIT $1",
-            )
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?,
-        };
-        rows.iter().map(Self::incident_from_row).collect()
-    }
-
-    /// Acknowledge an incident. Owner callers must pass `Some(owner)` so one
-    /// franchise can never ack another's incidents; CEO passes `None`.
-    pub async fn ack_tailgate_incident(&self, id: &str, owner_email: Option<&str>, by: &str) -> sqlx::Result<bool> {
-        let res = match owner_email {
-            Some(owner) => sqlx::query(
-                "UPDATE cloud_attendance SET acknowledged = 1, acknowledged_by = $1, acknowledged_at = $2
-                 WHERE id = $3 AND tailgate_flag = 1 AND owner_email = $4",
-            )
-            .bind(by)
-            .bind(Utc::now().to_rfc3339())
-            .bind(id)
-            .bind(owner)
-            .execute(&self.pool)
-            .await?,
-            None => sqlx::query(
-                "UPDATE cloud_attendance SET acknowledged = 1, acknowledged_by = $1, acknowledged_at = $2
-                 WHERE id = $3 AND tailgate_flag = 1",
-            )
-            .bind(by)
-            .bind(Utc::now().to_rfc3339())
-            .bind(id)
-            .execute(&self.pool)
-            .await?,
-        };
-        Ok(res.rows_affected() > 0)
-    }
-
-    pub async fn count_unacked_tailgates(&self, owner_email: Option<&str>) -> sqlx::Result<usize> {
-        let n: i64 = match owner_email {
-            Some(owner) => sqlx::query_scalar(
-                "SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1 AND acknowledged = 0 AND owner_email = $1",
-            )
-            .bind(owner)
-            .fetch_one(&self.pool)
-            .await?,
-            None => sqlx::query_scalar(
-                "SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1 AND acknowledged = 0",
-            )
-            .fetch_one(&self.pool)
-            .await?,
-        };
-        Ok(n as usize)
-    }
-
-    /// Per-branch tailgate counts over the trailing `days` (fleet panel).
-    pub async fn tailgate_counts_by_gym(&self, owner_email: Option<&str>, days: i64) -> sqlx::Result<HashMap<String, i64>> {
-        let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-        let rows = match owner_email {
-            Some(owner) => sqlx::query(
-                "SELECT gym_id, COUNT(*) AS n FROM cloud_attendance
-                 WHERE tailgate_flag = 1 AND timestamp >= $1 AND owner_email = $2 GROUP BY gym_id",
-            )
-            .bind(cutoff)
-            .bind(owner)
-            .fetch_all(&self.pool)
-            .await?,
-            None => sqlx::query(
-                "SELECT gym_id, COUNT(*) AS n FROM cloud_attendance
-                 WHERE tailgate_flag = 1 AND timestamp >= $1 GROUP BY gym_id",
-            )
-            .bind(cutoff)
-            .fetch_all(&self.pool)
-            .await?,
-        };
-        let mut map = HashMap::new();
-        for row in rows {
-            use sqlx::Row as _;
-            let gym_id: String = row.try_get(0)?;
-            let n: i64 = row.try_get(1)?;
-            map.insert(gym_id, n);
-        }
-        Ok(map)
-    }
-
-    /// Remote tailgate policy for one branch (defaults when no row exists).
-    pub async fn get_gym_tailgate_policy(&self, gym_id: &Uuid) -> gympos_shared::TailgatePolicy {
-        let row: Option<(i32, i32)> = sqlx::query_as(
-            "SELECT enabled, siren_cooldown_secs FROM cloud_gym_tailgate_policy WHERE gym_id = $1",
-        )
-        .bind(gym_id.to_string())
-        .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
-        match row {
-            Some((enabled, cooldown)) => gympos_shared::TailgatePolicy {
-                enabled: enabled == 1,
-                siren_cooldown_secs: cooldown.max(0) as u64,
-            },
-            None => gympos_shared::TailgatePolicy::default(),
-        }
-    }
-
-    pub async fn set_gym_tailgate_policy(&self, gym_id: &Uuid, enabled: bool, siren_cooldown_secs: i64) -> sqlx::Result<()> {
-        sqlx::query(
-            "INSERT INTO cloud_gym_tailgate_policy (gym_id, enabled, siren_cooldown_secs, updated_at)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT(gym_id) DO UPDATE SET enabled = $2, siren_cooldown_secs = $3, updated_at = $4",
-        )
-        .bind(gym_id.to_string())
-        .bind(if enabled { 1 } else { 0 })
-        .bind(siren_cooldown_secs.clamp(0, 3600))
-        .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
     // --- Analytics helpers (Stage 5.1) ---
     pub async fn count_cloud_members(&self) -> sqlx::Result<usize> {
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_members")
@@ -814,12 +647,6 @@ impl CloudDatabase {
     }
     pub async fn count_attendance(&self) -> sqlx::Result<usize> {
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_attendance")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(n as usize)
-    }
-    pub async fn count_tailgate_breaches(&self) -> sqlx::Result<usize> {
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cloud_attendance WHERE tailgate_flag = 1")
             .fetch_one(&self.pool)
             .await?;
         Ok(n as usize)
@@ -990,8 +817,14 @@ impl CloudDatabase {
         }
         // Full-replace semantics: the dashboards always push the COMPLETE
         // catalog, so ids missing from the payload were deleted in the UI —
-        // prune them (guarded: an empty payload never wipes anything).
-        if !products.is_empty() {
+        // prune them. An explicit Save of an empty list is an intentional
+        // wipe (delete-all), so it clears every row for this owner.
+        if products.is_empty() {
+            sqlx::query("DELETE FROM cloud_products WHERE owner_email = $1")
+                .bind(owner_email)
+                .execute(&self.pool)
+                .await?;
+        } else {
             sqlx::query("DELETE FROM cloud_products WHERE owner_email = $1 AND id <> ALL($2)")
                 .bind(owner_email)
                 .bind(products.iter().map(|p| p.id.clone()).collect::<Vec<String>>())
@@ -1054,7 +887,14 @@ impl CloudDatabase {
             .await?;
             count += 1;
         }
-        if !plans.is_empty() {
+        // Explicit Save of an empty plan list is an intentional wipe
+        // (delete-all) — clear every plan for this owner.
+        if plans.is_empty() {
+            sqlx::query("DELETE FROM cloud_plans WHERE owner_email = $1")
+                .bind(owner_email)
+                .execute(&self.pool)
+                .await?;
+        } else {
             sqlx::query("DELETE FROM cloud_plans WHERE owner_email = $1 AND id <> ALL($2)")
                 .bind(owner_email)
                 .bind(plans.iter().map(|p| p.id.clone()).collect::<Vec<String>>())
@@ -1121,7 +961,14 @@ impl CloudDatabase {
             .await?;
             count += 1;
         }
-        if !promos.is_empty() {
+        // Explicit Save of an empty promo list is an intentional wipe
+        // (delete-all) — clear every promo for this owner.
+        if promos.is_empty() {
+            sqlx::query("DELETE FROM cloud_promos WHERE owner_email = $1")
+                .bind(owner_email)
+                .execute(&self.pool)
+                .await?;
+        } else {
             sqlx::query("DELETE FROM cloud_promos WHERE owner_email = $1 AND code <> ALL($2)")
                 .bind(owner_email)
                 .bind(promos.iter().map(|p| p.code.clone()).collect::<Vec<String>>())

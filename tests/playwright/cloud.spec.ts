@@ -78,7 +78,7 @@ test.describe('cloud dashboard', () => {
     expect(String(body.code || body.error || '')).toMatch(/LICENSE/i);
   });
 
-  test('CEO account auth + analytics fleet returns mrr/breach', async ({ request }) => {
+  test('CEO account auth + analytics fleet returns mrr/tiers', async ({ request }) => {
     const up = await cloudUp(request);
     if (!up) test.skip(true, 'cloud not running');
 

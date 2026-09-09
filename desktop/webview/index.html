@@ -93,22 +93,6 @@
 </head>
 <body class="flex flex-col h-screen select-none">
 
-    <!-- Top Emergency Siren Banner (Hidden until triggered) -->
-    <div id="tailgate-siren-banner" class="hidden siren-active mx-4 mt-2 p-3 rounded-lg border border-red-500 flex items-center justify-between z-50 text-red-100">
-        <div class="flex items-center gap-3">
-            <svg class="w-6 h-6 text-red-400 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-            </svg>
-            <div>
-                <div class="font-bold text-sm text-red-200 uppercase tracking-wider">Security Alert: Tailgating Violation Detected</div>
-                <div id="tailgate-siren-msg" class="text-xs text-red-300/80">Turnstile ROI multi-occupancy triggered. Hardware buzzer active.</div>
-            </div>
-        </div>
-        <button onclick="dismissSiren()" class="px-3 py-1 bg-red-950/80 hover:bg-red-900 border border-red-500/40 rounded text-xs font-semibold">
-            Dismiss Alarm
-        </button>
-    </div>
-
     <!-- Floating High-Tech Toast Notification HUD -->
     <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2.5 pointer-events-none max-w-sm w-full"></div>
 
@@ -125,7 +109,7 @@
         <!-- System Status, Walk-In Pass & Quick Actions -->
         <div class="flex items-center gap-2.5">
             <!-- Autonomous Gate AI Status Toggle -->
-            <div id="auto-gate-mode-badge" onclick="toggleAutoGateMode()" class="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 transition hover:bg-emerald-900/80 shadow-sm" title="Click to toggle Auto Biometrics & Anti-Tailgate">
+            <div id="auto-gate-mode-badge" onclick="toggleAutoGateMode()" class="cursor-pointer flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 transition hover:bg-emerald-900/80 shadow-sm" title="Click to toggle Auto Biometrics">
                 <span class="relative flex h-2 w-2">
                     <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
@@ -329,7 +313,7 @@
                 </div>
 
                 <!-- Stats Grid -->
-                <div class="grid grid-cols-4 gap-4">
+                <div class="grid grid-cols-3 gap-4">
                     <div class="glass-panel p-4 border border-slate-700/60 card flex items-center gap-4">
                         <div class="icon-box bg-blue-950/80 border border-blue-500/30 text-blue-300">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
@@ -349,17 +333,6 @@
                             <div class="text-xs text-emerald-400 font-medium">Today's Check-ins</div>
                             <div id="stat-checkins" class="text-2xl font-bold mt-0.5 text-emerald-300 brand">0</div>
                             <div class="text-[10px] text-emerald-400/60">Biometric & Walk-ins</div>
-                        </div>
-                    </div>
-
-                    <div class="glass-panel p-4 border border-amber-500/20 card flex items-center gap-4">
-                        <div class="icon-box bg-amber-950/80 border border-amber-500/30 text-amber-300">
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                        </div>
-                        <div>
-                            <div class="text-xs text-amber-400 font-medium">Anti-Tailgate Flags</div>
-                            <div id="stat-tailgates" class="text-2xl font-bold mt-0.5 text-amber-300 brand">0</div>
-                            <div class="text-[10px] text-amber-400/60">YOLOv8 + ROI Active</div>
                         </div>
                     </div>
 
@@ -395,8 +368,8 @@
                     </div>
                 </div>
 
-                <!-- Live 3-Camera CCTV Monitoring Grid -->
-                <div class="grid grid-cols-3 gap-4">
+                <!-- Live 2-Camera CCTV Monitoring Grid -->
+                <div class="grid grid-cols-2 gap-4">
                     <!-- Camera 1: Face Scan Entry -->
                     <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
                         <div class="flex items-center justify-between mb-2.5">
@@ -447,45 +420,15 @@
                         </div>
                     </div>
 
-                    <!-- Camera 3: Anti-Tailgate ROI Radar -->
-                    <div class="glass-panel p-4 border border-slate-800/80 flex flex-col justify-between">
-                        <div class="flex items-center justify-between mb-2.5">
-                            <div class="flex items-center gap-2">
-                                <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                <span class="text-xs font-bold text-slate-200">Camera 3: Anti-Tailgate</span>
-                            </div>
-                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] bg-purple-950/80 border border-purple-700/50 text-purple-300 font-mono font-medium">
-                                <svg class="w-2.5 h-2.5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                                <span>ROI ARMED</span>
-                            </span>
-                        </div>
-                        <div class="h-48 rounded-xl bg-black border border-slate-800/60 relative overflow-hidden flex items-center justify-center shadow-inner">
-                            <video id="dash-cam3-tailgate" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                            
-                            <!-- Dynamic Calibrated ROI Box Overlay -->
-                            <div id="dash-roi-overlay" class="absolute border border-purple-500/80 bg-purple-500/10 pointer-events-none rounded transition-all duration-300" style="left: 20%; top: 20%; width: 60%; height: 60%;">
-                                <span class="absolute top-1 left-1 text-[8px] font-mono text-purple-300 font-bold bg-purple-950/90 px-1 rounded">ROI ZONE (1 MAX)</span>
-                            </div>
-
-                            <div id="dash-cam3-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 p-2 text-center pointer-events-none">
-                                <div class="text-[11px] font-semibold text-slate-300">Overhead Passage Radar</div>
-                                <div class="text-[9px] text-slate-500 mt-0.5">YOLOv8 Multi-Person Tracking</div>
-                            </div>
-                            <div class="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[9px] text-slate-400 bg-slate-950/80 px-2 py-0.5 rounded font-mono">
-                                <span>CAM-3 [OVERHEAD]</span>
-                                <span class="text-purple-400">ROI: ACTIVE</span>
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
 
-            <!-- 2. LIVE GATE / ATTENDANCE VIEW (3-CAMERA KIOSK) -->
+            <!-- 2. LIVE GATE / ATTENDANCE VIEW (2-CAMERA KIOSK) -->
             <div id="view-attendance" class="hidden space-y-6">
                 <div class="flex items-center justify-between">
                     <div>
                         <h2 class="text-2xl font-bold text-slate-100">Live Access Gate & Attendance Kiosk</h2>
-                        <p class="text-xs text-slate-400">Automated 3-camera verification: Entry Face Scan, Exit Face Scan, and Overhead Anti-Tailgate</p>
+                        <p class="text-xs text-slate-400">Automated 2-camera verification: Entry Face Scan and Exit Face Scan</p>
                     </div>
                     <div class="flex gap-2">
                         <button onclick="openWalkInModal()" class="brand-btn px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5">
@@ -508,15 +451,11 @@
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                             <span>Walk-In (Out)</span>
                         </button>
-                        <button onclick="triggerTailgateSecurityAlarm()" class="px-3 py-1.5 rounded-lg text-xs bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-500/40 font-semibold transition flex items-center gap-1.5">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                            <span>Alarm</span>
-                        </button>
                     </div>
                 </div>
 
-                <!-- 3 Live Kiosk Camera Stream Panels -->
-                <div class="grid grid-cols-3 gap-4">
+                <!-- 2 Live Kiosk Camera Stream Panels -->
+                <div class="grid grid-cols-2 gap-4">
                     <!-- Kiosk Camera 1: Entry Scanner -->
                     <div class="glass-panel p-4 border border-slate-800/80 space-y-3">
                         <div class="flex items-center justify-between">
@@ -561,41 +500,11 @@
                         </button>
                     </div>
 
-                    <!-- Kiosk Camera 3: Overhead Anti-Tailgate -->
-                    <div class="glass-panel p-4 border border-slate-800/80 space-y-3">
-                        <div class="flex items-center justify-between">
-                            <div class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                                <span class="w-2 h-2 rounded-full bg-purple-400"></span>
-                                <span>Camera 3: Anti-Tailgate ROI</span>
-                            </div>
-                            <span class="text-[10px] text-purple-400 font-mono">RADAR 60Hz</span>
-                        </div>
-                        <div class="h-44 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
-                            <video id="kiosk-cam3-tailgate" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                            
-                            <div id="kiosk-roi-overlay" class="absolute border border-purple-500/80 bg-purple-500/10 pointer-events-none rounded transition-all duration-300" style="left: 20%; top: 20%; width: 60%; height: 60%;">
-                                <span class="absolute top-1 left-1 text-[8px] font-mono text-purple-300 font-bold bg-purple-950/90 px-1 rounded">ROI ZONE (1 MAX)</span>
-                            </div>
-
-                            <div id="kiosk-cam3-standby" class="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/90 text-center p-2 pointer-events-none">
-                                <div class="text-xs font-semibold text-slate-300">Turnstile Barrier Radar</div>
-                                <span class="text-[10px] text-purple-400 font-semibold mt-0.5">YOLOv8 Single Occupancy</span>
-                            </div>
-                        </div>
-                        <button onclick="triggerTailgateSecurityAlarm()" class="px-3 py-2 rounded-lg text-xs bg-red-950/80 hover:bg-red-900 text-red-200 border border-red-800/60 w-full font-semibold flex items-center justify-center gap-1.5 transition">
-                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                            <span>Trigger Tailgate Alarm</span>
-                        </button>
-                    </div>
                 </div>
 
                 <!-- Real-time Gate Log Table -->
                 <div class="flex items-center justify-between mb-2">
                     <div class="text-xs font-bold text-slate-300 uppercase tracking-wider">Gate Log</div>
-                    <div class="flex items-center gap-2">
-                        <span id="tailgate-unacked-badge" class="hidden px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-950 text-red-300 border border-red-800">0 unreviewed</span>
-                        <button id="btn-tailgate-filter" onclick="toggleTailgateFilter()" class="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">Show tailgate only</button>
-                    </div>
                 </div>
                 <div class="glass-panel overflow-hidden border border-slate-800">
                     <table class="w-full text-left text-xs">
@@ -659,13 +568,15 @@
                                 <th class="p-3">Name</th>
                                 <th class="p-3">Plan</th>
                                 <th class="p-3">Phone</th>
+                                <th class="p-3">Joined</th>
+                                <th class="p-3">Expires</th>
                                 <th class="p-3">Status</th>
                                 <th class="p-3 text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="members-list-tbody" class="divide-y divide-slate-800/60 text-slate-300">
                             <tr>
-                                <td colspan="6" class="p-4 text-center text-slate-500">Loading members...</td>
+                                <td colspan="8" class="p-4 text-center text-slate-500">Loading members...</td>
                             </tr>
                         </tbody>
                     </table>
@@ -784,6 +695,17 @@
                                 <option value="coach">Trainer / Coach</option>
                                 <option value="staff">Staff / Admin</option>
                             </select>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Join Date <span class="text-slate-500 font-normal">(backdate pre-system members)</span></label>
+                                <input type="date" id="reg-mem-join-date" class="input-dark w-full text-xs">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-semibold text-slate-400 mb-1">Expiry Date <span class="text-slate-500 font-normal">(empty = no expiry)</span></label>
+                                <input type="date" id="reg-mem-expiry-date" class="input-dark w-full text-xs">
+                            </div>
                         </div>
 
                         <!-- Progress indicator -->
@@ -1070,7 +992,7 @@
                     <div class="glass-panel p-4 border border-blue-500/20">
                         <div class="text-xs text-blue-400 font-medium">Walk-In Revenue</div>
                         <div id="eod-stat-walkins" class="text-2xl font-bold text-blue-300 brand">0</div>
-                        <div class="text-[10px] text-slate-500"><span id="eod-stat-checkins">0</span> check-ins · <span id="eod-stat-tailgates">0</span> tailgates</div>
+                        <div class="text-[10px] text-slate-500"><span id="eod-stat-checkins">0</span> check-ins</div>
                     </div>
                     <div class="glass-panel p-4 border border-red-500/20">
                         <div class="text-xs text-red-400 font-medium">Expenses</div>
@@ -1252,8 +1174,8 @@
             <div id="view-hardware" class="hidden space-y-6">
                 <div class="flex items-center justify-between">
                     <div>
-                        <h2 class="text-2xl font-bold text-slate-100">Hardware & 3-Camera Routing Station</h2>
-                        <p class="text-xs text-slate-400">Configure ESP32 serial relay, assign dedicated camera hardware with live preview tests, and calibrate turnstile ROI zones</p>
+                        <h2 class="text-2xl font-bold text-slate-100">Hardware & 2-Camera Routing Station</h2>
+                        <p class="text-xs text-slate-400">Configure ESP32 serial relay and assign dedicated camera hardware with live preview tests</p>
                     </div>
                     <div class="flex items-center gap-2">
                         <button onclick="populateCameraDevices()" class="px-3 py-1.5 rounded-lg bg-blue-900/40 hover:bg-blue-800 text-blue-300 text-xs font-semibold border border-blue-700/60 flex items-center gap-1.5 transition">
@@ -1293,9 +1215,6 @@
                                 <button onclick="quickUnlockDoor()" class="brand-btn flex-1 py-2 rounded-lg font-bold">
                                     Pulse Unlock (3s)
                                 </button>
-                                <button onclick="triggerAlarmTest()" class="px-3 py-2 rounded-lg bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-700 font-bold">
-                                    Test Alarm
-                                </button>
                             </div>
                         </div>
                         <div>
@@ -1308,12 +1227,12 @@
                     </div>
                 </div>
 
-                <!-- Section 2: 3-Camera Live Assignment & Viewfinder Matrix -->
+                <!-- Section 2: 2-Camera Live Assignment & Viewfinder Matrix -->
                 <div class="glass-panel p-5 space-y-4 border border-slate-800">
                     <div class="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
                         <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
                             <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-                            <span>Dedicated 3-Camera Assignment Matrix & Live Test Viewfinders</span>
+                            <span>Dedicated 2-Camera Assignment Matrix & Live Test Viewfinders</span>
                         </h3>
                         <div class="flex items-center gap-2">
                             <button type="button" onclick="scanActiveCameras(true)" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center gap-1.5 transition" title="Probe system webcams and check for occupied devices">
@@ -1325,9 +1244,9 @@
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
                                 <span>Save & Bind Routing</span>
                             </button>
-                            <button id="btn-lock-cameras" onclick="lockCameraAssignment()" title="Persist the CURRENT live camera assignment + ROI + tuning. On every start this exact assignment loads — no shuffling." class="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-600/60">
+                            <button id="btn-lock-cameras" onclick="lockCameraAssignment()" title="Persist the CURRENT live camera assignment + tuning. On every start this exact assignment loads — no shuffling." class="px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-600/60">
                                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-                                <span>Lock Cameras + ROI</span>
+                                <span>Lock Cameras</span>
                             </button>
                         </div>
                     </div>
@@ -1426,161 +1345,52 @@
                             </div>
                         </div>
 
-                        <!-- Camera 3 Card: Anti-Tailgate Overhead -->
-                        <div class="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800 space-y-3 relative">
-                            <div class="flex items-center justify-between">
-                                <span class="text-xs font-bold text-purple-400 flex items-center gap-1.5">
-                                    <span class="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
-                                    <span>Camera 3: Overhead Anti-Tailgate</span>
-                                </span>
-                                <span id="cam-badge-3" class="text-[9px] font-mono text-purple-300 bg-purple-950/80 px-1.5 py-0.5 rounded border border-purple-800/60 font-semibold">1:1 POLICY</span>
-                            </div>
-
-                            <!-- Live Test Preview Window with Calibrated ROI Overlay -->
-                            <div class="w-full h-36 rounded-lg bg-black border border-slate-700 overflow-hidden relative flex items-center justify-center">
-                                <video id="test-preview-cam3" autoplay muted playsinline class="w-full h-full object-cover"></video>
-                                <div id="test-roi-box" class="absolute border border-dashed border-purple-400 bg-purple-500/20 rounded pointer-events-none z-10" style="left: 20%; top: 20%; width: 60%; height: 60%;"></div>
-                                <div class="absolute bottom-1 left-1 bg-black/70 px-1.5 py-0.5 rounded text-[9px] font-mono text-purple-300 z-10">
-                                    OVERHEAD ROI ZONE
-                                </div>
-                                <!-- Occupied Overlay -->
-                                <div id="cam-occupied-overlay-3" class="hidden absolute inset-0 bg-black/90 z-20 flex flex-col items-center justify-center p-3 text-center">
-                                    <svg class="w-7 h-7 text-amber-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                                    <span class="text-xs font-bold text-amber-300">USB BUS LIMIT / OCCUPIED</span>
-                                    <span class="text-[10px] text-slate-400 mt-0.5">Plug camera directly into another PC USB port</span>
-                                </div>
-                            </div>
-
-                            <!-- Alert Notification Banner -->
-                            <div id="cam-status-msg-3" class="hidden text-[11px] p-2 rounded-lg leading-relaxed"></div>
-
-                            <div class="space-y-2 text-xs">
-                                <div>
-                                    <label class="block text-[11px] text-slate-400 mb-1">Assigned Hardware Device</label>
-                                    <select id="cam-assign-tailgate" onchange="previewSelectedCamera(3, this.value)" class="input-dark text-xs w-full">
-                                        <option value="">Probing cameras...</option>
-                                    </select>
-                                </div>
-                                <div class="flex gap-2">
-                                    <button onclick="testTransitPassage()" class="w-full py-1.5 rounded bg-purple-950/70 hover:bg-purple-900 text-purple-300 border border-purple-800 text-[11px] font-semibold transition">
-                                        Test Transit Passage
-                                    </button>
-                                    <div id="transit-test-result" class="text-[10px] font-mono text-slate-400 mt-1">Runs one real counted frame on the overhead feed.</div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
-                <!-- Section 3: Turnstile ROI Zone Calibration -->
+                <!-- Section 3: Face Recognition Tuning -->
                 <div class="glass-panel p-5 space-y-4 border border-slate-800">
                     <div class="flex items-center justify-between border-b border-slate-800 pb-2">
                         <h3 class="text-sm font-bold text-slate-200 flex items-center gap-2">
                             <svg class="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
-                            <span>Turnstile Anti-Tailgate ROI Zone Precision Calibration</span>
+                            <span>Face Recognition Tuning</span>
                         </h3>
-                        <button onclick="saveRoiCalibration()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
+                        <button onclick="saveRecognitionTuning()" class="brand-btn px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                            <span>Save & Apply Turnstile ROI</span>
+                            <span>Save Tuning</span>
                         </button>
                     </div>
 
-                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                        <!-- Live Visual ROI Boundary Preview -->
-                        <div class="lg:col-span-6 h-56 rounded-xl bg-black border border-slate-800 relative overflow-hidden flex items-center justify-center shadow-inner">
-                            <video id="roi-preview-video" autoplay playsinline muted class="w-full h-full object-cover"></video>
-                            
-                            <!-- Calibrated Dynamic Box with resize handles -->
-                            <div id="roi-calib-box" class="absolute border-2 border-dashed border-purple-400 bg-purple-500/20 rounded pointer-events-none transition-all duration-150" style="left: 20%; top: 20%; width: 60%; height: 60%;">
-                                <div class="absolute top-1 left-1 bg-purple-950/90 text-purple-200 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border border-purple-700">
-                                    CALIBRATED PASSAGE ROI (<span id="roi-dim-text">60% x 60%</span>)
-                                </div>
-                            </div>
-                            <div class="absolute bottom-2 right-2 text-[9px] font-mono text-purple-300 bg-slate-950/90 px-2 py-0.5 rounded border border-slate-800">
-                                YOLOv8 1:1 Passage Tracking Active
-                            </div>
-                        </div>
-
-                        <!-- Interactive ROI Sliders & Sensitivities -->
-                        <div class="lg:col-span-6 space-y-3 text-xs">
-                            <div class="grid grid-cols-2 gap-3">
-                                <div>
-                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                        <span>ROI X Position:</span>
-                                        <span id="val-roi-x" class="font-mono text-purple-400">20%</span>
-                                    </div>
-                                    <input type="range" id="slider-roi-x" min="0" max="80" value="20" class="w-full accent-purple-500" oninput="updateRoiPreview()">
-                                </div>
-                                <div>
-                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                        <span>ROI Y Position:</span>
-                                        <span id="val-roi-y" class="font-mono text-purple-400">20%</span>
-                                    </div>
-                                    <input type="range" id="slider-roi-y" min="0" max="80" value="20" class="w-full accent-purple-500" oninput="updateRoiPreview()">
-                                </div>
-                                <div>
-                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                        <span>ROI Width:</span>
-                                        <span id="val-roi-w" class="font-mono text-purple-400">60%</span>
-                                    </div>
-                                    <input type="range" id="slider-roi-w" min="20" max="100" value="60" class="w-full accent-purple-500" oninput="updateRoiPreview()">
-                                </div>
-                                <div>
-                                    <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                        <span>ROI Height:</span>
-                                        <span id="val-roi-h" class="font-mono text-purple-400">60%</span>
-                                    </div>
-                                    <input type="range" id="slider-roi-h" min="20" max="100" value="60" class="w-full accent-purple-500" oninput="updateRoiPreview()">
-                                </div>
-                            </div>
-
-                            <div class="pt-2 border-t border-slate-800">
+                    <div class="space-y-3 text-xs">
+                        <div class="text-slate-200 font-bold mb-2">Recognition Tuning <span class="text-[10px] font-normal text-slate-500">(match, adapt, liveness, distance)</span></div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
                                 <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                    <span>Optical Anti-Tailgate Sensitivity:</span>
-                                    <span id="val-roi-sens" class="font-mono text-purple-400">85% (High Precision)</span>
+                                    <span>Match Threshold:</span>
+                                    <span id="val-match-thr" class="font-mono text-purple-400">0.62</span>
                                 </div>
-                                <input type="range" id="slider-roi-sens" min="50" max="99" value="85" class="w-full accent-purple-500" oninput="updateRoiSensitivityText()">
+                                <input type="range" id="slider-match-thr" min="0.50" max="0.75" step="0.01" value="0.62" class="w-full accent-purple-500" oninput="updateTuningTexts()">
                             </div>
-
-                            <div class="pt-2 border-t border-slate-800">
-                                <div class="text-slate-200 font-bold mb-2">Recognition Tuning <span class="text-[10px] font-normal text-slate-500">(match, adapt, liveness, motion)</span></div>
-                                <div class="grid grid-cols-2 gap-3">
-                                    <div>
-                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                            <span>Match Threshold:</span>
-                                            <span id="val-match-thr" class="font-mono text-purple-400">0.62</span>
-                                        </div>
-                                        <input type="range" id="slider-match-thr" min="0.50" max="0.75" step="0.01" value="0.62" class="w-full accent-purple-500" oninput="updateTuningTexts()">
-                                    </div>
-                                    <div>
-                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                            <span>Adapt Threshold:</span>
-                                            <span id="val-adapt-thr" class="font-mono text-purple-400">0.80</span>
-                                        </div>
-                                        <input type="range" id="slider-adapt-thr" min="0.60" max="0.90" step="0.01" value="0.80" class="w-full accent-purple-500" oninput="updateTuningTexts()">
-                                    </div>
-                                    <div>
-                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                            <span>Liveness Min Eye Move (px):</span>
-                                            <span id="val-live-px" class="font-mono text-purple-400">0.5</span>
-                                        </div>
-                                        <input type="range" id="slider-live-px" min="0" max="5" step="0.1" value="0.5" class="w-full accent-purple-500" oninput="updateTuningTexts()">
-                                    </div>
-                                    <div>
-                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                            <span>Scan Distance (min face px):</span>
-                                            <span id="val-scan-dist" class="font-mono text-purple-400">120</span>
-                                        </div>
-                                        <input type="range" id="slider-scan-dist" min="80" max="400" step="5" value="120" class="w-full accent-purple-500" oninput="updateTuningTexts()">
-                                    </div>
-                                    <div>
-                                        <div class="flex justify-between text-slate-300 font-medium mb-1">
-                                            <span>Motion (MOG) Sensitivity:</span>
-                                            <span id="val-mog-sens" class="font-mono text-purple-400">0.50</span>
-                                        </div>
-                                        <input type="range" id="slider-mog-sens" min="0" max="1" step="0.05" value="0.5" class="w-full accent-purple-500" oninput="updateTuningTexts()">
-                                    </div>
+                            <div>
+                                <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                    <span>Adapt Threshold:</span>
+                                    <span id="val-adapt-thr" class="font-mono text-purple-400">0.80</span>
                                 </div>
+                                <input type="range" id="slider-adapt-thr" min="0.60" max="0.90" step="0.01" value="0.80" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                    <span>Liveness Min Eye Move (px):</span>
+                                    <span id="val-live-px" class="font-mono text-purple-400">0.5</span>
+                                </div>
+                                <input type="range" id="slider-live-px" min="0" max="5" step="0.1" value="0.5" class="w-full accent-purple-500" oninput="updateTuningTexts()">
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-slate-300 font-medium mb-1">
+                                    <span>Scan Distance (min face px):</span>
+                                    <span id="val-scan-dist" class="font-mono text-purple-400">120</span>
+                                </div>
+                                <input type="range" id="slider-scan-dist" min="80" max="400" step="5" value="120" class="w-full accent-purple-500" oninput="updateTuningTexts()">
                             </div>
                         </div>
                     </div>
@@ -1748,6 +1558,16 @@
                         <option value="suspended">Suspended (Gate Denied)</option>
                         <option value="expired">Expired</option>
                     </select>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Join Date <span class="text-slate-500">(pre-system backdate)</span></label>
+                    <input type="date" id="edit-mem-join-date" class="input-dark">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">Expiry Date <span class="text-slate-500">(empty clears)</span></label>
+                    <input type="date" id="edit-mem-expiry-date" class="input-dark">
                 </div>
             </div>
 
@@ -2120,7 +1940,6 @@
     <div style="position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; visibility: hidden; pointer-events: none; z-index: -9999;">
         <video id="worker-cam1-entry" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
         <video id="worker-cam2-exit" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
-        <video id="worker-cam3-tailgate" autoplay playsinline muted style="width:1px;height:1px;max-width:1px;max-height:1px;"></video>
     </div>
 
     <script src="static/js/app.js"></script>

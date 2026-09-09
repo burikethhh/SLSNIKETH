@@ -98,31 +98,11 @@ pub fn run() {
         }
     };
 
-    let person_counter = match vision::find_models_dir() {
-        Some(dir) => match vision::PersonCounter::load(&dir) {
-            Ok(c) => {
-                tracing::info!("Loaded yolov8n.onnx person counter from {:?}", dir);
-                Some(c)
-            }
-            Err(e) => {
-                tracing::error!("Failed to load yolov8n.onnx from {:?}: {}", dir, e);
-                None
-            }
-        },
-        None => {
-            tracing::warn!("Could not locate desktop/models/yolov8n.onnx — tailgate person counting will be unavailable.");
-            None
-        }
-    };
-
     let db_arc = Arc::new(db);
     let license_arc = Arc::new(license);
 
-    // Start background cloud sync loop (shares the tailgate policy handle so
-    // Phase-D remote enable/cooldown lands without a restart).
-    let tailgate_policy = Arc::new(parking_lot::RwLock::new(gympos_shared::TailgatePolicy::default()));
-    let sync_worker = CloudSyncWorker::new(db_arc.clone(), license_arc.clone(), None)
-        .with_policy_sink(tailgate_policy.clone());
+    // Start background cloud sync loop.
+    let sync_worker = CloudSyncWorker::new(db_arc.clone(), license_arc.clone(), None);
     sync_worker.start_background_sync();
 
     // Background 60s janitor: purge expired walk-in profiles from memory
@@ -244,10 +224,7 @@ pub fn run() {
         face_store,
         session: Arc::new(parking_lot::RwLock::new(initial_session)),
         face_engine: engine,
-        person_counter: Arc::new(person_counter),
         pin_gate: Arc::new(std::sync::Mutex::new(commands::PinGate::default())),
-        tailgate_policy,
-        last_tailgate_alarm: Arc::new(std::sync::Mutex::new(None)),
     };
 
     // ESP32 auto-detect: every 3s, try EVERY candidate USB serial port (VID
@@ -316,7 +293,6 @@ pub fn run() {
             commands::list_com_ports,
             commands::connect_com_port,
             commands::unlock_magnetic_lock,
-            commands::trigger_tailgate_alarm,
             commands::get_dashboard_summary,
             commands::list_members,
             commands::list_interbranch_members,
@@ -339,12 +315,8 @@ pub fn run() {
             commands::renew_walk_in,
             commands::void_walk_in,
             commands::scan_face_frame,
-            commands::count_persons_in_frame,
             commands::process_face_scan,
-            commands::log_tailgate_event,
             commands::list_recent_attendance,
-            commands::list_tailgate_incidents,
-            commands::resolve_tailgate_incident,
             commands::list_products,
             commands::create_product,
             commands::update_product,

@@ -219,6 +219,14 @@ pub struct CreateMemberRequest {
     pub face_vectors: Vec<Vec<f32>>,
     #[serde(default)]
     pub photo_data_url: Option<String>,
+    /// Join date override for backdating pre-system members.
+    /// Accepts RFC3339 (`2022-03-15T00:00:00Z`) or date-only (`2022-03-15`).
+    /// `None`/empty = enrollment timestamp (now).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Initial expiry override. Same formats. `None`/empty = no expiry.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +240,12 @@ pub struct UpdateMemberRequest {
     pub status: String,
     #[serde(default)]
     pub photo_data_url: Option<String>,
+    /// Join date override. `None`/empty = keep existing `created_at`.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Expiry override. `None` = keep existing; empty string = clear to no expiry.
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,14 +322,9 @@ pub struct CreateWalkInRequest {
 pub struct CameraConfig {
     pub camera1_entry_device_id: String,
     pub camera2_exit_device_id: String,
-    pub camera3_tailgate_device_id: String,
-    pub roi_x: f32,
-    pub roi_y: f32,
-    pub roi_width: f32,
-    pub roi_height: f32,
-    pub roi_sensitivity: f32,
     /// Phase E tunables (Hardware Settings → Recognition Tuning). All
-    /// `#[serde(default)]` so old saved configs keep working.
+    /// `#[serde(default)]` so old saved configs keep working. Unknown legacy
+    /// keys (removed camera3/roi/mog fields) are ignored on deserialize.
     #[serde(default = "default_match_threshold")]
     pub match_threshold: f32,
     #[serde(default = "default_adapt_threshold")]
@@ -332,8 +341,6 @@ pub struct CameraConfig {
     /// accidental triggers from people passing far from the camera.
     #[serde(default = "default_scan_min_face_px")]
     pub scan_min_face_px: f32,
-    #[serde(default = "default_mog_sensitivity")]
-    pub mog_sensitivity: f32,
 }
 
 fn default_match_threshold() -> f32 {
@@ -349,26 +356,16 @@ fn default_scan_min_face_px() -> f32 {
 fn default_liveness_min_px() -> f32 {
     0.5
 }
-fn default_mog_sensitivity() -> f32 {
-    0.5
-}
 
 impl Default for CameraConfig {
     fn default() -> Self {
         Self {
             camera1_entry_device_id: "".to_string(),
             camera2_exit_device_id: "".to_string(),
-            camera3_tailgate_device_id: "".to_string(),
-            roi_x: 20.0,
-            roi_y: 20.0,
-            roi_width: 60.0,
-            roi_height: 60.0,
-            roi_sensitivity: 85.0,
             match_threshold: default_match_threshold(),
             adapt_threshold: default_adapt_threshold(),
             liveness_min_px: default_liveness_min_px(),
             scan_min_face_px: default_scan_min_face_px(),
-            mog_sensitivity: default_mog_sensitivity(),
             camera_assignment_locked: false,
         }
     }
@@ -405,48 +402,18 @@ pub struct AttendanceRecord {
     pub member_name: Option<String>,
     pub direction: String,
     pub confidence: Option<f32>,
+    /// Legacy storage/wire field from the removed anti-tailgate feature.
+    /// Always `false` for rows written now; kept so historical rows and old
+    /// cloud payloads still deserialize, and the columns stay queryable.
     pub tailgate_flag: bool,
     pub timestamp: DateTime<Utc>,
     pub sync_status: String,
-    /// Tailgate attribution: whose admitted entry window was piggybacked.
-    /// `None` for non-tailgate rows and legacy rows written before Phase A.
+    /// Legacy attribution columns from the removed anti-tailgate feature.
+    /// Always `None` for rows written now; kept for history + wire compat.
     #[serde(default)]
     pub linked_member_id: Option<String>,
-    /// YOLO person count observed in the ROI when the incident fired.
     #[serde(default)]
     pub person_count: Option<i32>,
-}
-
-/// Per-branch tailgate policy, synced cloud → exe inside `SyncResponse`.
-/// `None` on the wire means "no remote policy yet — keep local behavior".
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TailgatePolicy {
-    pub enabled: bool,
-    pub siren_cooldown_secs: u64,
-}
-
-impl Default for TailgatePolicy {
-    fn default() -> Self {
-        // 15s cooldown: every genuine incident blasts the full 5s siren while
-        // still damping buzzer-stuck spam; the CEO dashboard can tune it.
-        Self { enabled: true, siren_cooldown_secs: 15 }
-    }
-}
-
-/// A tailgate incident as served by the CEO / owner incident feeds.
-/// Shared so both dashboards and the exe resolve-view agree on field names.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TailgateIncident {
-    pub id: String,
-    pub gym_id: String,
-    pub gym_name: String,
-    pub owner_email: String,
-    pub member_name: Option<String>,
-    pub linked_member_id: Option<String>,
-    pub person_count: Option<i32>,
-    pub timestamp: DateTime<Utc>,
-    pub acknowledged: bool,
-    pub acknowledged_by: Option<String>,
 }
 
 // --- POS & Store Models ---
@@ -728,11 +695,6 @@ pub struct SyncResponse {
     pub remote_plans: Option<Vec<MembershipPlanConfig>>,
     pub remote_promos: Option<Vec<PromoVoucherConfig>>,
     pub staff_accounts: Option<Vec<StaffAccount>>,
-    /// Remote tailgate policy for the syncing branch (Phase A-D). `None`
-    /// when the cloud has no explicit policy row yet — the exe keeps local
-    /// behavior. Old exes ignore the field via `#[serde(default)]`.
-    #[serde(default)]
-    pub tailgate_policy: Option<TailgatePolicy>,
     pub server_time: DateTime<Utc>,
 }
 
@@ -1024,23 +986,19 @@ mod sync_compat_tests {
     }
 
     #[test]
-    fn sync_response_without_policy_means_keep_local() {
-        // Old cloud: no tailgate_policy key → None → exe keeps local behavior.
+    fn sync_response_without_legacy_tailgate_key_parses() {
+        // Old cloud payloads may still carry the removed `tailgate_policy`
+        // key — unknown fields must be ignored, not rejected.
         let v = serde_json::json!({
             "processed_attendance": 1, "processed_members": 0, "processed_vectors": 0,
             "processed_sales": 0, "remote_disabled": false, "sister_branch_members": [],
             "remote_catalog": null, "remote_plans": null, "remote_promos": null,
-            "staff_accounts": null, "server_time": "2026-09-01T00:00:00Z"
+            "staff_accounts": null,
+            "tailgate_policy": { "enabled": true, "siren_cooldown_secs": 15 },
+            "server_time": "2026-09-01T00:00:00Z"
         });
-        let resp: SyncResponse = serde_json::from_value(v).expect("old response must parse");
-        assert!(resp.tailgate_policy.is_none());
-    }
-
-    #[test]
-    fn tailgate_policy_defaults_to_enabled() {
-        let p = TailgatePolicy::default();
-        assert!(p.enabled);
-        assert!(p.siren_cooldown_secs > 0);
+        let resp: SyncResponse = serde_json::from_value(v).expect("legacy response must parse");
+        assert!(!resp.remote_disabled);
     }
 }
 
